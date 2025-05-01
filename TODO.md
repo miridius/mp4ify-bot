@@ -1,0 +1,2 @@
+- [ ] cache pnpm store in docker image somehow
+- [ ] don't put node modules in host working dir... it should be in the container
