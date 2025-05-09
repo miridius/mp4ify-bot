@@ -107,8 +107,9 @@ const downloadVideo = async (
     throw new Error('ERROR: yt-dlp output file not found');
 };
 
-const logFormats = ({ formats }: any) => {
+const logFormats = ({ formats }: any) =>
   // log all formats for debugging purposes
+  formats &&
   console.table(
     formats.map(
       ({
@@ -131,7 +132,6 @@ const logFormats = ({ formats }: any) => {
       }),
     ),
   );
-};
 
 const parseRes = ({ resolution, height, width, format_id }: any) =>
   resolution ||
