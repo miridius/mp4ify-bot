@@ -96,7 +96,6 @@ const downloadVideo = async (
       },
       SPAWN_OPTS,
     );
-    console.log('childProcess:', result);
     if (verbose) logVerboseOutput(ctx, result);
   } catch (e: any) {
     console.error(e);

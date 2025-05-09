@@ -16,10 +16,7 @@ export type MessageContext = NarrowedContext<
   Update.MessageUpdate<Record<'text', {}> & Message.TextMessage>
 >;
 
-export const reply = (
-  ctx: NarrowedContext<Context<Update>, Update.MessageUpdate>,
-  text: string,
-) =>
+export const reply = (ctx: MessageContext, text: string) =>
   ctx.reply(text, {
     reply_parameters: { message_id: ctx.message.message_id },
     ...TEXT_MSG_OPTS,
