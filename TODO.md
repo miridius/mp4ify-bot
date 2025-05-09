@@ -1,4 +1,4 @@
-- [ ] don't put node modules in host working dir... it should be in the container
+- [x] don't put node modules in host working dir... it should be in the container
 - [ ] separate docker images for dev and prod, run multiple bots?
 - [ ] caching of videos
 - [ ] prevent cache stampede

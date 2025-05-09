@@ -13,6 +13,7 @@ services:
     tty: true
     volumes:
       - .:/app
+      - /app/node_modules
     devices:
       - /dev/dri:/dev/dri
     working_dir: /app
@@ -30,6 +31,7 @@ services:
       - .env
     volumes:
       - .:/app
+      - /app/node_modules
     devices:
       - /dev/dri:/dev/dri
     working_dir: /app
