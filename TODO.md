@@ -1,2 +1,11 @@
-- [ ] cache pnpm store in docker image somehow
 - [ ] don't put node modules in host working dir... it should be in the container
+- [ ] separate docker images for dev and prod, run multiple bots?
+- [ ] caching of videos
+- [ ] prevent cache stampede
+- [ ] parallelize handling of multiple messages
+- [ ] add tests
+- [ ] download progress bar / live stream of stdout/stderr
+- [ ] docker registry for prod image - so that it can be pulled without cloning the repo
+- [ ] update README with instructions for running the container
+- [ ] Sqlite DB and UI to view jobs and change API keys?
+- [ ] large file upload via e.g. transfernow

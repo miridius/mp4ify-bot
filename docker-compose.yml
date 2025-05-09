@@ -1,0 +1,37 @@
+# IMPORTANT: only run one of the services defined in this file at a time
+services:
+  # This service is for development purposes only
+  dev:
+    container_name: mp4ify_dev
+    image: mp4ify_dev
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    stdin_open: true
+    tty: true
+    volumes:
+      - .:/app
+    devices:
+      - /dev/dri:/dev/dri
+    working_dir: /app
+    user: "${UID}:${GID}"
+    command: "bun dev"
+
+  # This service is for production purposes only
+  prod: 
+    container_name: mp4ify_prod
+    image: mp4ify_prod
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+    devices:
+      - /dev/dri:/dev/dri
+    working_dir: /app
+    user: "${UID}:${GID}"
+    # TODO: testing service

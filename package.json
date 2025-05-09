@@ -1,16 +1,27 @@
 {
-  "name": "video-bot",
-  "version": "0.0.0",
+  "name": "mp4ify-bot",
+  "version": "0.1.0",
   "module": "src/index.ts",
   "type": "module",
   "private": true,
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "@types/he": "^1.2.3"
   },
   "peerDependencies": {
     "typescript": "^5"
   },
   "dependencies": {
-    "telegraf": "^4.16.3"
+    "filenamify": "^6.0.0",
+    "he": "^1.2.0",
+    "telegraf": "^4.16.3",
+    "youtube-dl-exec": "^3.0.20"
+  },
+  "trustedDependencies": [
+    "youtube-dl-exec"
+  ],
+  "scripts": {
+    "dev": "bun --watch .",
+    "start": "bun ."
   }
 }
