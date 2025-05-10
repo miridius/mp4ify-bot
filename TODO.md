@@ -1,7 +1,5 @@
-- [x] don't put node modules in host working dir... it should be in the container
-- [ ] separate docker images for dev and prod, run multiple bots?
-- [ ] caching of videos
-- [ ] prevent cache stampede
+- [ ] better error for unsupported links
+- [ ] caching of video messages (don't re-upload same file)
 - [ ] parallelize handling of multiple messages
 - [ ] add tests
 - [ ] download progress bar / live stream of stdout/stderr
@@ -9,3 +7,4 @@
 - [ ] update README with instructions for running the container
 - [ ] Sqlite DB and UI to view jobs and change API keys?
 - [ ] large file upload via e.g. transfernow
+- [ ] complain to telegram team about lack of vp9 support on macos

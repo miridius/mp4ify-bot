@@ -1,4 +1,3 @@
-import filenamify from 'filenamify';
 import { rename, rm, stat } from 'fs/promises';
 import he from 'he';
 import { tmpdir } from 'os';
@@ -58,53 +57,54 @@ const uniqueTempDir = () =>
 const vOpts = '[vcodec!^=?av01]';
 // const vOpts = '[ext=mp4][vcodec!^=?av01]';
 const gif = '[ext=gif][filesize<?50M]';
-const format =
-  [4, 8, 16, 25]
-    .map(
-      (audioSize) =>
-        `bestvideo${vOpts}[filesize<?${50 - audioSize}M]` +
-        `+bestaudio[filesize<?${audioSize}M]`,
-    )
-    .join('/') + `/best${vOpts}[filesize<?50M]/${gif}`;
 
-const logVerboseOutput = (
-  ctx: MessageContext,
-  { stdout, stderr }: { stdout: string; stderr: string },
-) => {
-  if (stdout) reply(ctx, `<b>stdout:</b>\n${he.encode(stdout)}`);
-  if (stderr) reply(ctx, `<b>stderr:</b>\n${he.encode(stderr)}`);
-};
+const sized = (format: string, mb = 50) =>
+  `(${format}[filesize<${mb}M]/${format}[filesize_approx<${mb}M])`;
+
+const format =
+  '(' +
+  [4, 8, 16, 25]
+    .map((audioMb) => `${sized('bv*', 50 - audioMb)}+${sized('ba', audioMb)}`)
+    .concat(sized('best'), sized('[ext=gif]'))
+    .join('/') +
+  ')[vcodec!^=?av01]';
 
 const downloadVideo = async (
   ctx: MessageContext,
   url: string,
-  outputPath: string,
   verbose = false,
 ) => {
   try {
-    const result = await youtubedl.exec(
+    const { stdout, stderr } = await youtubedl.exec(
       url,
       {
         format,
-        output: outputPath,
-        writeInfoJson: true,
-        noProgress: true,
         mergeOutputFormat: 'mp4',
         recodeVideo: 'mp4',
         verbose: verbose || undefined,
         update: shouldUpdate(),
+        maxFilesize: '50M',
+        // @ts-ignore - this flag exists but is not in the types
+        paths: ['temp:/tmp', 'home:./videos'],
+        output: '%(extractor)s/%(title)s-[%(id)s].%(format_id)s.%(ext)s',
+        restrictFilenames: true,
+        dumpJson: true,
+        simulate: false,
+        videoMultistreams: false,
       },
       SPAWN_OPTS,
     );
-    if (verbose) logVerboseOutput(ctx, result);
+    if (stderr) {
+      console.debug(stderr);
+      if (verbose) await reply(ctx, `<b>logs:</b>\n${he.encode(stderr)}`);
+    }
+    return JSON.parse(stdout);
   } catch (e: any) {
-    console.error(e);
-    if (verbose) logVerboseOutput(ctx, e as YtdlError);
+    console.error('error:', e);
+    if (verbose && e.stderr)
+      await reply(ctx, `<b>logs:</b>\n${he.encode(e.stderr)}`);
     throw new Error(getErrorMessage(url, e as YtdlError));
   }
-
-  if (!(await exists(outputPath)))
-    throw new Error('ERROR: yt-dlp output file not found');
 };
 
 const logFormats = ({ formats }: any) =>
@@ -141,6 +141,18 @@ const parseRes = ({ resolution, height, width, format_id }: any) =>
       : `${height}p`
     : format_id?.toUpperCase());
 
+const parseCaption = ({
+  title,
+  extractor,
+  playlist_title,
+  id,
+  description,
+}: any) =>
+  (title === extractor && playlist_title) ||
+  (title && title !== id && !['twitter', 'Instagram'].includes(extractor)
+    ? title
+    : description || title);
+
 /**
  * Downloads a video using youtube-dl, returns output file path and other params
  * ready to be passed directly to telegram sendVideo
@@ -151,88 +163,71 @@ export const downloadAndSendVideo = async (
   verbose = false,
 ) => {
   const logMsg = new LogMessage(ctx, `⬇️ <b>Downloading</b> ${url}`);
-  const dir = uniqueTempDir();
-  const path = `${dir}/video.mp4`;
-  const infoJson = `${dir}/video.info.json`;
-  console.debug({ dir, path, infoJson });
   try {
     // Use youtube-dl to download the video
-    await downloadVideo(ctx, url, path, verbose);
-
-    // Load info from json
-    const info = require(infoJson);
+    const info = await downloadVideo(ctx, url, verbose);
     if (verbose) console.debug('info JSON:', info);
     logFormats(info);
-    info.resolution = parseRes(info);
-    if (info.title === info.extractor && info.playlist_title) {
-      info.title = info.playlist_title;
-    }
-    if (info.title === info.id) info.title = undefined;
-    if (info.description && info.title.startsWith('Video by '))
-      info.title = info.description;
+    const { filename, duration, width, height, vcodec, vbr, acodec, abr } =
+      info;
+    console.log({
+      filename,
+      duration,
+      width,
+      height,
+      vcodec,
+      vbr,
+      acodec,
+      abr,
+    });
 
-    // rename the file to something more sensible before upload
-    const video = `${dir}/${filenamify(info.title || info.id, {
-      replacement: '_',
-      maxLength: 100,
-    }).replace(/#/g, '_')}.mp4`;
-    await rename(path, video);
+    if (!(await exists(filename)))
+      throw new Error('ERROR: yt-dlp output file not found');
 
     // get file size from fs
-    const { size } = await stat(video);
-    info.size = size;
+    const { size } = await stat(filename);
+
+    const caption = parseCaption(info);
 
     logMsg.append('\n✅ <b>Video ready:</b>\n');
-    const logInfo = (key: string, xform = (x: any) => x, name?: string) =>
-      info[key] && logMsg.append(`<b>${name || key}</b>: ${xform(info[key])}`);
 
-    logInfo('title', he.encode);
-    logInfo('duration', (d) => `${Math.round(d)} sec`);
-    logInfo('size', (s) => `${(s / 1024 / 1024).toFixed(2)} MB`);
-    logInfo('resolution');
-    logInfo(
-      'vcodec',
-      (v) => `${v} ${info.vbr ? `@ ${info.vbr} kbps` : ''}`,
-      'video codec',
-    );
-    logInfo(
-      'acodec',
-      (a) => `${a} ${info.abr ? `@ ${info.abr} kbps` : ''}`,
-      'audio codec',
-    );
+    const logInfo = (name: string, value: any) =>
+      value && logMsg.append(`<b>${name}</b>: ${value}`);
 
-    if (info.size > MAX_FILE_SIZE_BYTES) {
+    logInfo('caption', caption && he.encode(caption));
+    logInfo('duration', duration && `${Math.round(duration)} sec`);
+    logInfo('size', size && `${(size / 1024 / 1024).toFixed(2)} MB`);
+    logInfo('resolution', parseRes(info));
+    logInfo('video codec', vcodec && `${vcodec} ${vbr ? `@ ${vbr} kbps` : ''}`);
+    logInfo('audio codec', acodec && `${acodec} ${abr ? `@ ${abr} kbps` : ''}`);
+
+    if (size > MAX_FILE_SIZE_BYTES) {
       logMsg.append(`\n😞 Video too large (exceeds max size of 50 MB)`);
       return;
     }
 
     logMsg.append('\n🚀 <b>Uploading...</b>');
-    await ctx.telegram.sendVideo(
-      ctx.chat.id,
-      { source: video },
-      {
-        reply_parameters: { message_id: ctx.message.message_id },
-        // @ts-ignore - workaround for a bug in the telegram bot API
-        reply_to_message_id: ctx.message.message_id,
-        caption: info.title,
-        width: info.width,
-        height: info.height,
-        duration: info.duration,
-        supports_streaming: true,
-        disable_notification: true,
-      },
-    );
-
-    return {
-      video,
-    };
+    await Promise.all([
+      logMsg.flush(),
+      ctx.telegram.sendVideo(
+        ctx.chat.id,
+        { source: filename },
+        {
+          reply_parameters: { message_id: ctx.message.message_id },
+          // @ts-ignore - workaround for a bug in the telegram bot API
+          reply_to_message_id: ctx.message.message_id,
+          caption: caption,
+          width: width,
+          height: height,
+          duration: duration,
+          supports_streaming: true,
+          disable_notification: true,
+        },
+      ),
+    ]);
   } catch (e: any) {
     console.error(e);
     logMsg.append(`\n💥 <b>Download failed</b>: ${he.encode(e.message)}`);
-  } finally {
-    // make sure the log message is fully sent
     await logMsg.flush();
-    // clean up the files to save space
-    if (!isDev) await rm(dir, { recursive: true, force: true });
   }
 };

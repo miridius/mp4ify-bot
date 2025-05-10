@@ -1,39 +1,40 @@
-# IMPORTANT: only run one of the services defined in this file at a time
+# Each of the services below runs a different bot, you may not want
+# to run all of them at the same time.
+
 services:
-  # This service is for development purposes only
+  # Run the dev bot with hot reloading of local files
   dev:
     container_name: mp4ify_dev
     image: mp4ify_dev
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.dev
     env_file:
-      - .env
+      - .env.dev
     stdin_open: true
     tty: true
     volumes:
       - .:/app
-      - /app/node_modules
     devices:
       - /dev/dri:/dev/dri
     working_dir: /app
-    user: "${UID}:${GID}"
-    command: "bun dev"
+    user: "${UID:-1000}:${GID:-1000}"
 
-  # This service is for production purposes only
+  # Run the prod bot using a pre-built image (TODO)
   prod: 
-    container_name: mp4ify_prod
-    image: mp4ify_prod
+    container_name: mp4ify
+    image: mp4ify
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.prod
     env_file:
-      - .env
+      - .env.prod
     volumes:
-      - .:/app
-      - /app/node_modules
+      - ./videos:/app/videos
     devices:
       - /dev/dri:/dev/dri
     working_dir: /app
-    user: "${UID}:${GID}"
-    # TODO: testing service
+    user: "${UID:-1000}:${GID:-1000}"
+
+volumes:
+  videos:

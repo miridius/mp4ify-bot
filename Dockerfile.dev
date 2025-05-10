@@ -8,10 +8,10 @@ RUN apt-get update && \
   # Remove unnecessary files
   rm -rf /var/lib/apt/lists/*
 
-# Install deps for development
-WORKDIR /app
-COPY package.json bun.lock ./
-RUN bun install
+ENV NODE_ENV=development
 
-# Start the app
-CMD ["bun", "start"]
+# Since the entire working dir will be mounted, we can't install deps here
+WORKDIR /app
+
+# Make sure deps are installed & start the app in watch mode
+CMD ["sh", "-c", "bun install && bun dev"]

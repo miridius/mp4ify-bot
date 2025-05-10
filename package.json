@@ -12,7 +12,6 @@
     "typescript": "^5"
   },
   "dependencies": {
-    "filenamify": "^6.0.0",
     "he": "^1.2.0",
     "telegraf": "^4.16.3",
     "youtube-dl-exec": "^3.0.20"

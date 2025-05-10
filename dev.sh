@@ -1,2 +1,2 @@
 #!/bin/sh
-UID=$(id -u) GID=$(id -g) docker compose up dev $@
+UID=$(id -u) GID=$(id -g) docker compose up --build dev -d
