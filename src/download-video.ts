@@ -1,4 +1,4 @@
-import { rename, rm, stat } from 'fs/promises';
+import { stat } from 'fs/promises';
 import he from 'he';
 import { tmpdir } from 'os';
 import youtubedl from 'youtube-dl-exec';
@@ -8,8 +8,6 @@ const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024; // 50 MB
 const UPDATE_INTERVAL_MS = 1000 * 60 * 60 * 24; // 1 day
 const DOWNLOAD_TIMEOUT_MS = 60 * 1000; // 1 minute
 const SPAWN_OPTS = { timeout: DOWNLOAD_TIMEOUT_MS };
-
-const isDev = process.env.NODE_ENV !== 'production';
 
 let lastUpdated: Date;
 const shouldUpdate = () => {
@@ -46,17 +44,6 @@ const getErrorMessage = (
     return stderr?.match(/ERROR: (.*)/)?.[1] || originalMessage || message;
   }
 };
-
-// Return an output path in the temp directory based on the current timestamp
-const uniqueTempDir = () =>
-  tmpdir() +
-  '/' +
-  Date.now().toString(36) +
-  Math.random().toString(36).slice(2, 6);
-
-const vOpts = '[vcodec!^=?av01]';
-// const vOpts = '[ext=mp4][vcodec!^=?av01]';
-const gif = '[ext=gif][filesize<?50M]';
 
 const sized = (format: string, mb = 50) =>
   `(${format}[filesize<${mb}M]/${format}[filesize_approx<${mb}M])`;
@@ -168,21 +155,13 @@ export const downloadAndSendVideo = async (
     const info = await downloadVideo(ctx, url, verbose);
     if (verbose) console.debug('info JSON:', info);
     logFormats(info);
+
     const { filename, duration, width, height, vcodec, vbr, acodec, abr } =
       info;
-    console.log({
-      filename,
-      duration,
-      width,
-      height,
-      vcodec,
-      vbr,
-      acodec,
-      abr,
-    });
 
-    if (!(await exists(filename)))
+    if (!(await exists(filename))) {
       throw new Error('ERROR: yt-dlp output file not found');
+    }
 
     // get file size from fs
     const { size } = await stat(filename);

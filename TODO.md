@@ -2,6 +2,7 @@
 - [ ] caching of video messages (don't re-upload same file)
 - [ ] parallelize handling of multiple messages
 - [ ] add tests
+- [ ] sort yt-dlp formats so that vp9 is last
 - [ ] download progress bar / live stream of stdout/stderr
 - [ ] docker registry for prod image - so that it can be pulled without cloning the repo
 - [ ] update README with instructions for running the container
