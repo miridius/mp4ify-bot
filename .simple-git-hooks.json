@@ -1,0 +1,3 @@
+{
+  "pre-commit": "docker compose exec dev bun lint"
+}

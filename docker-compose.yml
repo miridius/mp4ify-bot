@@ -18,10 +18,10 @@ services:
     devices:
       - /dev/dri:/dev/dri
     working_dir: /app
-    user: "${UID:-1000}:${GID:-1000}"
+    user: '${UID:-1000}:${GID:-1000}'
 
   # Run the prod bot using a pre-built image (TODO)
-  prod: 
+  prod:
     container_name: mp4ify
     image: mp4ify
     build:
@@ -34,7 +34,7 @@ services:
     devices:
       - /dev/dri:/dev/dri
     working_dir: /app
-    user: "${UID:-1000}:${GID:-1000}"
+    user: '${UID:-1000}:${GID:-1000}'
 
 volumes:
   videos:

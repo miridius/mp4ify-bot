@@ -6,7 +6,10 @@
   "private": true,
   "devDependencies": {
     "@types/bun": "latest",
-    "@types/he": "^1.2.3"
+    "@types/he": "^1.2.3",
+    "oxlint": "^0.16.10",
+    "prettier": "^3.5.3",
+    "simple-git-hooks": "^2.13.0"
   },
   "peerDependencies": {
     "typescript": "^5"
@@ -21,6 +24,11 @@
   ],
   "scripts": {
     "dev": "bun --watch .",
-    "start": "bun ."
+    "start": "bun .",
+    "lint": "oxlint --deny-warnings --fix",
+    "format": "prettier --write ."
+  },
+  "prettier": {
+    "singleQuote": true
   }
 }
