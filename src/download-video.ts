@@ -17,11 +17,11 @@ const shouldUpdate = () => {
 
 const exists = async (path: string) => Bun.file(path).exists();
 
-const getErrorMessage = (stderr: string, proc: Bun.ReadableSubprocess) =>
-  proc.killed && proc.signalCode === 'SIGTERM'
+const getErrorMessage = (proc: Bun.ReadableSubprocess) =>
+  proc.signalCode === 'SIGTERM'
     ? `Timed out after ${DOWNLOAD_TIMEOUT_SECS} seconds`
-    : stderr.trim().endsWith('--list-formats for a list of available formats')
-      ? `No video format under 50MB was found. Is the video too long?`
+    : proc.signalCode
+      ? `yt-dlp was killed with signal ${proc.signalCode}`
       : `yt-dlp exited with code ${proc.exitCode}`;
 
 const downloadVideo = async (
@@ -36,18 +36,20 @@ const downloadVideo = async (
     timeout: DOWNLOAD_TIMEOUT_SECS * 1000,
   });
 
-  // collect and log stderr
-  let stderr = '';
+  // log stderr
+  let firstLine = true;
   for await (const chunk of proc.stderr) {
+    if (firstLine) {
+      logMsg.append(''); // add a blank line above stderr output
+      firstLine = false;
+    }
     const line = new TextDecoder().decode(chunk);
-    if (!stderr) logMsg.append(''); // add a blank line above stderr output
     logMsg.append(`<code>${he.encode(line.trim())}</code>`);
-    stderr += line;
   }
 
   // check for errors
   await proc.exited;
-  if (proc.exitCode !== 0) throw new Error(getErrorMessage(stderr, proc));
+  if (proc.exitCode !== 0) throw new Error(getErrorMessage(proc));
 
   // parse & return the json from stdout
   return await new Response(proc.stdout).json();
