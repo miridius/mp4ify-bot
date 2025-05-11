@@ -8,6 +8,8 @@ Send urls to [@mp4ify_bot](https://t.me/mp4ify_bot), or add it to a group. The b
 
 Start your message with `/verbose` to get detailed logs.
 
+> **Note:** x.com links are intentionally not supported by default, because I do not want to have anything to do with a site that promotes obvious evils such as fascism. If you want to use the bot for x.com, you can self-host it and remove the `--use-extractors` line from yt-dlp.conf. If you think there are other sites that I should block as well, please let me know (or just make a PR).
+
 ## Development/Self Hosting
 
 0. Prerequisites
