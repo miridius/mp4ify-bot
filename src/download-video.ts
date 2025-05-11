@@ -49,12 +49,12 @@ const sized = (format: string, mb = 50) =>
   `(${format}[filesize<${mb}M]/${format}[filesize_approx<${mb}M])`;
 
 const format =
-  '(' +
+  // '(' +
   [4, 8, 16, 25]
     .map((audioMb) => `${sized('bv*', 50 - audioMb)}+${sized('ba', audioMb)}`)
     .concat(sized('best'), sized('[ext=gif]'))
-    .join('/') +
-  ')[vcodec!^=?av01]';
+    .join('/');
+// + ')[vcodec!^=?av01]';
 
 const downloadVideo = async (
   ctx: MessageContext,
