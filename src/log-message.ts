@@ -1,9 +1,7 @@
-import he from 'he';
 import { type Context, type NarrowedContext } from 'telegraf';
 import type { Message, Update } from 'telegraf/types';
 
 const MAX_LENGTH = 4096;
-const TRUNCATED_MSG = '\n<i>--- message too long ---</i>';
 const TEXT_MSG_OPTS = {
   parse_mode: 'HTML' as const,
   link_preview_options: { is_disabled: true },
@@ -24,21 +22,33 @@ export const reply = (ctx: MessageContext, text: string) =>
 
 // Writes log output to a private chat by updating a single message.
 export class LogMessage {
-  private text = '';
+  private texts: string[] = [];
   private enabled: boolean;
   private timer?: Timer;
-  private message?: Message.TextMessage;
+  private messages: Message.TextMessage[] = [];
 
-  constructor(private ctx: MessageContext, initialText?: string) {
+  constructor(
+    private ctx: MessageContext,
+    initialText?: string,
+  ) {
     this.enabled = this.ctx.chat?.type === 'private';
     if (initialText) this.append(initialText);
   }
 
-  append(text: string, sanitize = false) {
+  append(line: string) {
     if (!this.enabled) return;
-    console.log(text);
-    this.text += (sanitize ? he.encode(text) : text) + '\n';
     if (this.timer) clearTimeout(this.timer);
+    console.log(line);
+    if (this.texts.length === 0) {
+      this.texts.push(line);
+    } else {
+      let newText = this.texts[this.texts.length - 1] + '\n' + line;
+      if (newText.length > MAX_LENGTH) {
+        this.texts.push(`<i>...continued...</i>\n\n${line}`);
+      } else {
+        this.texts[this.texts.length - 1] = newText;
+      }
+    }
     this.timer = setTimeout(() => this.flush(), DEBOUNCE_MS);
   }
 
@@ -48,30 +58,27 @@ export class LogMessage {
       clearTimeout(this.timer);
       this.timer = undefined;
     }
-    await this.setMessageText();
+    this.messages = await Promise.all(
+      this.texts.map((text, i) => this.setMessageText(text, this.messages[i])),
+    );
   }
 
-  private async setMessageText() {
-    let text = this.text.trim();
-    if (text.length > MAX_LENGTH) {
-      text = text.slice(0, MAX_LENGTH - TRUNCATED_MSG.length) + TRUNCATED_MSG;
-      this.enabled = false; // prevent further updates as they are pointless
-    }
-    if (!this.message) {
-      this.message = await reply(this.ctx, text);
-    } else if (this.message.text !== text) {
+  private async setMessageText(text: string, message?: Message.TextMessage) {
+    if (!message) {
+      return await reply(this.ctx, text);
+    } else if (message.text !== text) {
       try {
-        await this.ctx.telegram.editMessageText(
-          this.message.chat.id,
-          this.message.message_id,
+        return (await this.ctx.telegram.editMessageText(
+          message.chat.id,
+          message.message_id,
           undefined,
           text,
           TEXT_MSG_OPTS,
-        );
-        this.message.text = text;
+        )) as Message.TextMessage;
       } catch (e) {
         console.error('Failed to edit message', text, e);
       }
     }
+    return message;
   }
 }

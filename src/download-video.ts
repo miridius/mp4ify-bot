@@ -1,13 +1,10 @@
 import { stat } from 'fs/promises';
 import he from 'he';
-import { tmpdir } from 'os';
-import youtubedl from 'youtube-dl-exec';
-import { LogMessage, reply, type MessageContext } from './log-message';
+import { LogMessage, type MessageContext } from './log-message';
 
 const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024; // 50 MB
 const UPDATE_INTERVAL_MS = 1000 * 60 * 60 * 24; // 1 day
-const DOWNLOAD_TIMEOUT_MS = 60 * 1000; // 1 minute
-const SPAWN_OPTS = { timeout: DOWNLOAD_TIMEOUT_MS };
+const DOWNLOAD_TIMEOUT_SECS = 60;
 
 let lastUpdated: Date;
 const shouldUpdate = () => {
@@ -20,78 +17,40 @@ const shouldUpdate = () => {
 
 const exists = async (path: string) => Bun.file(path).exists();
 
-type YtdlError = Error & {
-  stdout: string;
-  stderr: string;
-  originalMessage: string;
-};
-
-const getErrorMessage = (
-  url: string,
-  { stderr, originalMessage, message }: YtdlError,
-) => {
-  if (
-    originalMessage === 'Timed out' ||
-    message.includes("signal: 'SIGTERM'")
-  ) {
-    return `Timed out after ${DOWNLOAD_TIMEOUT_MS} ms`;
-  }
-  if (stderr?.includes('requested format not available')) {
-    return `Video too large (> 50 MB) or no supported formats available: ${url}`;
-  } else if (stderr?.includes('Unable to extract video url')) {
-    return `Unable to extract video url from ${url}.`;
-  } else {
-    return stderr?.match(/ERROR: (.*)/)?.[1] || originalMessage || message;
-  }
-};
-
-const sized = (format: string, mb = 50) =>
-  `(${format}[filesize<${mb}M]/${format}[filesize_approx<${mb}M])`;
-
-const format =
-  // '(' +
-  [4, 8, 16, 25]
-    .map((audioMb) => `${sized('bv*', 50 - audioMb)}+${sized('ba', audioMb)}`)
-    .concat(sized('best'), sized('[ext=gif]'))
-    .join('/');
-// + ')[vcodec!^=?av01]';
+const getErrorMessage = (stderr: string, proc: Bun.ReadableSubprocess) =>
+  proc.killed && proc.signalCode === 'SIGTERM'
+    ? `Timed out after ${DOWNLOAD_TIMEOUT_SECS} seconds`
+    : stderr.trim().endsWith('--list-formats for a list of available formats')
+      ? `No video format under 50MB was found. Is the video too long?`
+      : `yt-dlp exited with code ${proc.exitCode}`;
 
 const downloadVideo = async (
-  ctx: MessageContext,
+  logMsg: LogMessage,
   url: string,
   verbose = false,
 ) => {
-  try {
-    const { stdout, stderr } = await youtubedl.exec(
-      url,
-      {
-        format,
-        mergeOutputFormat: 'mp4',
-        recodeVideo: 'mp4',
-        verbose: verbose || undefined,
-        update: shouldUpdate(),
-        maxFilesize: '50M',
-        // @ts-ignore - this flag exists but is not in the types
-        paths: ['temp:/tmp', 'home:./videos'],
-        output: '%(extractor)s/%(title)s-[%(id)s].%(format_id)s.%(ext)s',
-        restrictFilenames: true,
-        dumpJson: true,
-        simulate: false,
-        videoMultistreams: false,
-      },
-      SPAWN_OPTS,
-    );
-    if (stderr) {
-      console.debug(stderr);
-      if (verbose) await reply(ctx, `<b>logs:</b>\n${he.encode(stderr)}`);
-    }
-    return JSON.parse(stdout);
-  } catch (e: any) {
-    console.error('error:', e);
-    if (verbose && e.stderr)
-      await reply(ctx, `<b>logs:</b>\n${he.encode(e.stderr)}`);
-    throw new Error(getErrorMessage(url, e as YtdlError));
+  const command = ['yt-dlp', url, verbose ? '--verbose' : '--no-warnings'];
+  if (shouldUpdate()) command.push('--update');
+  const proc = Bun.spawn(command, {
+    stderr: 'pipe',
+    timeout: DOWNLOAD_TIMEOUT_SECS * 1000,
+  });
+
+  // collect and log stderr
+  let stderr = '';
+  for await (const chunk of proc.stderr) {
+    const line = new TextDecoder().decode(chunk);
+    if (!stderr) logMsg.append(''); // add a blank line above stderr output
+    logMsg.append(`<code>${he.encode(line.trim())}</code>`);
+    stderr += line;
   }
+
+  // check for errors
+  await proc.exited;
+  if (proc.exitCode !== 0) throw new Error(getErrorMessage(stderr, proc));
+
+  // parse & return the json from stdout
+  return await new Response(proc.stdout).json();
 };
 
 const logFormats = ({ formats }: any) =>
@@ -103,18 +62,16 @@ const logFormats = ({ formats }: any) =>
         format,
         ext,
         vcodec,
-        vbr,
         acodec,
-        abr,
+        tbr,
         filesize,
         filesize_approx,
       }: any) => ({
         format,
         ext,
         vcodec,
-        vbr,
         acodec,
-        abr,
+        tbr,
         mb: (filesize || filesize_approx) / 1024 / 1024,
       }),
     ),
@@ -136,9 +93,8 @@ const parseCaption = ({
   description,
 }: any) =>
   (title === extractor && playlist_title) ||
-  (title && title !== id && !['twitter', 'Instagram'].includes(extractor)
-    ? title
-    : description || title);
+  ((title === id || extractor === 'Instagram') && description) ||
+  title;
 
 /**
  * Downloads a video using youtube-dl, returns output file path and other params
@@ -149,10 +105,10 @@ export const downloadAndSendVideo = async (
   url: string,
   verbose = false,
 ) => {
-  const logMsg = new LogMessage(ctx, `⬇️ <b>Downloading</b> ${url}`);
+  const logMsg = new LogMessage(ctx, `⬇️ <b>Downloading</b> ${url}...`);
   try {
     // Use youtube-dl to download the video
-    const info = await downloadVideo(ctx, url, verbose);
+    const info: any = await downloadVideo(logMsg, url, verbose);
     if (verbose) console.debug('info JSON:', info);
     logFormats(info);
 
