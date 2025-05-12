@@ -133,5 +133,6 @@ dist
 .yarn/install-state.gz
 .pnp.*
 
-# local video cache
-/videos/
+# video caches
+/.video-cache/
+/.prod-video-cache/

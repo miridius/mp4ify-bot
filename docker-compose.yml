@@ -30,11 +30,12 @@ services:
     env_file:
       - .env.prod
     volumes:
-      - ./videos:/app/videos
+      - ./.prod-video-cache:/app/.video-cache
     devices:
       - /dev/dri:/dev/dri
     working_dir: /app
     user: '${UID:-1000}:${GID:-1000}'
+    restart: unless-stopped
 
 volumes:
   videos:

@@ -1,19 +1,16 @@
-import { stat } from 'fs/promises';
+import { $ } from 'bun';
+import { stat, symlink } from 'fs/promises';
 import he from 'he';
-import { LogMessage, type MessageContext } from './log-message';
+import type { Context } from 'telegraf';
+import type { Message } from 'telegraf/types';
+import { LogMessage } from './log-message';
+import { memoize } from './utils';
 
 const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024; // 50 MB
-const UPDATE_INTERVAL_MS = 1000 * 60 * 60 * 24; // 1 day
 const DOWNLOAD_TIMEOUT_SECS = 60;
-
-let lastUpdated: Date;
-const shouldUpdate = () => {
-  // @ts-ignore
-  if (!lastUpdated || lastUpdated < new Date() - UPDATE_INTERVAL_MS) {
-    lastUpdated = new Date();
-    return true;
-  }
-};
+const CACHE_DIR = './.video-cache/';
+const INFO_CACHE_DIR = CACHE_DIR + 'info/';
+await $`mkdir -p ${INFO_CACHE_DIR}`;
 
 const exists = async (path: string) => Bun.file(path).exists();
 
@@ -24,13 +21,35 @@ const getErrorMessage = (proc: Bun.ReadableSubprocess) =>
       ? `yt-dlp was killed with signal ${proc.signalCode}`
       : `yt-dlp exited with code ${proc.exitCode}`;
 
-const downloadVideo = async (
+type VideoInfo = {
+  // fileId?: string;
+  filename: string;
+  webpage_url: string;
+  duration?: number;
+  width?: number;
+  height?: number;
+  vcodec?: string;
+  vbr?: number;
+  acodec?: string;
+  abr?: number;
+  filesize?: number;
+  filesize_approx: number;
+  // [x: string]: any;
+};
+
+const execYtdlp = async (
   logMsg: LogMessage,
   url: string,
-  verbose = false,
+  verbose: boolean,
+  ...extraArgs: string[]
 ) => {
-  const command = ['yt-dlp', url, verbose ? '--verbose' : '--no-warnings'];
-  if (shouldUpdate()) command.push('--update');
+  const command = [
+    'yt-dlp',
+    url,
+    verbose ? '--verbose' : '--no-warnings',
+    ...extraArgs,
+  ];
+
   const proc = Bun.spawn(command, {
     stderr: 'pipe',
     timeout: DOWNLOAD_TIMEOUT_SECS * 1000,
@@ -51,9 +70,44 @@ const downloadVideo = async (
   await proc.exited;
   if (proc.exitCode !== 0) throw new Error(getErrorMessage(proc));
 
-  // parse & return the json from stdout
-  return await new Response(proc.stdout).json();
+  // return stdout as a string
+  return await new Response(proc.stdout).text();
 };
+
+const filenamify = (s: string) =>
+  Buffer.from(s).toBase64().replaceAll('/', '_');
+const urlInfoFile = (url: string) => Bun.file(INFO_CACHE_DIR + filenamify(url));
+
+export const getInfo = memoize(
+  async (
+    log: LogMessage,
+    url: string,
+    verbose: boolean = false,
+  ): Promise<VideoInfo> => {
+    const infoFile = urlInfoFile(url);
+    if (await infoFile.exists()) return await infoFile.json();
+
+    const infoStr = await execYtdlp(log, url, verbose, '--dump-json');
+    const info = JSON.parse(infoStr) as VideoInfo;
+    const { webpage_url } = info;
+    if (webpage_url && webpage_url !== url) {
+      const mainInfoFile = Bun.file(INFO_CACHE_DIR + filenamify(webpage_url));
+      if (!(await mainInfoFile.exists())) Bun.write(mainInfoFile, infoStr);
+      await symlink(filenamify(webpage_url), infoFile.name!);
+    } else {
+      if (!(await infoFile.exists())) Bun.write(infoFile, infoStr);
+    }
+    return info;
+  },
+  (_log, url) => url,
+);
+
+// cached based on url
+export const downloadVideo = memoize(
+  async (log: LogMessage, url: string, verbose: boolean = false) =>
+    execYtdlp(log, '', verbose, '--load-info-json', urlInfoFile(url).name!),
+  (_log, url) => url,
+);
 
 const logFormats = ({ formats }: any) =>
   // log all formats for debugging purposes
@@ -95,41 +149,44 @@ const parseCaption = ({
   description,
 }: any) =>
   (title === extractor && playlist_title) ||
-  ((title === id || extractor === 'Instagram') && description) ||
+  ((title === id || title.startsWith('Video by ')) && description) ||
   title;
 
-/**
- * Downloads a video using youtube-dl, returns output file path and other params
- * ready to be passed directly to telegram sendVideo
- */
-export const downloadAndSendVideo = async (
-  ctx: MessageContext,
-  url: string,
-  verbose = false,
-) => {
-  const logMsg = new LogMessage(ctx, `⬇️ <b>Downloading</b> ${url}...`);
-  try {
+// cached based on filename + chatId + replyToMessageId
+export const sendVideo = memoize(
+  async (
+    ctx: Context,
+    log: LogMessage,
+    info: VideoInfo,
+    chatId: number,
+    replyToMessageId?: number,
+    verbose = false,
+  ): Promise<Message.VideoMessage | undefined> => {
     // Use youtube-dl to download the video
-    const info: any = await downloadVideo(logMsg, url, verbose);
+    // const info: any = await downloadVideo(logMsg, url, verbose);
     if (verbose) console.debug('info JSON:', info);
     logFormats(info);
 
     const { filename, duration, width, height, vcodec, vbr, acodec, abr } =
       info;
+    const idFile = Bun.file(`${filename}.id`);
+    const fileId = (await idFile.exists()) && (await idFile.text());
 
-    if (!(await exists(filename))) {
+    if (!(fileId || (await exists(filename)))) {
       throw new Error('ERROR: yt-dlp output file not found');
     }
 
-    // get file size from fs
-    const { size } = await stat(filename);
+    const size = fileId
+      ? info.filesize || info.filesize_approx
+      : // get file size from fs
+        (await stat(filename)).size;
 
     const caption = parseCaption(info);
 
-    logMsg.append('\n✅ <b>Video ready:</b>\n');
+    log.append('\n✅ <b>Video ready:</b>\n');
 
     const logInfo = (name: string, value: any) =>
-      value && logMsg.append(`<b>${name}</b>: ${value}`);
+      value && log.append(`<b>${name}</b>: ${value}`);
 
     logInfo('caption', caption && he.encode(caption));
     logInfo('duration', duration && `${Math.round(duration)} sec`);
@@ -139,32 +196,36 @@ export const downloadAndSendVideo = async (
     logInfo('audio codec', acodec && `${acodec} ${abr ? `@ ${abr} kbps` : ''}`);
 
     if (size > MAX_FILE_SIZE_BYTES) {
-      logMsg.append(`\n😞 Video too large (exceeds max size of 50 MB)`);
+      log.append(`\n😞 Video too large (exceeds max size of 50 MB)`);
       return;
     }
 
-    logMsg.append('\n🚀 <b>Uploading...</b>');
-    await Promise.all([
-      logMsg.flush(),
-      ctx.telegram.sendVideo(
-        ctx.chat.id,
-        { source: filename },
-        {
-          reply_parameters: { message_id: ctx.message.message_id },
-          // @ts-ignore - workaround for a bug in the telegram bot API
-          reply_to_message_id: ctx.message.message_id,
-          caption: caption,
-          width: width,
-          height: height,
-          duration: duration,
-          supports_streaming: true,
-          disable_notification: true,
-        },
-      ),
-    ]);
-  } catch (e: any) {
-    console.error(e);
-    logMsg.append(`\n💥 <b>Download failed</b>: ${he.encode(e.message)}`);
-    await logMsg.flush();
-  }
-};
+    log.append('\n🚀 <b>Uploading...</b>');
+    log.flush();
+
+    const res = await ctx.telegram.sendVideo(
+      chatId,
+      fileId || { source: filename },
+      {
+        caption,
+        width: width,
+        height: height,
+        duration: duration,
+        supports_streaming: true,
+        disable_notification: true,
+        ...(replyToMessageId
+          ? {
+              reply_parameters: { message_id: replyToMessageId },
+              // @ts-ignore - workaround for a bug in the telegram bot API
+              reply_to_message_id: replyToMessageId,
+            }
+          : {}),
+      },
+    );
+    await Bun.write(idFile, res.video.file_id);
+    // await $`rm ${filename}`;
+    return res;
+  },
+  (_ctx, _log, info, chatId, replyToMessageId) =>
+    JSON.stringify([info.filename, chatId, replyToMessageId]),
+);

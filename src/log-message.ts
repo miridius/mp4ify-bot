@@ -23,22 +23,21 @@ export const reply = (ctx: MessageContext, text: string) =>
 // Writes log output to a private chat by updating a single message.
 export class LogMessage {
   private texts: string[] = [];
-  private enabled: boolean;
-  private timer?: Timer;
   private messages: Message.TextMessage[] = [];
+  private ctx?: MessageContext;
+  private timer?: Timer;
 
-  constructor(
-    private ctx: MessageContext,
-    initialText?: string,
-  ) {
-    this.enabled = this.ctx.chat?.type === 'private';
+  constructor(ctx: Context, initialText?: string) {
+    if (ctx.message && ctx.chat?.type === 'private') {
+      this.ctx = ctx as MessageContext;
+    }
     if (initialText) this.append(initialText);
   }
 
   append(line: string) {
-    if (!this.enabled) return;
-    if (this.timer) clearTimeout(this.timer);
     console.log(line);
+    if (!this.ctx) return;
+    if (this.timer) clearTimeout(this.timer);
     if (this.texts.length === 0) {
       this.texts.push(line);
     } else {
@@ -53,7 +52,7 @@ export class LogMessage {
   }
 
   async flush() {
-    if (!this.enabled) return;
+    if (!this.ctx) return;
     if (this.timer) {
       clearTimeout(this.timer);
       this.timer = undefined;
@@ -65,10 +64,10 @@ export class LogMessage {
 
   private async setMessageText(text: string, message?: Message.TextMessage) {
     if (!message) {
-      return await reply(this.ctx, text);
+      return await reply(this.ctx!, text);
     } else if (message.text !== text) {
       try {
-        return (await this.ctx.telegram.editMessageText(
+        return (await this.ctx!.telegram.editMessageText(
           message.chat.id,
           message.message_id,
           undefined,
@@ -81,4 +80,9 @@ export class LogMessage {
     }
     return message;
   }
+}
+
+export class NoLog extends LogMessage {
+  append(_line: string) {}
+  async flush() {}
 }
