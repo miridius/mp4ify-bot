@@ -1,7 +1,28 @@
-# Each of the services below runs a different bot, you may not want
-# to run all of them at the same time.
+volumes:
+  bot-api-data:
+  storage:
 
 services:
+  # See https://core.telegram.org/bots/api#using-a-local-bot-api-server
+  # Using a local bot API server changes the video size limit from 50MB to 2GB!
+  bot-api:
+    image: aiogram/telegram-bot-api:latest
+    container_name: telegram-bot-api-server
+    env_file:
+      - .env.telegram
+    environment:
+      - TELEGRAM_LOCAL=1
+      - TELEGRAM_STAT=1
+    ports:
+      # - xxxx:8081 # api port, don't need to expose since we connect locally
+      - 1337:8082 # http statistics endpoint
+    volumes:
+      - bot-api-data:/var/lib/telegram-bot-api
+      - storage:/storage
+
+  # Each of the services below runs a different bot, you may not want
+  # to run all of them at the same time.
+
   # Run the dev bot with hot reloading of local files
   dev:
     container_name: mp4ify_dev
@@ -15,6 +36,9 @@ services:
     tty: true
     volumes:
       - .:/app
+      - storage:/storage:rw
+    tmpfs:
+      - /tmp
     devices:
       - /dev/dri:/dev/dri
     working_dir: /app
@@ -31,11 +55,11 @@ services:
       - .env.prod
     volumes:
       - ./.prod-video-cache:/app/.video-cache
+      - storage:/storage:rw
+    tmpfs:
+      - /tmp
     devices:
       - /dev/dri:/dev/dri
     working_dir: /app
     user: '${UID:-1000}:${GID:-1000}'
     restart: unless-stopped
-
-volumes:
-  videos:

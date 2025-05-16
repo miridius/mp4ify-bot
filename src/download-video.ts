@@ -1,15 +1,15 @@
 import { $ } from 'bun';
 import { stat, symlink } from 'fs/promises';
 import he from 'he';
+import { basename } from 'path';
 import type { Context } from 'telegraf';
 import type { Message } from 'telegraf/types';
 import { LogMessage } from './log-message';
 import { memoize } from './utils';
 
-const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024; // 50 MB
+const MAX_FILE_SIZE_BYTES = 2000 * 1024 * 1024; // 2000 MB
 const DOWNLOAD_TIMEOUT_SECS = 60;
-const CACHE_DIR = './.video-cache/';
-const INFO_CACHE_DIR = CACHE_DIR + 'info/';
+const INFO_CACHE_DIR = '/storage/_video-info/';
 await $`mkdir -p ${INFO_CACHE_DIR}`;
 
 const exists = async (path: string) => Bun.file(path).exists();
@@ -24,6 +24,8 @@ const getErrorMessage = (proc: Bun.ReadableSubprocess) =>
 type VideoInfo = {
   // fileId?: string;
   filename: string;
+  title: string;
+  description?: string;
   webpage_url: string;
   duration?: number;
   width?: number;
@@ -32,6 +34,7 @@ type VideoInfo = {
   vbr?: number;
   acodec?: string;
   abr?: number;
+  tbr?: number;
   filesize?: number;
   filesize_approx: number;
   // [x: string]: any;
@@ -75,7 +78,11 @@ const execYtdlp = async (
 };
 
 const filenamify = (s: string) =>
-  Buffer.from(s).toBase64().replaceAll('/', '_');
+  new Bun.CryptoHasher('sha256')
+    .update(s)
+    .digest('base64')
+    .slice(0, -1) // remove trailing = as it provides no extra information
+    .replaceAll('/', '_'); // / is not allowed in filenames, use _ instead
 const urlInfoFile = (url: string) => Bun.file(INFO_CACHE_DIR + filenamify(url));
 
 export const getInfo = memoize(
@@ -86,6 +93,8 @@ export const getInfo = memoize(
   ): Promise<VideoInfo> => {
     const infoFile = urlInfoFile(url);
     if (await infoFile.exists()) return await infoFile.json();
+
+    log.append(`🧐 <b>Inspecting</b> ${url}...`);
 
     const infoStr = await execYtdlp(log, url, verbose, '--dump-json');
     const info = JSON.parse(infoStr) as VideoInfo;
@@ -99,13 +108,6 @@ export const getInfo = memoize(
     }
     return info;
   },
-  (_log, url) => url,
-);
-
-// cached based on url
-export const downloadVideo = memoize(
-  async (log: LogMessage, url: string, verbose: boolean = false) =>
-    execYtdlp(log, '', verbose, '--load-info-json', urlInfoFile(url).name!),
   (_log, url) => url,
 );
 
@@ -141,16 +143,54 @@ const parseRes = ({ resolution, height, width, format_id }: any) =>
       : `${height}p`
     : format_id?.toUpperCase());
 
-const parseCaption = ({
-  title,
-  extractor,
-  playlist_title,
-  id,
-  description,
-}: any) =>
-  (title === extractor && playlist_title) ||
-  ((title === id || title.startsWith('Video by ')) && description) ||
-  title;
+const formatSize = (size: number) => `${(size / 1024 / 1024).toFixed(2)} MB`;
+
+export const sendInfo = async (
+  log: LogMessage,
+  info: VideoInfo,
+  verbose = false,
+) => {
+  if (verbose) console.debug('info JSON:', info);
+  logFormats(info);
+
+  log.append('\n🎬 <b>Video info:</b>\n');
+
+  const { duration, filesize, filesize_approx, vcodec, vbr, acodec, abr, tbr } =
+    info;
+
+  const logInfo = (name: string, value: any) =>
+    value && log.append(`<b>${name}</b>: ${value}`);
+
+  logInfo('filename', basename(info.filename));
+  logInfo('duration', duration && `${Math.round(duration)} sec`);
+  const size =
+    filesize || filesize_approx || (duration && tbr && duration * tbr);
+  logInfo('size', size && `${formatSize(size)}`);
+  logInfo('resolution', parseRes(info));
+  logInfo('video codec', vcodec && `${vcodec} ${vbr ? `@ ${vbr} kbps` : ''}`);
+  logInfo('audio codec', acodec && `${acodec} ${abr ? `@ ${abr} kbps` : ''}`);
+};
+
+// cached based on url
+export const downloadVideo = memoize(
+  async (
+    log: LogMessage,
+    { filename, webpage_url }: VideoInfo,
+    verbose: boolean = false,
+  ) => {
+    if (!(await exists(filename))) {
+      log.append(`\n⬇️ <b>Downloading</b> ${webpage_url}...`);
+      await execYtdlp(
+        log,
+        '',
+        verbose,
+        '--load-info-json',
+        urlInfoFile(webpage_url).name!,
+      );
+    }
+  },
+  (_log, { filename }) => filename,
+);
 
 // cached based on filename + chatId + replyToMessageId
 export const sendVideo = memoize(
@@ -160,54 +200,31 @@ export const sendVideo = memoize(
     info: VideoInfo,
     chatId: number,
     replyToMessageId?: number,
-    verbose = false,
   ): Promise<Message.VideoMessage | undefined> => {
-    // Use youtube-dl to download the video
-    // const info: any = await downloadVideo(logMsg, url, verbose);
-    if (verbose) console.debug('info JSON:', info);
-    logFormats(info);
-
-    const { filename, duration, width, height, vcodec, vbr, acodec, abr } =
-      info;
-    const idFile = Bun.file(`${filename}.id`);
+    const { filename, duration, width, height } = info;
+    const idFile = Bun.file(`${filename}.${ctx.me}.id`);
     const fileId = (await idFile.exists()) && (await idFile.text());
 
-    if (!(fileId || (await exists(filename)))) {
-      throw new Error('ERROR: yt-dlp output file not found');
+    if (!fileId) {
+      if (!(await exists(filename))) {
+        throw new Error('ERROR: yt-dlp output file not found');
+      }
+      // get real file size from fs
+      const size = (await stat(filename)).size;
+
+      if (size > MAX_FILE_SIZE_BYTES) {
+        log.append(`\n😞 Video too large (${formatSize(size)})`);
+        return;
+      }
+
+      log.append(`\n🚀 <b>Uploading (${formatSize(size)})...</b>`);
     }
-
-    const size = fileId
-      ? info.filesize || info.filesize_approx
-      : // get file size from fs
-        (await stat(filename)).size;
-
-    const caption = parseCaption(info);
-
-    log.append('\n✅ <b>Video ready:</b>\n');
-
-    const logInfo = (name: string, value: any) =>
-      value && log.append(`<b>${name}</b>: ${value}`);
-
-    logInfo('caption', caption && he.encode(caption));
-    logInfo('duration', duration && `${Math.round(duration)} sec`);
-    logInfo('size', size && `${(size / 1024 / 1024).toFixed(2)} MB`);
-    logInfo('resolution', parseRes(info));
-    logInfo('video codec', vcodec && `${vcodec} ${vbr ? `@ ${vbr} kbps` : ''}`);
-    logInfo('audio codec', acodec && `${acodec} ${abr ? `@ ${abr} kbps` : ''}`);
-
-    if (size > MAX_FILE_SIZE_BYTES) {
-      log.append(`\n😞 Video too large (exceeds max size of 50 MB)`);
-      return;
-    }
-
-    log.append('\n🚀 <b>Uploading...</b>');
     log.flush();
 
     const res = await ctx.telegram.sendVideo(
       chatId,
-      fileId || { source: filename },
+      fileId || 'file:/' + filename,
       {
-        caption,
         width: width,
         height: height,
         duration: duration,
@@ -222,8 +239,7 @@ export const sendVideo = memoize(
           : {}),
       },
     );
-    await Bun.write(idFile, res.video.file_id);
-    // await $`rm ${filename}`;
+    if (!fileId) await Bun.write(idFile, res.video.file_id);
     return res;
   },
   (_ctx, _log, info, chatId, replyToMessageId) =>
