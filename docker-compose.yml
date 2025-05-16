@@ -43,6 +43,7 @@ services:
       - /dev/dri:/dev/dri
     working_dir: /app
     user: '${UID:-1000}:${GID:-1000}'
+    restart: unless-stopped
 
   # Run the prod bot using a pre-built image (TODO)
   prod:

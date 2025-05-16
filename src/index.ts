@@ -25,33 +25,32 @@ const bot = new Telegraf(
 
 console.log(bot.telegram.options);
 
-bot.on(message('text'), async (ctx) => {
+bot.on(message('text'), (ctx) => {
   const { text, entities, message_id } = ctx.message;
   console.log(ctx.me);
   console.log(ctx.message);
   const verbose =
     ctx.message.chat.type === 'private' && text.startsWith('/verbose ');
-  // Handle all URLs in the message
-  await Promise.all(
-    entities
-      ?.filter((e) => e.type === 'url')
-      .map((e) => text.slice(e.offset, e.offset + e.length))
-      .map(async (url) => {
-        url = url.toLowerCase().startsWith('http') ? url : `https://${url}`;
-        const log = new LogMessage(ctx);
-        try {
-          const info = await getInfo(log, url, verbose);
-          info.webpage_url ||= url; // just in case webpage_url is missing
-          await sendInfo(log, info, verbose);
-          console.log(await downloadVideo(log, info, verbose));
-          await sendVideo(ctx, log, info, ctx.chat.id, message_id);
-        } catch (e: any) {
-          log.append(`\n💥 <b>Download failed</b>: ${he.encode(e.message)}`);
-          await log.flush();
-          console.error(e);
-        }
-      }) || [],
-  );
+
+  // Handle all URLs in the message. Intentionally don't await
+  entities
+    ?.filter((e) => e.type === 'url')
+    .map((e) => text.slice(e.offset, e.offset + e.length))
+    .forEach(async (url) => {
+      url = url.toLowerCase().startsWith('http') ? url : `https://${url}`;
+      const log = new LogMessage(ctx);
+      try {
+        const info = await getInfo(log, url, verbose);
+        info.webpage_url ||= url; // just in case webpage_url is missing
+        await sendInfo(log, info, verbose);
+        console.log(await downloadVideo(log, info, verbose));
+        await sendVideo(ctx, log, info, ctx.chat.id, message_id);
+      } catch (e: any) {
+        log.append(`\n💥 <b>Download failed</b>: ${he.encode(e.message)}`);
+        await log.flush();
+        console.error(e);
+      }
+    });
 });
 
 const urlRegex =
@@ -78,7 +77,7 @@ bot.on('inline_query', async (ctx) => {
     const log = new NoLog(ctx);
     const info = await getInfo(log, url);
     url = info.webpage_url || url;
-    console.log(await downloadVideo(log, url));
+    console.log(await downloadVideo(log, info));
     const msg = await sendVideo(ctx, log, info, -4640446184);
     if (!msg) return;
 

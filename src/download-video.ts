@@ -8,7 +8,7 @@ import { LogMessage } from './log-message';
 import { memoize } from './utils';
 
 const MAX_FILE_SIZE_BYTES = 2000 * 1024 * 1024; // 2000 MB
-const DOWNLOAD_TIMEOUT_SECS = 60;
+const DOWNLOAD_TIMEOUT_SECS = 300;
 const INFO_CACHE_DIR = '/storage/_video-info/';
 await $`mkdir -p ${INFO_CACHE_DIR}`;
 
@@ -219,7 +219,7 @@ export const sendVideo = memoize(
 
       log.append(`\n🚀 <b>Uploading (${formatSize(size)})...</b>`);
     }
-    log.flush();
+    await log.flush();
 
     const res = await ctx.telegram.sendVideo(
       chatId,

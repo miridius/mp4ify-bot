@@ -1,11 +1,5 @@
-- [ ] better error for unsupported links
-- [ ] caching of video messages (don't re-upload same file)
-- [ ] parallelize handling of multiple messages
 - [ ] add tests
-- [ ] sort yt-dlp formats so that vp9 is last
-- [ ] download progress bar / live stream of stdout/stderr
+- [ ] more efficient caching / delete files after upload
 - [ ] docker registry for prod image - so that it can be pulled without cloning the repo
-- [ ] update README with instructions for running the container
 - [ ] Sqlite DB and UI to view jobs and change API keys?
-- [ ] large file upload via e.g. transfernow
 - [ ] complain to telegram team about lack of vp9 support on macos
