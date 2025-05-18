@@ -6,7 +6,6 @@
   "private": true,
   "devDependencies": {
     "@types/bun": "latest",
-    "@types/he": "^1.2.3",
     "oxlint": "^0.16.10",
     "prettier": "^3.5.3",
     "simple-git-hooks": "^2.13.0"
@@ -15,12 +14,8 @@
     "typescript": "^5"
   },
   "dependencies": {
-    "he": "^1.2.0",
     "telegraf": "^4.16.3"
   },
-  "trustedDependencies": [
-    "youtube-dl-exec"
-  ],
   "scripts": {
     "dev": "bun --watch .",
     "start": "bun .",

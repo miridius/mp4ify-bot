@@ -1,4 +1,3 @@
-import he from 'he';
 import { Telegraf } from 'telegraf';
 import { message } from 'telegraf/filters';
 import { downloadVideo, getInfo, sendInfo, sendVideo } from './download-video';
@@ -46,7 +45,7 @@ bot.on(message('text'), (ctx) => {
         console.log(await downloadVideo(log, info, verbose));
         await sendVideo(ctx, log, info, ctx.chat.id, message_id);
       } catch (e: any) {
-        log.append(`\n💥 <b>Download failed</b>: ${he.encode(e.message)}`);
+        log.append(`\n💥 <b>Download failed</b>: ${Bun.escapeHTML(e.message)}`);
         await log.flush();
         console.error(e);
       }

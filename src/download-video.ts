@@ -1,6 +1,5 @@
 import { $ } from 'bun';
 import { stat, symlink } from 'fs/promises';
-import he from 'he';
 import { basename } from 'path';
 import type { Context } from 'telegraf';
 import type { Message } from 'telegraf/types';
@@ -66,7 +65,7 @@ const execYtdlp = async (
       firstLine = false;
     }
     const line = new TextDecoder().decode(chunk);
-    logMsg.append(`<code>${he.encode(line.trim())}</code>`);
+    logMsg.append(`<code>${Bun.escapeHTML(line.trim())}</code>`);
   }
 
   // check for errors
@@ -74,7 +73,7 @@ const execYtdlp = async (
   if (proc.exitCode !== 0) throw new Error(getErrorMessage(proc));
 
   // return stdout as a string
-  return await new Response(proc.stdout).text();
+  return await Bun.readableStreamToText(proc.stdout);
 };
 
 const filenamify = (s: string) =>
