@@ -200,7 +200,7 @@ export const sendVideo = memoize(
     chatId: number,
     replyToMessageId?: number,
   ): Promise<Message.VideoMessage | undefined> => {
-    const { filename, duration, width, height } = info;
+    const { filename, width, height } = info;
     const idFile = Bun.file(`${filename}.${ctx.me}.id`);
     const fileId = (await idFile.exists()) && (await idFile.text());
 
@@ -226,7 +226,8 @@ export const sendVideo = memoize(
       {
         width: width,
         height: height,
-        duration: duration,
+        // TODO: decide based on sponsor info
+        // duration: duration,
         supports_streaming: true,
         disable_notification: true,
         ...(replyToMessageId
