@@ -179,7 +179,7 @@ export const sendInfo = async (
 
   logInfo('URL', info.webpage_url);
   logInfo('filename', basename(info.filename));
-  if (newDuration) {
+  if (newDuration && newDuration < Math.round(duration!)) {
     logInfo(
       'duration',
       `${newDuration} sec (${Math.round(duration!)}s before removing sponsors)`,
@@ -203,7 +203,7 @@ export const downloadVideo = memoize(
     verbose: boolean = false,
   ) => {
     if (!(await exists(filename))) {
-      log.append(`\n⬇️ <b>Downloading</b> ${webpage_url}...`);
+      log.append(`\n⬇️ <b>Downloading...</b>`);
       await execYtdlp(
         log,
         '',
