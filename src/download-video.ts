@@ -35,7 +35,14 @@ type VideoInfo = {
   abr?: number;
   tbr?: number;
   filesize?: number;
-  filesize_approx: number;
+  filesize_approx?: number;
+  sponsorblock_chapters?: {
+    start_time: number;
+    end_time: number;
+    category: 'sponsor' | string;
+    title: 'Sponsor' | string;
+    type: 'skip' | string;
+  }[];
   // [x: string]: any;
 };
 
@@ -93,7 +100,7 @@ export const getInfo = memoize(
     const infoFile = urlInfoFile(url);
     if (await infoFile.exists()) return await infoFile.json();
 
-    log.append(`🧐 <b>Inspecting</b> ${url}...`);
+    log.append(`🧐 <b>Scraping</b> ${url}...`);
 
     const infoStr = await execYtdlp(log, url, verbose, '--dump-json');
     const info = JSON.parse(infoStr) as VideoInfo;
@@ -144,6 +151,15 @@ const parseRes = ({ resolution, height, width, format_id }: any) =>
 
 const formatSize = (size: number) => `${(size / 1024 / 1024).toFixed(2)} MB`;
 
+const skippedTime = ({ sponsorblock_chapters }: VideoInfo) =>
+  sponsorblock_chapters
+    ?.filter(({ type }) => type === 'skip')
+    .map(({ start_time, end_time }) => end_time - start_time)
+    .reduce((sum, time) => sum + time) || 0;
+
+const calcDuration = (info: VideoInfo) =>
+  info.duration && Math.round(info.duration - skippedTime(info));
+
 export const sendInfo = async (
   log: LogMessage,
   info: VideoInfo,
@@ -156,12 +172,21 @@ export const sendInfo = async (
 
   const { duration, filesize, filesize_approx, vcodec, vbr, acodec, abr, tbr } =
     info;
+  const newDuration = calcDuration(info);
 
   const logInfo = (name: string, value: any) =>
     value && log.append(`<b>${name}</b>: ${value}`);
 
+  logInfo('URL', info.webpage_url);
   logInfo('filename', basename(info.filename));
-  logInfo('duration', duration && `${Math.round(duration)} sec`);
+  if (newDuration) {
+    logInfo(
+      'duration',
+      `${newDuration} sec (${Math.round(duration!)}s before removing sponsors)`,
+    );
+  } else {
+    logInfo('duration', duration && `${Math.round(duration)} sec`);
+  }
   const size =
     filesize || filesize_approx || (duration && tbr && duration * tbr);
   logInfo('size', size && `${formatSize(size)}`);
@@ -201,6 +226,7 @@ export const sendVideo = memoize(
     replyToMessageId?: number,
   ): Promise<Message.VideoMessage | undefined> => {
     const { filename, width, height } = info;
+    const duration = calcDuration(info);
     const idFile = Bun.file(`${filename}.${ctx.me}.id`);
     const fileId = (await idFile.exists()) && (await idFile.text());
 
@@ -224,10 +250,9 @@ export const sendVideo = memoize(
       chatId,
       fileId || 'file:/' + filename,
       {
-        width: width,
-        height: height,
-        // TODO: decide based on sponsor info
-        // duration: duration,
+        width,
+        height,
+        duration,
         supports_streaming: true,
         disable_notification: true,
         ...(replyToMessageId
