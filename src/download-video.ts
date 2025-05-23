@@ -114,7 +114,7 @@ export const getInfo = memoize(
     }
     return info;
   },
-  (_log, url) => url,
+  (_log, url, verbose) => !verbose && url,
 );
 
 const logFormats = ({ formats }: any) =>
@@ -213,7 +213,7 @@ export const downloadVideo = memoize(
       );
     }
   },
-  (_log, { filename }) => filename,
+  (_log, { filename }, verbose) => !verbose && filename,
 );
 
 // cached based on filename + chatId + replyToMessageId
