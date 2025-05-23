@@ -26,8 +26,6 @@ console.log(bot.telegram.options);
 
 bot.on(message('text'), (ctx) => {
   const { text, entities, message_id } = ctx.message;
-  console.log(ctx.me);
-  console.log(ctx.message);
   const verbose =
     ctx.message.chat.type === 'private' && text.startsWith('/verbose ');
 
@@ -42,7 +40,7 @@ bot.on(message('text'), (ctx) => {
         const info = await getInfo(log, url, verbose);
         info.webpage_url ||= url; // just in case webpage_url is missing
         await sendInfo(log, info, verbose);
-        console.log(await downloadVideo(log, info, verbose));
+        console.log(await downloadVideo(ctx, log, info, verbose));
         await sendVideo(ctx, log, info, ctx.chat.id, message_id);
       } catch (e: any) {
         log.append(`\n💥 <b>Download failed</b>: ${Bun.escapeHTML(e.message)}`);
@@ -76,8 +74,8 @@ bot.on('inline_query', async (ctx) => {
     const log = new NoLog(ctx);
     const info = await getInfo(log, url);
     url = info.webpage_url || url;
-    console.log(await downloadVideo(log, info));
-    const msg = await sendVideo(ctx, log, info, -4640446184);
+    console.log(await downloadVideo(ctx, log, info));
+    const msg = await sendVideo(ctx, log, info, -4640446184); // TODO: make the cache chat id configurable
     if (!msg) return;
 
     const video = { type: 'video' as const, video_file_id: msg.video.file_id };

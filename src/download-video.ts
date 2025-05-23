@@ -195,25 +195,31 @@ export const sendInfo = async (
   logInfo('audio codec', acodec && `${acodec} ${abr ? `@ ${abr} kbps` : ''}`);
 };
 
+const isDownloaded = async (ctx: Context, { filename }: VideoInfo) =>
+  (await exists(`${filename}.${ctx.me}.id`)) || (await exists(filename));
+
 // cached based on url
 export const downloadVideo = memoize(
   async (
+    ctx: Context,
     log: LogMessage,
-    { filename, webpage_url }: VideoInfo,
+    info: VideoInfo,
     verbose: boolean = false,
   ) => {
-    if (!(await exists(filename))) {
+    if (await isDownloaded(ctx, info)) {
+      return 'already downloaded';
+    } else {
       log.append(`\n⬇️ <b>Downloading...</b>`);
-      await execYtdlp(
+      return await execYtdlp(
         log,
         '',
         verbose,
         '--load-info-json',
-        urlInfoFile(webpage_url).name!,
+        urlInfoFile(info.webpage_url).name!,
       );
     }
   },
-  (_log, { filename }, verbose) => !verbose && filename,
+  (_ctx, _log, { filename }, verbose) => !verbose && filename,
 );
 
 // cached based on filename + chatId + replyToMessageId
@@ -264,7 +270,10 @@ export const sendVideo = memoize(
           : {}),
       },
     );
-    if (!fileId) await Bun.write(idFile, res.video.file_id);
+    if (!fileId) {
+      await Bun.write(idFile, res.video.file_id);
+      await $`rm ${filename}`;
+    }
     return res;
   },
   (_ctx, _log, info, chatId, replyToMessageId) =>
