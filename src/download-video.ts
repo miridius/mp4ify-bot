@@ -155,7 +155,7 @@ const skippedTime = ({ sponsorblock_chapters }: VideoInfo) =>
   sponsorblock_chapters
     ?.filter(({ type }) => type === 'skip')
     .map(({ start_time, end_time }) => end_time - start_time)
-    .reduce((sum, time) => sum + time) || 0;
+    .reduce((sum, time) => sum + time, 0) || 0;
 
 const calcDuration = (info: VideoInfo) =>
   info.duration && Math.round(info.duration - skippedTime(info));
