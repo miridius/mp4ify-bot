@@ -1,5 +1,5 @@
-import { type Context, type NarrowedContext } from 'telegraf';
-import type { Message, Update } from 'telegraf/types';
+import type { Message } from 'telegraf/types';
+import type { AnyContext, MessageContext } from './types';
 
 const MAX_LENGTH = 4096;
 const TEXT_MSG_OPTS = {
@@ -8,11 +8,6 @@ const TEXT_MSG_OPTS = {
   disable_notification: true,
 };
 const DEBOUNCE_MS = 150;
-
-export type MessageContext = NarrowedContext<
-  Context<Update>,
-  Update.MessageUpdate<Record<'text', {}> & Message.TextMessage>
->;
 
 export const reply = (ctx: MessageContext, text: string) =>
   ctx.reply(text, {
@@ -27,7 +22,7 @@ export class LogMessage {
   private ctx?: MessageContext;
   private timer?: Timer;
 
-  constructor(ctx: Context, initialText?: string) {
+  constructor(ctx: AnyContext, initialText?: string) {
     if (ctx.message && ctx.chat?.type === 'private') {
       this.ctx = ctx as MessageContext;
     }
@@ -35,7 +30,7 @@ export class LogMessage {
   }
 
   append(line: string) {
-    console.log(line);
+    console.debug(line);
     if (!this.ctx) return;
     if (this.timer) clearTimeout(this.timer);
     if (this.texts.length === 0) {
@@ -65,7 +60,7 @@ export class LogMessage {
   private async setMessageText(text: string, message?: Message.TextMessage) {
     if (!message) {
       return await reply(this.ctx!, text);
-    } else if (message.text !== text) {
+    } else if (message.text !== text.replaceAll(/<[^>]+>/g, '')) {
       try {
         return (await this.ctx!.telegram.editMessageText(
           message.chat.id,

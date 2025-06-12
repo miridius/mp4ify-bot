@@ -1,15 +1,15 @@
-import { $ } from 'bun';
-import { stat, symlink } from 'fs/promises';
+import { mkdir, stat, symlink, unlink } from 'fs/promises';
 import { basename } from 'path';
 import type { Context } from 'telegraf';
-import type { Message } from 'telegraf/types';
+import type { Message, Update } from 'telegraf/types';
 import { LogMessage } from './log-message';
+import type { MessageContext } from './types';
 import { memoize } from './utils';
 
 const MAX_FILE_SIZE_BYTES = 2000 * 1024 * 1024; // 2000 MB
 const DOWNLOAD_TIMEOUT_SECS = 300;
 const INFO_CACHE_DIR = '/storage/_video-info/';
-await $`mkdir -p ${INFO_CACHE_DIR}`;
+await mkdir(INFO_CACHE_DIR, { recursive: true }); // $`mkdir -p ${INFO_CACHE_DIR}`;
 
 const exists = async (path: string) => Bun.file(path).exists();
 
@@ -58,6 +58,7 @@ const execYtdlp = async (
     verbose ? '--verbose' : '--no-warnings',
     ...extraArgs,
   ];
+  console.debug(command.join(' '));
 
   const proc = Bun.spawn(command, {
     stderr: 'pipe',
@@ -107,7 +108,9 @@ export const getInfo = memoize(
     const { webpage_url } = info;
     if (webpage_url && webpage_url !== url) {
       const mainInfoFile = Bun.file(INFO_CACHE_DIR + filenamify(webpage_url));
-      if (!(await mainInfoFile.exists())) Bun.write(mainInfoFile, infoStr);
+      if (!(await mainInfoFile.exists())) {
+        await Bun.write(mainInfoFile, infoStr);
+      }
       await symlink(filenamify(webpage_url), infoFile.name!);
     } else {
       if (!(await infoFile.exists())) Bun.write(infoFile, infoStr);
@@ -195,13 +198,15 @@ export const sendInfo = async (
   logInfo('audio codec', acodec && `${acodec} ${abr ? `@ ${abr} kbps` : ''}`);
 };
 
-const isDownloaded = async (ctx: Context, { filename }: VideoInfo) =>
-  (await exists(`${filename}.${ctx.me}.id`)) || (await exists(filename));
+const isDownloaded = async (
+  ctx: MessageContext | Context<Update.InlineQueryUpdate>,
+  { filename }: VideoInfo,
+) => (await exists(`${filename}.${ctx.me}.id`)) || (await exists(filename));
 
 // cached based on url
 export const downloadVideo = memoize(
   async (
-    ctx: Context,
+    ctx: MessageContext | Context<Update.InlineQueryUpdate>,
     log: LogMessage,
     info: VideoInfo,
     verbose: boolean = false,
@@ -225,7 +230,7 @@ export const downloadVideo = memoize(
 // cached based on filename + chatId + replyToMessageId
 export const sendVideo = memoize(
   async (
-    ctx: Context,
+    ctx: MessageContext | Context<Update.InlineQueryUpdate>,
     log: LogMessage,
     info: VideoInfo,
     chatId: number,
@@ -254,14 +259,14 @@ export const sendVideo = memoize(
 
     const res = await ctx.telegram.sendVideo(
       chatId,
-      fileId || 'file:/' + filename,
+      fileId || Bun.pathToFileURL(filename).href,
       {
         width,
         height,
         duration,
         supports_streaming: true,
         disable_notification: true,
-        ...(replyToMessageId
+        ...(replyToMessageId != undefined
           ? {
               reply_parameters: { message_id: replyToMessageId },
               // @ts-ignore - workaround for a bug in the telegram bot API
@@ -272,7 +277,7 @@ export const sendVideo = memoize(
     );
     if (!fileId) {
       await Bun.write(idFile, res.video.file_id);
-      await $`rm ${filename}`;
+      await unlink(filename);
     }
     return res;
   },

@@ -4,9 +4,9 @@ export const memoize = <F extends (...args: any[]) => any>(
   f: F,
   key: (...args: Parameters<F>) => string | false = (...args) =>
     JSON.stringify(args),
-): F => {
+): F & { cache: Map<string, ReturnType<F>> } => {
   const cache: Map<string, ReturnType<F>> = new Map();
-  return ((...args: Parameters<F>): ReturnType<F> => {
+  const memoized = ((...args: Parameters<F>): ReturnType<F> => {
     const k = key(...args);
     if (k) {
       if (cache.has(k)) {
@@ -21,5 +21,7 @@ export const memoize = <F extends (...args: any[]) => any>(
       // if k is falsey, skip the cache
       return f(...args);
     }
-  }) as F;
+  }) as F & { cache: Map<string, ReturnType<F>> };
+  memoized.cache = cache;
+  return memoized;
 };

@@ -1,0 +1,501 @@
+// Bun Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`message handler downloads https://www.instagram.com/reel/DKbYQgeoL3F/?igsh=MTh4MnpnYm9hdjJ5OA==: download 1`] = `
+[
+  {
+    "chat_id": 1337,
+    "disable_notification": true,
+    "link_preview_options": {
+      "is_disabled": true,
+    },
+    "parse_mode": "HTML",
+    "reply_parameters": {
+      "message_id": 0,
+    },
+    "text": 
+"🧐 <b>Scraping</b> https://www.instagram.com/reel/DKbYQgeoL3F/?igsh=MTh4MnpnYm9hdjJ5OA==...
+
+🎬 <b>Video info:</b>
+
+<b>URL</b>: https://www.instagram.com/reel/DKbYQgeoL3F/?igsh=MTh4MnpnYm9hdjJ5OA==
+<b>filename</b>: Video_by_disastra_memes-[DKbYQgeoL3F].3.mp4
+<b>duration</b>: 12 sec
+<b>resolution</b>: 640x584
+
+⬇️ <b>Downloading...</b>
+
+🚀 <b>Uploading (0.41 MB)...</b>"
+,
+  },
+  {
+    "chat_id": 1337,
+    "disable_notification": true,
+    "duration": 12,
+    "height": 584,
+    "reply_parameters": {
+      "message_id": 0,
+    },
+    "reply_to_message_id": 0,
+    "supports_streaming": true,
+    "video": "file:///storage/Instagram/Video_by_disastra_memes-%5BDKbYQgeoL3F%5D.3.mp4",
+    "width": 640,
+  },
+]
+`;
+
+exports[`message handler downloads https://www.instagram.com/reel/DKbYQgeoL3F/?igsh=MTh4MnpnYm9hdjJ5OA==: mem cache 1`] = `
+[
+  {
+    "chat_id": 1337,
+    "disable_notification": true,
+    "link_preview_options": {
+      "is_disabled": true,
+    },
+    "parse_mode": "HTML",
+    "reply_parameters": {
+      "message_id": 1,
+    },
+    "text": 
+"
+🎬 <b>Video info:</b>
+
+<b>URL</b>: https://www.instagram.com/reel/DKbYQgeoL3F/?igsh=MTh4MnpnYm9hdjJ5OA==
+<b>filename</b>: Video_by_disastra_memes-[DKbYQgeoL3F].3.mp4
+<b>duration</b>: 12 sec
+<b>resolution</b>: 640x584"
+,
+  },
+  {
+    "chat_id": 1337,
+    "disable_notification": true,
+    "duration": 12,
+    "height": 584,
+    "reply_parameters": {
+      "message_id": 1,
+    },
+    "reply_to_message_id": 1,
+    "supports_streaming": true,
+    "video": "11ej1fdh590e0",
+    "width": 640,
+  },
+]
+`;
+
+exports[`message handler downloads https://www.instagram.com/reel/DKbYQgeoL3F/?igsh=MTh4MnpnYm9hdjJ5OA==: disk cache 1`] = `
+[
+  {
+    "chat_id": 1337,
+    "disable_notification": true,
+    "link_preview_options": {
+      "is_disabled": true,
+    },
+    "parse_mode": "HTML",
+    "reply_parameters": {
+      "message_id": 2,
+    },
+    "text": 
+"
+🎬 <b>Video info:</b>
+
+<b>URL</b>: https://www.instagram.com/reel/DKbYQgeoL3F/?igsh=MTh4MnpnYm9hdjJ5OA==
+<b>filename</b>: Video_by_disastra_memes-[DKbYQgeoL3F].3.mp4
+<b>duration</b>: 12 sec
+<b>resolution</b>: 640x584"
+,
+  },
+  {
+    "chat_id": 1337,
+    "disable_notification": true,
+    "duration": 12,
+    "height": 584,
+    "reply_parameters": {
+      "message_id": 2,
+    },
+    "reply_to_message_id": 2,
+    "supports_streaming": true,
+    "video": "11ej1fdh590e0",
+    "width": 640,
+  },
+]
+`;
+
+exports[`message handler downloads https://www.reddit.com/r/nextfuckinglevel/s/iGEii0a7V6: download 1`] = `
+[
+  {
+    "chat_id": 1337,
+    "disable_notification": true,
+    "link_preview_options": {
+      "is_disabled": true,
+    },
+    "parse_mode": "HTML",
+    "reply_parameters": {
+      "message_id": 0,
+    },
+    "text": 
+"🧐 <b>Scraping</b> https://www.reddit.com/r/nextfuckinglevel/s/iGEii0a7V6...
+
+🎬 <b>Video info:</b>
+
+<b>URL</b>: https://www.reddit.com/r/nextfuckinglevel/comments/1l68isw/mix_of_coolness_agility_technique_power_and_a/?share_id=ejTJZnh_f4BZuzlnfcOUo&utm_content=2&utm_medium=android_app&utm_name=androidcss&utm_source=share&utm_term=1
+<b>filename</b>: Mix_of_coolness_agility_technique_power_and_a_touch_of_madness-[auhgg4yoeo5f1].hls-1023+dash-6.mp4
+<b>duration</b>: 10 sec
+<b>size</b>: 0.01 MB
+<b>resolution</b>: 480x600
+<b>video codec</b>: avc1.4D401F @ 1023.275 kbps
+<b>audio codec</b>: mp4a.40.2 @ 132.978 kbps
+
+⬇️ <b>Downloading...</b>
+
+🚀 <b>Uploading (1.20 MB)...</b>"
+,
+  },
+  {
+    "chat_id": 1337,
+    "disable_notification": true,
+    "duration": 10,
+    "height": 600,
+    "reply_parameters": {
+      "message_id": 0,
+    },
+    "reply_to_message_id": 0,
+    "supports_streaming": true,
+    "video": "file:///storage/Reddit/Mix_of_coolness_agility_technique_power_and_a_touch_of_madness-%5Bauhgg4yoeo5f1%5D.hls-1023+dash-6.mp4",
+    "width": 480,
+  },
+]
+`;
+
+exports[`message handler downloads https://www.reddit.com/r/nextfuckinglevel/s/iGEii0a7V6: mem cache 1`] = `
+[
+  {
+    "chat_id": 1337,
+    "disable_notification": true,
+    "link_preview_options": {
+      "is_disabled": true,
+    },
+    "parse_mode": "HTML",
+    "reply_parameters": {
+      "message_id": 1,
+    },
+    "text": 
+"
+🎬 <b>Video info:</b>
+
+<b>URL</b>: https://www.reddit.com/r/nextfuckinglevel/comments/1l68isw/mix_of_coolness_agility_technique_power_and_a/?share_id=ejTJZnh_f4BZuzlnfcOUo&utm_content=2&utm_medium=android_app&utm_name=androidcss&utm_source=share&utm_term=1
+<b>filename</b>: Mix_of_coolness_agility_technique_power_and_a_touch_of_madness-[auhgg4yoeo5f1].hls-1023+dash-6.mp4
+<b>duration</b>: 10 sec
+<b>size</b>: 0.01 MB
+<b>resolution</b>: 480x600
+<b>video codec</b>: avc1.4D401F @ 1023.275 kbps
+<b>audio codec</b>: mp4a.40.2 @ 132.978 kbps"
+,
+  },
+  {
+    "chat_id": 1337,
+    "disable_notification": true,
+    "duration": 10,
+    "height": 600,
+    "reply_parameters": {
+      "message_id": 1,
+    },
+    "reply_to_message_id": 1,
+    "supports_streaming": true,
+    "video": "uufngxsbt7v5",
+    "width": 480,
+  },
+]
+`;
+
+exports[`message handler downloads https://www.reddit.com/r/nextfuckinglevel/s/iGEii0a7V6: disk cache 1`] = `
+[
+  {
+    "chat_id": 1337,
+    "disable_notification": true,
+    "link_preview_options": {
+      "is_disabled": true,
+    },
+    "parse_mode": "HTML",
+    "reply_parameters": {
+      "message_id": 2,
+    },
+    "text": 
+"
+🎬 <b>Video info:</b>
+
+<b>URL</b>: https://www.reddit.com/r/nextfuckinglevel/comments/1l68isw/mix_of_coolness_agility_technique_power_and_a/?share_id=ejTJZnh_f4BZuzlnfcOUo&utm_content=2&utm_medium=android_app&utm_name=androidcss&utm_source=share&utm_term=1
+<b>filename</b>: Mix_of_coolness_agility_technique_power_and_a_touch_of_madness-[auhgg4yoeo5f1].hls-1023+dash-6.mp4
+<b>duration</b>: 10 sec
+<b>size</b>: 0.01 MB
+<b>resolution</b>: 480x600
+<b>video codec</b>: avc1.4D401F @ 1023.275 kbps
+<b>audio codec</b>: mp4a.40.2 @ 132.978 kbps"
+,
+  },
+  {
+    "chat_id": 1337,
+    "disable_notification": true,
+    "duration": 10,
+    "height": 600,
+    "reply_parameters": {
+      "message_id": 2,
+    },
+    "reply_to_message_id": 2,
+    "supports_streaming": true,
+    "video": "uufngxsbt7v5",
+    "width": 480,
+  },
+]
+`;
+
+exports[`message handler downloads https://www.reddit.com/r/nextfuckinglevel/comments/1l68isw/mix_of_coolness_agility_technique_power_and_a/?share_id=ejTJZnh_f4BZuzlnfcOUo: download 1`] = `
+[
+  {
+    "chat_id": 1337,
+    "disable_notification": true,
+    "link_preview_options": {
+      "is_disabled": true,
+    },
+    "parse_mode": "HTML",
+    "reply_parameters": {
+      "message_id": 0,
+    },
+    "text": 
+"🧐 <b>Scraping</b> https://www.reddit.com/r/nextfuckinglevel/comments/1l68isw/mix_of_coolness_agility_technique_power_and_a/?share_id=ejTJZnh_f4BZuzlnfcOUo...
+
+🎬 <b>Video info:</b>
+
+<b>URL</b>: https://www.reddit.com/r/nextfuckinglevel/comments/1l68isw/mix_of_coolness_agility_technique_power_and_a/?share_id=ejTJZnh_f4BZuzlnfcOUo
+<b>filename</b>: Mix_of_coolness_agility_technique_power_and_a_touch_of_madness-[auhgg4yoeo5f1].hls-1023+dash-6.mp4
+<b>duration</b>: 10 sec
+<b>size</b>: 0.01 MB
+<b>resolution</b>: 480x600
+<b>video codec</b>: avc1.4D401F @ 1023.275 kbps
+<b>audio codec</b>: mp4a.40.2 @ 132.978 kbps
+
+⬇️ <b>Downloading...</b>
+
+🚀 <b>Uploading (1.20 MB)...</b>"
+,
+  },
+  {
+    "chat_id": 1337,
+    "disable_notification": true,
+    "duration": 10,
+    "height": 600,
+    "reply_parameters": {
+      "message_id": 0,
+    },
+    "reply_to_message_id": 0,
+    "supports_streaming": true,
+    "video": "file:///storage/Reddit/Mix_of_coolness_agility_technique_power_and_a_touch_of_madness-%5Bauhgg4yoeo5f1%5D.hls-1023+dash-6.mp4",
+    "width": 480,
+  },
+]
+`;
+
+exports[`message handler downloads https://www.reddit.com/r/nextfuckinglevel/comments/1l68isw/mix_of_coolness_agility_technique_power_and_a/?share_id=ejTJZnh_f4BZuzlnfcOUo: mem cache 1`] = `
+[
+  {
+    "chat_id": 1337,
+    "disable_notification": true,
+    "link_preview_options": {
+      "is_disabled": true,
+    },
+    "parse_mode": "HTML",
+    "reply_parameters": {
+      "message_id": 1,
+    },
+    "text": 
+"
+🎬 <b>Video info:</b>
+
+<b>URL</b>: https://www.reddit.com/r/nextfuckinglevel/comments/1l68isw/mix_of_coolness_agility_technique_power_and_a/?share_id=ejTJZnh_f4BZuzlnfcOUo
+<b>filename</b>: Mix_of_coolness_agility_technique_power_and_a_touch_of_madness-[auhgg4yoeo5f1].hls-1023+dash-6.mp4
+<b>duration</b>: 10 sec
+<b>size</b>: 0.01 MB
+<b>resolution</b>: 480x600
+<b>video codec</b>: avc1.4D401F @ 1023.275 kbps
+<b>audio codec</b>: mp4a.40.2 @ 132.978 kbps"
+,
+  },
+  {
+    "chat_id": 1337,
+    "disable_notification": true,
+    "duration": 10,
+    "height": 600,
+    "reply_parameters": {
+      "message_id": 1,
+    },
+    "reply_to_message_id": 1,
+    "supports_streaming": true,
+    "video": "uufngxsbt7v5",
+    "width": 480,
+  },
+]
+`;
+
+exports[`message handler downloads https://www.reddit.com/r/nextfuckinglevel/comments/1l68isw/mix_of_coolness_agility_technique_power_and_a/?share_id=ejTJZnh_f4BZuzlnfcOUo: disk cache 1`] = `
+[
+  {
+    "chat_id": 1337,
+    "disable_notification": true,
+    "link_preview_options": {
+      "is_disabled": true,
+    },
+    "parse_mode": "HTML",
+    "reply_parameters": {
+      "message_id": 2,
+    },
+    "text": 
+"
+🎬 <b>Video info:</b>
+
+<b>URL</b>: https://www.reddit.com/r/nextfuckinglevel/comments/1l68isw/mix_of_coolness_agility_technique_power_and_a/?share_id=ejTJZnh_f4BZuzlnfcOUo
+<b>filename</b>: Mix_of_coolness_agility_technique_power_and_a_touch_of_madness-[auhgg4yoeo5f1].hls-1023+dash-6.mp4
+<b>duration</b>: 10 sec
+<b>size</b>: 0.01 MB
+<b>resolution</b>: 480x600
+<b>video codec</b>: avc1.4D401F @ 1023.275 kbps
+<b>audio codec</b>: mp4a.40.2 @ 132.978 kbps"
+,
+  },
+  {
+    "chat_id": 1337,
+    "disable_notification": true,
+    "duration": 10,
+    "height": 600,
+    "reply_parameters": {
+      "message_id": 2,
+    },
+    "reply_to_message_id": 2,
+    "supports_streaming": true,
+    "video": "uufngxsbt7v5",
+    "width": 480,
+  },
+]
+`;
+
+exports[`message handler downloads http://youtube.com/shorts/0COu-qMC18Y: download 1`] = `
+[
+  {
+    "chat_id": 1337,
+    "disable_notification": true,
+    "link_preview_options": {
+      "is_disabled": true,
+    },
+    "parse_mode": "HTML",
+    "reply_parameters": {
+      "message_id": 0,
+    },
+    "text": 
+"🧐 <b>Scraping</b> http://youtube.com/shorts/0COu-qMC18Y...
+
+🎬 <b>Video info:</b>
+
+<b>URL</b>: https://www.youtube.com/watch?v=0COu-qMC18Y
+<b>filename</b>: Zinger_Burgers-[0COu-qMC18Y].312+234.mp4
+<b>duration</b>: 57 sec
+<b>size</b>: 0.29 MB
+<b>resolution</b>: 1080x1920
+<b>video codec</b>: avc1.64002A @ 5327.966 kbps
+
+⬇️ <b>Downloading...</b>
+
+🚀 <b>Uploading (24.97 MB)...</b>"
+,
+  },
+  {
+    "chat_id": 1337,
+    "disable_notification": true,
+    "duration": 57,
+    "height": 1920,
+    "reply_parameters": {
+      "message_id": 0,
+    },
+    "reply_to_message_id": 0,
+    "supports_streaming": true,
+    "video": "file:///storage/youtube/Zinger_Burgers-%5B0COu-qMC18Y%5D.312+234.mp4",
+    "width": 1080,
+  },
+]
+`;
+
+exports[`message handler downloads http://youtube.com/shorts/0COu-qMC18Y: mem cache 1`] = `
+[
+  {
+    "chat_id": 1337,
+    "disable_notification": true,
+    "link_preview_options": {
+      "is_disabled": true,
+    },
+    "parse_mode": "HTML",
+    "reply_parameters": {
+      "message_id": 1,
+    },
+    "text": 
+"
+🎬 <b>Video info:</b>
+
+<b>URL</b>: https://www.youtube.com/watch?v=0COu-qMC18Y
+<b>filename</b>: Zinger_Burgers-[0COu-qMC18Y].312+234.mp4
+<b>duration</b>: 57 sec
+<b>size</b>: 0.29 MB
+<b>resolution</b>: 1080x1920
+<b>video codec</b>: avc1.64002A @ 5327.966 kbps"
+,
+  },
+  {
+    "chat_id": 1337,
+    "disable_notification": true,
+    "duration": 57,
+    "height": 1920,
+    "reply_parameters": {
+      "message_id": 1,
+    },
+    "reply_to_message_id": 1,
+    "supports_streaming": true,
+    "video": "lmbyz7wxoaj1",
+    "width": 1080,
+  },
+]
+`;
+
+exports[`message handler downloads http://youtube.com/shorts/0COu-qMC18Y: disk cache 1`] = `
+[
+  {
+    "chat_id": 1337,
+    "disable_notification": true,
+    "link_preview_options": {
+      "is_disabled": true,
+    },
+    "parse_mode": "HTML",
+    "reply_parameters": {
+      "message_id": 2,
+    },
+    "text": 
+"
+🎬 <b>Video info:</b>
+
+<b>URL</b>: https://www.youtube.com/watch?v=0COu-qMC18Y
+<b>filename</b>: Zinger_Burgers-[0COu-qMC18Y].312+234.mp4
+<b>duration</b>: 57 sec
+<b>size</b>: 0.29 MB
+<b>resolution</b>: 1080x1920
+<b>video codec</b>: avc1.64002A @ 5327.966 kbps"
+,
+  },
+  {
+    "chat_id": 1337,
+    "disable_notification": true,
+    "duration": 57,
+    "height": 1920,
+    "reply_parameters": {
+      "message_id": 2,
+    },
+    "reply_to_message_id": 2,
+    "supports_streaming": true,
+    "video": "lmbyz7wxoaj1",
+    "width": 1080,
+  },
+]
+`;

@@ -1,6 +1,7 @@
 volumes:
   bot-api-data:
   storage:
+  proxy-cache:
 
 services:
   # See https://core.telegram.org/bots/api#using-a-local-bot-api-server
@@ -41,9 +42,10 @@ services:
       - /tmp
     devices:
       - /dev/dri:/dev/dri
-    working_dir: /app
     user: '${UID:-1000}:${GID:-1000}'
     restart: unless-stopped
+    depends_on:
+      - bot-api
 
   # Run the prod bot using a pre-built image (TODO)
   prod:
@@ -61,6 +63,28 @@ services:
       - /tmp
     devices:
       - /dev/dri:/dev/dri
-    working_dir: /app
     user: '${UID:-1000}:${GID:-1000}'
     restart: unless-stopped
+    depends_on:
+      - bot-api
+
+  test:
+    container_name: mp4ify_test
+    image: mp4ify_test
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    env_file:
+      - .env.dev
+    stdin_open: true
+    tty: true
+    volumes:
+      - .:/app
+    tmpfs:
+      - /tmp
+    devices:
+      - /dev/dri:/dev/dri
+    user: '${UID:-1000}:${GID:-1000}'
+    command: bun test --watch
+    depends_on:
+      - bot-api

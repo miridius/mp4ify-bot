@@ -1,0 +1,4 @@
+[test]
+# This has to load first so that the mock of node-fetch applies to Telegraf:
+preload = ["./test/simulate-bot-api"]
+coverage = true

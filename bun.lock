@@ -7,6 +7,7 @@
         "telegraf": "^4.16.3",
       },
       "devDependencies": {
+        "@faker-js/faker": "^9.8.0",
         "@types/bun": "latest",
         "oxlint": "^0.16.10",
         "prettier": "^3.5.3",
@@ -18,6 +19,8 @@
     },
   },
   "packages": {
+    "@faker-js/faker": ["@faker-js/faker@9.8.0", "", {}, "sha512-U9wpuSrJC93jZBxx/Qq2wPjCuYISBueyVUGK7qqdmj7r/nxaxwW8AQDCLeRO7wZnjj94sh3p246cAYjUKuqgfg=="],
+
     "@oxlint/darwin-arm64": ["@oxlint/darwin-arm64@0.16.10", "", { "os": "darwin", "cpu": "arm64" }, "sha512-lNnkf7/auNXXD7gU3IbWMyuYiKj4Va+hhoe6+NwGfAjpKm5L4Uvc93o7tay163WVzQePVUOz/IwsJPLQs3hcjQ=="],
 
     "@oxlint/darwin-x64": ["@oxlint/darwin-x64@0.16.10", "", { "os": "darwin", "cpu": "x64" }, "sha512-axqbGX//v+AF/73OZUfUGG5pZidnZf9T+wc+1Jf19O0DViPpcmbVH7l0aLImFQuRn6Nl9LAbfBbKAgO1BS+OSg=="],

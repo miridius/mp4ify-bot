@@ -5,6 +5,7 @@
   "type": "module",
   "private": true,
   "devDependencies": {
+    "@faker-js/faker": "^9.8.0",
     "@types/bun": "latest",
     "oxlint": "^0.16.10",
     "prettier": "^3.5.3",
