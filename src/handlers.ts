@@ -13,14 +13,10 @@ import type { InlineQueryContext, MessageContext } from './types';
 // 6. (inline chat only) respond to query
 // 7. can we zero out the video files / replace with cache of id?
 
-export const textMessageHandler = async (
-  ctx: MessageContext,
-  proxy?: string,
-) => {
-  const { text, entities, message_id } = ctx.message;
-  console.debug('got message:', ctx.message.text);
-  const verbose =
-    ctx.message.chat.type === 'private' && text.startsWith('/verbose ');
+export const textMessageHandler = async (ctx: MessageContext) => {
+  const { text, chat, entities, message_id } = ctx.message || ctx.editedMessage;
+  console.debug('got message:', text);
+  const verbose = chat.type === 'private' && text.startsWith('/verbose ');
 
   // Handle all URLs in the message. Intentionally don't await
   await Promise.all(
@@ -31,10 +27,10 @@ export const textMessageHandler = async (
         url = url.toLowerCase().startsWith('http') ? url : `https://${url}`;
         const log = new LogMessage(ctx);
         try {
-          const info = await getInfo(log, url, verbose, proxy);
+          const info = await getInfo(log, url, verbose);
           info.webpage_url ||= url; // just in case webpage_url is missing
           await sendInfo(log, info, verbose);
-          console.debug(await downloadVideo(ctx, log, info, verbose, proxy));
+          console.debug(await downloadVideo(ctx, log, info, verbose));
           await sendVideo(ctx, log, info, ctx.chat.id, message_id);
         } catch (e: any) {
           log.append(
@@ -61,10 +57,7 @@ const parseCaption = ({
   ((title === id || title.startsWith('Video by ')) && description) ||
   title;
 
-export const inlineQueryHandler = async (
-  ctx: InlineQueryContext,
-  proxy?: string,
-) => {
+export const inlineQueryHandler = async (ctx: InlineQueryContext) => {
   try {
     // multiple inline URLs are not supported (currently), so just grab the first one we find
     let url = ctx.inlineQuery.query?.match(urlRegex)?.[0];
@@ -72,9 +65,9 @@ export const inlineQueryHandler = async (
     url = url.toLowerCase().startsWith('http') ? url : `https://${url}`;
 
     const log = new NoLog(ctx);
-    const info = await getInfo(log, url, false, proxy);
+    const info = await getInfo(log, url, false);
     url = info.webpage_url || url;
-    console.debug(await downloadVideo(ctx, log, info, false, proxy));
+    console.debug(await downloadVideo(ctx, log, info, false));
     const msg = await sendVideo(ctx, log, info, -4640446184); // TODO: make the cache chat id configurable
     if (!msg) return;
 

@@ -12,9 +12,8 @@ import type { Message } from 'telegraf/types';
 import * as downloadVideo from '../src/download-video.ts';
 import { inlineQueryHandler, textMessageHandler } from '../src/handlers';
 import * as logMessage from '../src/log-message.ts';
-import type { MessageContext } from '../src/types';
 import { memoize } from '../src/utils.ts';
-import { spyMock } from './test-utils.ts';
+import { createMockMessageCtx, spyMock } from './test-utils.ts';
 
 beforeEach(() => jest.clearAllMocks());
 afterAll(() => mock.restore());
@@ -22,20 +21,6 @@ spyMock(console, 'debug'); // suppress debug logs
 
 const mockLog = { append: mock(), flush: mock() };
 spyOn(logMessage, 'LogMessage').mockReturnValue(mockLog as never);
-
-// Helper to create a mock MessageContext
-const createMockMessageCtx = (): MessageContext =>
-  ({
-    message: {
-      text: 'https://example.com',
-      entities: [{ type: 'url', offset: 0, length: 19 }],
-      message_id: 1,
-      chat: { id: 123, type: 'private' },
-    },
-    chat: { id: 123, type: 'private' },
-    reply: mock(),
-    telegram: { sendVideo: mock() },
-  }) as any;
 
 // Helper to create a mock InlineQueryContext
 const createMockInlineQueryCtx = (overrides: any = {}) => ({
@@ -71,9 +56,9 @@ const mockSendVideo = spyOn(downloadVideo, 'sendVideo').mockResolvedValue({
   video: { file_id: 'file123' },
 } as Message.VideoMessage);
 
-describe('textMessageHandler', () => {
+describe.each([false, true])('textMessageHandler, edit: %p', (isEdit) => {
   it('handles a message with a URL', async () => {
-    const ctx = createMockMessageCtx();
+    const ctx = createMockMessageCtx(isEdit);
     await textMessageHandler(ctx as any);
     expect(mockGetInfo).toHaveBeenCalled();
     expect(mockSendInfo).toHaveBeenCalled();
@@ -82,7 +67,7 @@ describe('textMessageHandler', () => {
   });
 
   it('handles download errors gracefully', async () => {
-    const ctx = createMockMessageCtx();
+    const ctx = createMockMessageCtx(isEdit);
     mockGetInfo.mockRejectedValueOnce(new Error('oh noes!'));
     const mockError = spyOn(console, 'error').mockImplementationOnce(() => {});
     await textMessageHandler(ctx as any);
@@ -95,8 +80,8 @@ describe('textMessageHandler', () => {
   });
 
   it('does nothing if no url entities', async () => {
-    const ctx = createMockMessageCtx();
-    ctx.message.entities = [];
+    const ctx = createMockMessageCtx(isEdit);
+    (ctx.message || ctx.editedMessage).entities = [];
     await textMessageHandler(ctx);
     // Should not call any download functions
     expect(mockGetInfo).not.toHaveBeenCalled();

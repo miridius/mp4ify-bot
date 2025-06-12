@@ -1,39 +1,12 @@
-import { describe, expect, it, mock } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
 import { LogMessage, NoLog } from '../src/log-message';
-import type { MessageContext } from '../src/types';
-import { spyMock } from './test-utils';
+import { createMockMessageCtx, spyMock } from './test-utils';
 
 spyMock(console, 'debug');
 
-function createMockCtx(): MessageContext {
-  const reply = mock(async (text, opts) => ({
-    text,
-    chat: { id: 123, type: 'private' },
-    message_id: Math.floor(Math.random() * 1000),
-    ...opts,
-  }));
-  const editMessageText = mock(async (_chatId, _msgId, _unused, text) => ({
-    text,
-    chat: { id: 123, type: 'private' },
-    message_id: _msgId,
-  }));
-
-  return {
-    message: {
-      message_id: 1,
-      chat: { id: 123, type: 'private' },
-    },
-    chat: { id: 123, type: 'private' },
-    reply,
-    telegram: {
-      editMessageText,
-    },
-  } as unknown as MessageContext;
-}
-
-describe('LogMessage', () => {
+describe.each([false, true])('LogMessage, edit: %p', (isEdit) => {
   it('appends and flushes a single line', async () => {
-    const ctx = createMockCtx();
+    const ctx = createMockMessageCtx(isEdit);
     const log = new LogMessage(ctx, 'hello');
     await log.flush();
     expect(ctx.reply).toHaveBeenCalledWith(
@@ -46,7 +19,7 @@ describe('LogMessage', () => {
   });
 
   it('splits messages if too long', async () => {
-    const ctx = createMockCtx();
+    const ctx = createMockMessageCtx(isEdit);
     const log = new LogMessage(ctx);
     const longLine = 'a'.repeat(4090);
     log.append(longLine);
@@ -59,7 +32,7 @@ describe('LogMessage', () => {
   });
 
   it('edits message if text changes', async () => {
-    const ctx = createMockCtx();
+    const ctx = createMockMessageCtx(isEdit);
     const log = new LogMessage(ctx, 'foo');
     await log.flush();
     log.append('bar');
@@ -68,7 +41,7 @@ describe('LogMessage', () => {
   });
 
   it('does nothing if not private chat', async () => {
-    const ctx = createMockCtx();
+    const ctx = createMockMessageCtx(isEdit);
     ctx.chat.type = 'group';
     const log = new LogMessage(ctx, 'should not log');
     await log.flush();
@@ -78,7 +51,7 @@ describe('LogMessage', () => {
 
 describe('NoLog', () => {
   it('does nothing', async () => {
-    const ctx = createMockCtx();
+    const ctx = createMockMessageCtx(false);
     const log = new NoLog(ctx, 'foo');
     log.append('bar');
     await log.flush();

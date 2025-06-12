@@ -11,7 +11,9 @@ const DEBOUNCE_MS = 150;
 
 export const reply = (ctx: MessageContext, text: string) =>
   ctx.reply(text, {
-    reply_parameters: { message_id: ctx.message.message_id },
+    reply_parameters: {
+      message_id: (ctx.message || ctx.editedMessage).message_id,
+    },
     ...TEXT_MSG_OPTS,
   });
 
@@ -23,7 +25,7 @@ export class LogMessage {
   private timer?: Timer;
 
   constructor(ctx: AnyContext, initialText?: string) {
-    if (ctx.message && ctx.chat?.type === 'private') {
+    if ((ctx.message || ctx.editedMessage) && ctx.chat?.type === 'private') {
       this.ctx = ctx as MessageContext;
     }
     if (initialText) this.append(initialText);

@@ -1,9 +1,8 @@
 import { mkdir, stat, symlink, unlink } from 'fs/promises';
 import { basename } from 'path';
-import type { Context } from 'telegraf';
-import type { Message, Update } from 'telegraf/types';
+import type { Message } from 'telegraf/types';
 import { LogMessage } from './log-message';
-import type { MessageContext } from './types';
+import type { AnyContext } from './types';
 import { memoize } from './utils';
 
 const MAX_FILE_SIZE_BYTES = 2000 * 1024 * 1024; // 2000 MB
@@ -198,15 +197,13 @@ export const sendInfo = async (
   logInfo('audio codec', acodec && `${acodec} ${abr ? `@ ${abr} kbps` : ''}`);
 };
 
-const isDownloaded = async (
-  ctx: MessageContext | Context<Update.InlineQueryUpdate>,
-  { filename }: VideoInfo,
-) => (await exists(`${filename}.${ctx.me}.id`)) || (await exists(filename));
+const isDownloaded = async (ctx: AnyContext, { filename }: VideoInfo) =>
+  (await exists(`${filename}.${ctx.me}.id`)) || (await exists(filename));
 
 // cached based on url
 export const downloadVideo = memoize(
   async (
-    ctx: MessageContext | Context<Update.InlineQueryUpdate>,
+    ctx: AnyContext,
     log: LogMessage,
     info: VideoInfo,
     verbose: boolean = false,
@@ -230,7 +227,7 @@ export const downloadVideo = memoize(
 // cached based on filename + chatId + replyToMessageId
 export const sendVideo = memoize(
   async (
-    ctx: MessageContext | Context<Update.InlineQueryUpdate>,
+    ctx: AnyContext,
     log: LogMessage,
     info: VideoInfo,
     chatId: number,

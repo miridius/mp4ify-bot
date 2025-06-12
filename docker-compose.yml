@@ -1,7 +1,6 @@
 volumes:
   bot-api-data:
   storage:
-  proxy-cache:
 
 services:
   # See https://core.telegram.org/bots/api#using-a-local-bot-api-server

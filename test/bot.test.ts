@@ -25,6 +25,7 @@ class MockTelegraf {
   on = mock();
   launch = mock();
   stop = mock();
+  use = mock();
   polling = false;
   constructor(token: string, opts: any) {
     MockTelegraf.instances.push(this);
@@ -39,6 +40,10 @@ spyOn(telegraf, 'Telegraf').mockImplementation(
 spyOn(telegrafFilters, 'message').mockImplementation(
   //@ts-ignore
   (type: string) => `message:${type}`,
+);
+spyOn(telegrafFilters, 'editedMessage').mockImplementation(
+  //@ts-ignore
+  (type: string) => `editedMessage:${type}`,
 );
 
 // Mock ./handlers
@@ -79,9 +84,16 @@ describe('start', () => {
     expect(textMessageHandler).toHaveBeenCalledWith('foo');
 
     instance.on.mock.calls.find(
-      ([filter]: [string]) => filter === 'inline_query',
+      ([filter]: [string]) => filter === 'editedMessage:text',
     )?.[1]('bar');
-    expect(inlineQueryHandler).toHaveBeenCalledWith('bar');
+    expect(textMessageHandler).toHaveBeenCalledWith('bar');
+
+    instance.on.mock.calls.find(
+      ([filter]: [string]) => filter === 'inline_query',
+    )?.[1]('baz');
+    expect(inlineQueryHandler).toHaveBeenCalledWith('baz');
+
+    expect(instance.use).toHaveBeenCalled();
 
     expect(instance.launch).toHaveBeenCalled();
     expect(processOnce).toHaveBeenCalledWith('SIGINT', expect.any(Function));

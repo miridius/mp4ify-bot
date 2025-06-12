@@ -76,7 +76,9 @@ export class MockBotApi {
       date: this.date++,
       ...partialMsg,
     } as Message.TextMessage;
-    this.sendUpdateToBot({ message });
+    this.sendUpdateToBot({
+      [Math.random() < 0.5 ? 'message' : 'edited_message']: message,
+    });
   }
 
   handle(url: URL, opts: RequestInit = {}) {
