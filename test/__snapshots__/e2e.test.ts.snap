@@ -393,15 +393,16 @@ exports[`message handler downloads http://youtube.com/shorts/0COu-qMC18Y: downlo
 🎬 <b>Video info:</b>
 
 <b>URL</b>: https://www.youtube.com/watch?v=0COu-qMC18Y
-<b>filename</b>: Zinger_Burgers-[0COu-qMC18Y].312+234.mp4
+<b>filename</b>: Zinger_Burgers-[0COu-qMC18Y].299+140.mp4
 <b>duration</b>: 57 sec
-<b>size</b>: 0.29 MB
+<b>size</b>: 24.93 MB
 <b>resolution</b>: 1080x1920
-<b>video codec</b>: avc1.64002A @ 5327.966 kbps
+<b>video codec</b>: avc1.64002a @ 3571.925 kbps
+<b>audio codec</b>: mp4a.40.2 @ 129.585 kbps
 
 ⬇️ <b>Downloading...</b>
 
-🚀 <b>Uploading (24.97 MB)...</b>"
+🚀 <b>Uploading (24.95 MB)...</b>"
 ,
   },
   {
@@ -414,7 +415,7 @@ exports[`message handler downloads http://youtube.com/shorts/0COu-qMC18Y: downlo
     },
     "reply_to_message_id": 0,
     "supports_streaming": true,
-    "video": "file:///storage/youtube/Zinger_Burgers-%5B0COu-qMC18Y%5D.312+234.mp4",
+    "video": "file:///storage/youtube/Zinger_Burgers-%5B0COu-qMC18Y%5D.299+140.mp4",
     "width": 1080,
   },
 ]
@@ -437,11 +438,12 @@ exports[`message handler downloads http://youtube.com/shorts/0COu-qMC18Y: mem ca
 🎬 <b>Video info:</b>
 
 <b>URL</b>: https://www.youtube.com/watch?v=0COu-qMC18Y
-<b>filename</b>: Zinger_Burgers-[0COu-qMC18Y].312+234.mp4
+<b>filename</b>: Zinger_Burgers-[0COu-qMC18Y].299+140.mp4
 <b>duration</b>: 57 sec
-<b>size</b>: 0.29 MB
+<b>size</b>: 24.93 MB
 <b>resolution</b>: 1080x1920
-<b>video codec</b>: avc1.64002A @ 5327.966 kbps"
+<b>video codec</b>: avc1.64002a @ 3571.925 kbps
+<b>audio codec</b>: mp4a.40.2 @ 129.585 kbps"
 ,
   },
   {
@@ -454,7 +456,7 @@ exports[`message handler downloads http://youtube.com/shorts/0COu-qMC18Y: mem ca
     },
     "reply_to_message_id": 1,
     "supports_streaming": true,
-    "video": "lmbyz7wxoaj1",
+    "video": "7jef1dex1i0d",
     "width": 1080,
   },
 ]
@@ -477,11 +479,12 @@ exports[`message handler downloads http://youtube.com/shorts/0COu-qMC18Y: disk c
 🎬 <b>Video info:</b>
 
 <b>URL</b>: https://www.youtube.com/watch?v=0COu-qMC18Y
-<b>filename</b>: Zinger_Burgers-[0COu-qMC18Y].312+234.mp4
+<b>filename</b>: Zinger_Burgers-[0COu-qMC18Y].299+140.mp4
 <b>duration</b>: 57 sec
-<b>size</b>: 0.29 MB
+<b>size</b>: 24.93 MB
 <b>resolution</b>: 1080x1920
-<b>video codec</b>: avc1.64002A @ 5327.966 kbps"
+<b>video codec</b>: avc1.64002a @ 3571.925 kbps
+<b>audio codec</b>: mp4a.40.2 @ 129.585 kbps"
 ,
   },
   {
@@ -494,7 +497,7 @@ exports[`message handler downloads http://youtube.com/shorts/0COu-qMC18Y: disk c
     },
     "reply_to_message_id": 2,
     "supports_streaming": true,
-    "video": "lmbyz7wxoaj1",
+    "video": "7jef1dex1i0d",
     "width": 1080,
   },
 ]
