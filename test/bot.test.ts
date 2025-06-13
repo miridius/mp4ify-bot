@@ -8,8 +8,10 @@ import {
   mock,
   spyOn,
 } from 'bun:test';
-import * as telegraf from 'telegraf';
-import * as telegrafFilters from 'telegraf/filters';
+// import * as telegraf from 'telegraf';
+// import * as telegrafFilters from 'telegraf/filters';
+import { Telegraf } from 'telegraf';
+import type { Message, Update } from 'telegraf/types';
 import { start } from '../src/bot';
 import { apiRoot } from '../src/consts';
 import * as handlers from '../src/handlers';
@@ -18,43 +20,14 @@ import { spyMock } from './test-utils';
 beforeEach(() => jest.clearAllMocks());
 afterAll(() => mock.restore());
 
-// Mock telegraf and telegraf/filters
-class MockTelegraf {
-  static instances: any[] = [];
-  telegram = { options: { apiRoot: 'mocked' } };
-  on = mock();
-  launch = mock();
-  stop = mock();
-  use = mock();
-  polling = false;
-  constructor(token: string, opts: any) {
-    MockTelegraf.instances.push(this);
-    this.telegram.options = opts.telegram;
-    setTimeout(() => (this.polling = true), 50);
-  }
-}
-spyOn(telegraf, 'Telegraf').mockImplementation(
-  ((...args: ConstructorParameters<typeof telegraf.Telegraf>) =>
-    new MockTelegraf(...args)) as never,
-);
-spyOn(telegrafFilters, 'message').mockImplementation(
-  //@ts-ignore
-  (type: string) => `message:${type}`,
-);
-spyOn(telegrafFilters, 'editedMessage').mockImplementation(
-  //@ts-ignore
-  (type: string) => `editedMessage:${type}`,
-);
+spyOn(Telegraf.prototype, 'launch').mockImplementation(async function () {
+  await Bun.sleep(10);
+  (this as any).polling = true;
+});
 
 // Mock ./handlers
-const textMessageHandler = spyOn(
-  handlers,
-  'textMessageHandler',
-).mockImplementation(mock());
-const inlineQueryHandler = spyOn(
-  handlers,
-  'inlineQueryHandler',
-).mockImplementation(mock());
+const textMessageHandler = spyMock(handlers, 'textMessageHandler');
+const inlineQueryHandler = spyMock(handlers, 'inlineQueryHandler');
 
 // Mock Bun.sleep
 const sleepSpy = spyOn(Bun, 'sleep');
@@ -62,50 +35,113 @@ const sleepSpy = spyOn(Bun, 'sleep');
 // Mock process.once
 const processOnce = spyMock(process, 'once');
 
-describe('start', () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
-    (telegraf.Telegraf as any).instances = [];
-    processOnce.mockReset();
+describe('start', async () => {
+  const botToken = 'test-token';
+
+  const bot = await start(botToken);
+
+  expect(processOnce).toHaveBeenCalledWith('SIGINT', expect.any(Function));
+  expect(processOnce).toHaveBeenCalledWith('SIGTERM', expect.any(Function));
+
+  bot.stop = mock();
+  processOnce.mock.calls.find(([signal]) => signal === 'SIGINT')![1]();
+  expect(bot.stop).toHaveBeenCalledWith('SIGINT');
+
+  processOnce.mock.calls.find(([signal]) => signal === 'SIGTERM')![1]();
+  expect(bot.stop).toHaveBeenCalledWith('SIGTERM');
+
+  it('constructs Telegraf with correct args', () => {
+    expect(bot.telegram.token).toBe(botToken);
+    expect(bot.telegram.options.apiRoot).toBe(apiRoot);
   });
 
-  it('constructs Telegraf with correct args and sets up handlers', async () => {
-    const botToken = 'test-token';
+  bot.telegram.getMe = mock(); // telegraf calls getMe when handling updates
 
-    const bot = await start(botToken);
+  it('calls textMessageHandler with text messages', async () => {
+    const msgUpdate: Update.MessageUpdate<Message.TextMessage> = {
+      update_id: 1,
+      message: {
+        message_id: 2,
+        date: Math.floor(Date.now() / 1000),
+        text: 'foo',
+        chat: { id: 123, type: 'private', first_name: 'Test' },
+        from: {
+          id: 456,
+          is_bot: false,
+          first_name: 'Test',
+          username: 'testuser',
+        },
+      },
+    };
+    await bot.handleUpdate(msgUpdate);
+    expect(textMessageHandler).toBeCalledTimes(1);
+    expect(textMessageHandler.mock.calls[0]![0].update).toEqual(msgUpdate);
+  });
 
-    expect(MockTelegraf.instances.length).toBe(1);
-    const instance = MockTelegraf.instances[0];
-    expect(instance.telegram.options).toEqual({ apiRoot });
+  it('calls textMessageHandler with text message edits in private chats', async () => {
+    const privateEdit: Update.EditedMessageUpdate<Message.TextMessage> = {
+      update_id: 1,
+      edited_message: {
+        message_id: 2,
+        date: Math.floor(Date.now() / 1000),
+        edit_date: Math.floor(Date.now() / 1000),
+        text: 'bar',
+        chat: { id: 123, type: 'private', first_name: 'Test' },
+        from: {
+          id: 456,
+          is_bot: false,
+          first_name: 'Test',
+          username: 'testuser',
+        },
+      },
+    };
+    await bot.handleUpdate(privateEdit);
+    expect(textMessageHandler).toBeCalledTimes(1);
+    expect(textMessageHandler.mock.calls[0]![0].update).toEqual(privateEdit);
+  });
 
-    instance.on.mock.calls.find(
-      ([filter]: [string]) => filter === 'message:text',
-    )?.[1]('foo');
-    expect(textMessageHandler).toHaveBeenCalledWith('foo');
+  it('does not call textMessageHandler with text message edits in group chats', async () => {
+    const groupEdit: Update.EditedMessageUpdate<Message.TextMessage> = {
+      update_id: 1,
+      edited_message: {
+        message_id: 2,
+        date: Math.floor(Date.now() / 1000),
+        edit_date: Math.floor(Date.now() / 1000),
+        text: 'bar',
+        chat: { id: 123, type: 'group', title: 'Test Group' },
+        from: {
+          id: 456,
+          is_bot: false,
+          first_name: 'Test',
+          username: 'testuser',
+        },
+      },
+    };
+    const mockLog = spyMock(console, 'log');
+    await bot.handleUpdate(groupEdit);
+    expect(textMessageHandler).toBeCalledTimes(0);
+    expect(mockLog).toBeCalledWith('unhandled update:', groupEdit);
+  });
 
-    instance.on.mock.calls.find(
-      ([filter]: [string]) => filter === 'editedMessage:text',
-    )?.[1]('bar');
-    expect(textMessageHandler).toHaveBeenCalledWith('bar');
-
-    instance.on.mock.calls.find(
-      ([filter]: [string]) => filter === 'inline_query',
-    )?.[1]('baz');
-    expect(inlineQueryHandler).toHaveBeenCalledWith('baz');
-
-    expect(instance.use).toHaveBeenCalled();
-
-    expect(instance.launch).toHaveBeenCalled();
-    expect(processOnce).toHaveBeenCalledWith('SIGINT', expect.any(Function));
-    expect(processOnce).toHaveBeenCalledWith('SIGTERM', expect.any(Function));
-
-    processOnce.mock.calls.find(([signal]) => signal === 'SIGINT')?.[1]();
-    expect(bot.stop).toHaveBeenCalledWith('SIGINT');
-
-    processOnce.mock.calls.find(([signal]) => signal === 'SIGTERM')?.[1]();
-    expect(bot.stop).toHaveBeenCalledWith('SIGTERM');
-
-    expect(bot).toBe(instance);
+  it('calls inlineQueryHandler with inline queries', async () => {
+    const inlineQuery: Update.InlineQueryUpdate = {
+      update_id: 1,
+      inline_query: {
+        id: 'abc123',
+        from: {
+          id: 456,
+          is_bot: false,
+          first_name: 'Test',
+          username: 'testuser',
+        },
+        query: 'test',
+        offset: '',
+        chat_type: 'private',
+      },
+    };
+    await bot.handleUpdate(inlineQuery);
+    expect(inlineQueryHandler).toBeCalledTimes(1);
+    expect(inlineQueryHandler.mock.calls[0]![0].update).toEqual(inlineQuery);
   });
 
   it('waits for polling to be true before continuing', async () => {
