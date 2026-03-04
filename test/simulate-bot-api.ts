@@ -1,3 +1,9 @@
+// Workaround for Bun test runner bug where process.stderr.fd becomes undefined,
+// which crashes the `debug` module used by telegraf
+if (process.stderr && process.stderr.fd === undefined) {
+  (process.stderr as any).fd = 2;
+}
+
 import { faker } from '@faker-js/faker';
 import { mock } from 'bun:test';
 import type { Message, Update } from 'telegraf/types';
