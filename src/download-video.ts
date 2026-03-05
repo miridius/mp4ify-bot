@@ -19,7 +19,7 @@ const getErrorMessage = (proc: Bun.ReadableSubprocess) =>
       ? `yt-dlp was killed with signal ${proc.signalCode}`
       : `yt-dlp exited with code ${proc.exitCode}`;
 
-type VideoInfo = {
+export type VideoInfo = {
   // fileId?: string;
   filename: string;
   title: string;
@@ -55,6 +55,8 @@ const execYtdlp = async (
     'yt-dlp',
     url,
     verbose ? '--verbose' : '--no-warnings',
+    // Cloud environments (e.g. Claude Code Web) often have SSL interception
+    ...(Bun.env.CLAUDE_CODE_REMOTE === 'true' ? ['--no-check-certificates'] : []),
     ...extraArgs,
   ];
   console.debug(command.join(' '));
@@ -159,8 +161,37 @@ const skippedTime = ({ sponsorblock_chapters }: VideoInfo) =>
     .map(({ start_time, end_time }) => end_time - start_time)
     .reduce((sum, time) => sum + time, 0) || 0;
 
-const calcDuration = (info: VideoInfo) =>
+export const calcDuration = (info: VideoInfo) =>
   info.duration && Math.round(info.duration - skippedTime(info));
+
+export const probeDuration = async (
+  filename: string,
+): Promise<number | undefined> => {
+  const proc = Bun.spawn(
+    [
+      'ffprobe',
+      '-v',
+      'error',
+      '-show_entries',
+      'format=duration',
+      '-of',
+      'csv=p=0',
+      filename,
+    ],
+    { stderr: 'pipe' },
+  );
+  const [stdout, stderr] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
+  await proc.exited;
+  if (proc.exitCode !== 0) {
+    console.error(`ffprobe failed for ${filename} (exit ${proc.exitCode}): ${stderr.trim()}`);
+    return undefined;
+  }
+  const duration = parseFloat(stdout.trim());
+  return isNaN(duration) ? undefined : Math.round(duration);
+};
 
 export const sendInfo = async (
   log: LogMessage,

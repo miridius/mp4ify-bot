@@ -42,7 +42,9 @@ export class MockBotApi {
     text?: string;
     video?: string;
     edit_date?: number;
+    reply_markup?: any;
   }[] = [];
+  public answeredCallbacks: { callback_query_id: string; text?: string }[] = [];
   private date = 0;
   private pathPrefix: string;
   private updates: Update[] = [];
@@ -125,8 +127,12 @@ export class MockBotApi {
           return this.sendMessage(data);
         case 'editMessageText':
           return this.editMessageText(data);
+        case 'deleteMessage':
+          return okResp(true);
         case 'sendVideo':
           return this.sendVideo(data);
+        case 'answerCallbackQuery':
+          return this.answerCallbackQuery(data);
         default:
           throw new Error('not yet implemented: ' + command);
       }
@@ -190,7 +196,11 @@ export class MockBotApi {
     });
   }
 
-  private sendMessage(data: { chat_id: number; text: string }) {
+  private sendMessage(data: {
+    chat_id: number;
+    text: string;
+    reply_markup?: any;
+  }) {
     if (data.chat_id !== this.user.id) {
       return errResp('Bad Request: chat not found');
     }
@@ -222,6 +232,39 @@ export class MockBotApi {
       { ...message, edit_date: this.date++ } as any,
       message_id,
     );
+  }
+
+  private answerCallbackQuery(data: {
+    callback_query_id: string;
+    text?: string;
+  }) {
+    this.answeredCallbacks.push(data);
+    return okResp(true);
+  }
+
+  sendCallbackQueryToBot(
+    messageId: number,
+    data: string,
+    userOverride?: { id: number },
+  ) {
+    const from = userOverride
+      ? { ...userOverride, is_bot: false, first_name: 'Other' }
+      : { ...this.user, is_bot: false, language_code: 'en' };
+    this.sendUpdateToBot({
+      callback_query: {
+        id: String(this.date++),
+        from,
+        message: {
+          message_id: messageId,
+          from: this.bot,
+          chat: { ...this.user, type: 'private' },
+          date: this.date++,
+          text: 'Download this video?',
+        },
+        chat_instance: String(this.user.id),
+        data,
+      },
+    } as any);
   }
 
   fileIds = new Map<string, string>();
