@@ -26,24 +26,13 @@ chmod 777 /storage
 bun install
 
 # Expose secrets to the shell environment via CLAUDE_ENV_FILE.
-# The env vars (BOT_TOKEN, TELEGRAM_API_ID, etc.) are configured as
-# "Environment variables" in the Claude Code Web environment settings.
-# CLAUDE_ENV_FILE makes them available to subsequent shell commands.
-# We use fallback defaults so tests can still run without real credentials.
+# Fallback defaults allow tests to run without real credentials.
 {
   echo "export BOT_TOKEN=\"${BOT_TOKEN:-dummy}\""
-  echo "export TELEGRAM_API_ID=\"${TELEGRAM_API_ID:-0}\""
-  echo "export TELEGRAM_API_HASH=\"${TELEGRAM_API_HASH:-dummy}\""
   echo "export OWNER_ID=\"${OWNER_ID:-0}\""
 } >> "$CLAUDE_ENV_FILE"
 
-# Create .env.telegram for docker compose (bot-api service)
-cat > "$CLAUDE_PROJECT_DIR/.env.telegram" <<ENVEOF
-TELEGRAM_API_ID=${TELEGRAM_API_ID:-0}
-TELEGRAM_API_HASH=${TELEGRAM_API_HASH:-dummy}
-ENVEOF
-
-# Create .env.dev for docker compose (dev service)
+# Create .env.dev for the bot (used by docker compose and fallback e2e)
 cat > "$CLAUDE_PROJECT_DIR/.env.dev" <<ENVEOF
 BOT_TOKEN=${BOT_TOKEN:-dummy}
 OWNER_ID=${OWNER_ID:-0}
