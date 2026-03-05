@@ -1,3 +1,4 @@
+import { unlink } from 'fs/promises';
 import {
   calcDuration,
   downloadVideo,
@@ -7,7 +8,6 @@ import {
   sendVideo,
   type VideoInfo,
 } from './download-video';
-import { unlink } from 'fs/promises';
 import { LogMessage, NoLog } from './log-message';
 import {
   addPending,
@@ -21,23 +21,12 @@ import type {
   MessageContext,
 } from './types';
 
-// message needs cache of url -> info & id
-// inline needs cache of url -> caption & id
-
-// 1. get info [url -> info cache]
-// 2. (private chat only) print video details
-// 3. choose format, generate file name
-// 4. download+merge [cache by keeping files on disk?]
-// 5. upload [file id cache]
-// 6. (inline chat only) respond to query
-// 7. can we zero out the video files / replace with cache of id?
-
 export const textMessageHandler = async (ctx: MessageContext) => {
   const { text, chat, entities, message_id } = ctx.message || ctx.editedMessage;
   console.debug('got message:', text);
   const verbose = chat.type === 'private' && text.startsWith('/verbose ');
 
-  // Handle all URLs in the message. Intentionally don't await
+  // Handle all URLs in the message concurrently
   await Promise.all(
     entities
       ?.filter((e) => e.type === 'url')
@@ -47,7 +36,6 @@ export const textMessageHandler = async (ctx: MessageContext) => {
         const log = new LogMessage(ctx);
         try {
           const info = await getInfo(log, url, verbose);
-          info.webpage_url ||= url; // just in case webpage_url is missing
           await sendInfo(log, info, verbose);
           const duration = calcDuration(info);
           const isGroupChat = chat.type !== 'private';
@@ -60,8 +48,8 @@ export const textMessageHandler = async (ctx: MessageContext) => {
           if (isGroupChat) {
             const actualDuration = await probeDuration(info.filename);
             if (actualDuration && actualDuration > LONG_VIDEO_THRESHOLD_SECS) {
-              info.duration = actualDuration;
-              await requestConfirmation(ctx, info, verbose, message_id, true);
+              const infoWithDuration = { ...info, duration: actualDuration };
+              await requestConfirmation(ctx, infoWithDuration, verbose, message_id, true);
               return;
             }
           }
@@ -120,10 +108,10 @@ const requestConfirmation = async (
 };
 
 const safeAnswer = (ctx: CallbackQueryContext, text: string) =>
-  ctx.answerCbQuery(text).catch(() => {});
+  ctx.answerCbQuery(text).catch((e) => console.error('answerCbQuery failed:', e));
 
 const safeDelete = (ctx: CallbackQueryContext) =>
-  ctx.deleteMessage().catch(() => {});
+  ctx.deleteMessage().catch((e) => console.error('deleteMessage failed:', e));
 
 const handleUnavailable = async (ctx: CallbackQueryContext) => {
   await safeAnswer(ctx, 'This request is no longer available.');
@@ -134,8 +122,11 @@ export const callbackQueryHandler = async (ctx: CallbackQueryContext) => {
   const data = (ctx.callbackQuery as any).data as string | undefined;
   if (!data) return;
 
-  const match = data.match(/^(dl|no):([a-z0-9]+)$/);
-  if (!match) return;
+  const match = data.match(/^(dl|no):([a-z0-9-]+)$/);
+  if (!match) {
+    await safeAnswer(ctx, '');
+    return;
+  }
 
   const [, action, id] = match;
 
@@ -183,6 +174,18 @@ export const callbackQueryHandler = async (ctx: CallbackQueryContext) => {
     await sendVideo(ctx, log, info, chatId, messageId);
   } catch (e: any) {
     console.error('Download failed after confirmation:', e);
+    try {
+      await ctx.telegram.sendMessage(
+        chatId,
+        `💥 <b>Download failed</b>: ${Bun.escapeHTML(e.message)}`,
+        {
+          reply_parameters: { message_id: messageId },
+          parse_mode: 'HTML',
+        },
+      );
+    } catch (sendErr: any) {
+      console.error('Failed to send error message:', sendErr);
+    }
   }
 };
 

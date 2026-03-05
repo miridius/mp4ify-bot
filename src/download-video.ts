@@ -20,11 +20,10 @@ const getErrorMessage = (proc: Bun.ReadableSubprocess) =>
       : `yt-dlp exited with code ${proc.exitCode}`;
 
 export type VideoInfo = {
-  // fileId?: string;
   filename: string;
   title: string;
   description?: string;
-  webpage_url: string;
+  webpage_url?: string;
   duration?: number;
   width?: number;
   height?: number;
@@ -42,7 +41,6 @@ export type VideoInfo = {
     title: 'Sponsor' | string;
     type: 'skip' | string;
   }[];
-  // [x: string]: any;
 };
 
 const execYtdlp = async (
@@ -106,6 +104,7 @@ export const getInfo = memoize(
 
     const infoStr = await execYtdlp(log, url, verbose, '--dump-json');
     const info = JSON.parse(infoStr) as VideoInfo;
+    info.webpage_url ||= url;
     const { webpage_url } = info;
     if (webpage_url && webpage_url !== url) {
       const mainInfoFile = Bun.file(INFO_CACHE_DIR + filenamify(webpage_url));
@@ -248,7 +247,7 @@ export const downloadVideo = memoize(
         '',
         verbose,
         '--load-info-json',
-        urlInfoFile(info.webpage_url).name!,
+        urlInfoFile(info.webpage_url!).name!,
       );
     }
   },

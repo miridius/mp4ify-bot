@@ -72,6 +72,9 @@ export const createMockCallbackCtx = (
       data,
     },
     from: { id: userId, is_bot: false },
+    telegram: {
+      sendMessage: mock(async () => {}),
+    },
     answerCbQuery: mock(async () => {}),
     deleteMessage: mock(async () => {}),
     editMessageText: mock(async () => {}),

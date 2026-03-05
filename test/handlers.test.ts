@@ -215,6 +215,27 @@ describe('confirmation for long videos (>20 min)', () => {
       expect(buttons[1].callback_data).toMatch(/^no:/);
     });
 
+    it('formats duration with seconds in confirmation message', async () => {
+      mockGetInfo.mockImplementation(
+        memoize(
+          mock(async (_log, url, _verbose) => ({
+            webpage_url: url,
+            title: 'Long Video',
+            extractor: 'test',
+            id: 'id',
+            description: 'desc',
+            filename: 'long-video.mp4',
+            duration: 25 * 60 + 30, // 25m 30s
+          })),
+        ),
+      );
+      const ctx = createMockMessageCtx(isEdit, { chat: groupChat });
+      await textMessageHandler(ctx as any);
+
+      const [, text] = (ctx.telegram.sendMessage as any).mock.calls[0];
+      expect(text).toBe('This video is pretty long (25m 30s), do you want me to download it anyway?');
+    });
+
     it('downloads immediately for video >20 min in private chat', async () => {
       mockGetInfoLong();
       const ctx = createMockMessageCtx(isEdit);
@@ -322,16 +343,25 @@ describe('confirmation for long videos (>20 min)', () => {
       expect(cbCtx2.answerCbQuery).toHaveBeenCalledWith('This request is no longer available.');
     });
 
-    it('handles download errors gracefully on confirm', async () => {
+    it('handles download errors gracefully on confirm and notifies user', async () => {
       const { confirmData } = await triggerConfirmation();
       mockDownloadVideo.mockRejectedValueOnce(new Error('network fail'));
-      const mockError = spyOn(console, 'error').mockImplementationOnce(() => {});
+      const mockError = spyOn(console, 'error').mockImplementation(() => {});
 
       const cbCtx = createMockCallbackCtx(confirmData, 123);
       await callbackQueryHandler(cbCtx as any);
 
       expect(cbCtx.answerCbQuery).toHaveBeenCalledWith('Starting download...');
-      expect(mockError).toHaveBeenCalledTimes(1);
+      expect(mockError).toHaveBeenCalled();
+      // Should send error message to the chat
+      expect(cbCtx.telegram.sendMessage).toHaveBeenCalledWith(
+        -100, // chatId from the pending download
+        expect.stringContaining('network fail'),
+        expect.objectContaining({
+          reply_parameters: { message_id: 1 },
+          parse_mode: 'HTML',
+        }),
+      );
     });
 
     it('responds with unavailable on duplicate cancel', async () => {

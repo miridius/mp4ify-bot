@@ -11,13 +11,16 @@ export type PendingDownload = {
   messageId: number;
   chatId: number;
   userId: number;
-  postDownload?: boolean;
+  postDownload: boolean;
 };
 
 const file = (id: string) => Bun.file(`${PENDING_DIR}${id}.json`);
 
+const isNotFound = (e: unknown) =>
+  e instanceof Error && 'code' in e && e.code === 'ENOENT';
+
 export const addPending = async (download: PendingDownload): Promise<string> => {
-  const id = Math.random().toString(36).slice(2, 10);
+  const id = crypto.randomUUID();
   await Bun.write(file(id), JSON.stringify(download));
   return id;
 };
@@ -29,17 +32,20 @@ export const putPending = async (id: string, download: PendingDownload): Promise
 export const getPending = async (id: string): Promise<PendingDownload | undefined> => {
   try {
     return await file(id).json();
-  } catch {
+  } catch (e) {
+    if (!isNotFound(e)) console.error(`getPending(${id}) failed:`, e);
     return undefined;
   }
 };
 
 export const takePending = async (id: string): Promise<PendingDownload | undefined> => {
+  const f = file(id);
   try {
-    const entry: PendingDownload = await file(id).json();
-    await file(id).unlink();
+    const entry: PendingDownload = await f.json();
+    await f.unlink();
     return entry;
-  } catch {
+  } catch (e) {
+    if (!isNotFound(e)) console.error(`takePending(${id}) failed:`, e);
     return undefined;
   }
 };

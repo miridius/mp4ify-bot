@@ -14,6 +14,7 @@ const makePending = (overrides: Partial<PendingDownload> = {}) =>
     messageId: 1,
     chatId: -100,
     userId: 123,
+    postDownload: false,
     ...overrides,
   }) satisfies PendingDownload;
 

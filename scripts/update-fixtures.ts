@@ -38,6 +38,7 @@ for (const [service, entry] of Object.entries<any>(fixtures.services)) {
     console.error(`  FAILED to parse JSON: ${e.message}`);
     continue;
   }
+  let serviceChanged = false;
   for (const field of fields) {
     const oldVal = entry[field];
     const newVal = info[field] ?? null;
@@ -45,10 +46,11 @@ for (const [service, entry] of Object.entries<any>(fixtures.services)) {
       console.log(`  ${field}: ${JSON.stringify(oldVal)} -> ${JSON.stringify(newVal)}`);
       entry[field] = newVal;
       hasChanges = true;
+      serviceChanged = true;
     }
   }
 
-  if (!hasChanges) {
+  if (!serviceChanged) {
     console.log(`  OK (no changes)`);
   }
 }
