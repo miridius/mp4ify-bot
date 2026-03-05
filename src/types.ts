@@ -7,4 +7,9 @@ export type MessageContext =
 
 export type InlineQueryContext = Context<Update.InlineQueryUpdate>;
 
-export type AnyContext = MessageContext | InlineQueryContext;
+export type CallbackQueryContext = Context<Update.CallbackQueryUpdate>;
+
+export type AnyContext =
+  | MessageContext
+  | InlineQueryContext
+  | CallbackQueryContext;

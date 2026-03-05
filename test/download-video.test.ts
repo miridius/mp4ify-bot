@@ -1,3 +1,6 @@
+// Ensure cloud-only flags don't affect test snapshots
+delete Bun.env.CLAUDE_CODE_REMOTE;
+
 import {
   afterAll,
   beforeEach,

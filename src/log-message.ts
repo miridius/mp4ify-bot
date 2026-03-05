@@ -73,6 +73,8 @@ export class LogMessage {
         )) as Message.TextMessage;
       } catch (e) {
         console.error('Failed to edit message', text, e);
+        // Mark text as "sent" to prevent cascading retries with the same content
+        message.text = text.replaceAll(/<[^>]+>/g, '');
       }
     }
     return message;

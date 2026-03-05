@@ -213,6 +213,54 @@
         "offset": ""
       }
     },
+    "callback_query_confirm": {
+      "update_id": 938557393,
+      "callback_query": {
+        "id": "260980481118852340",
+        "from": {
+          "id": 60764253,
+          "is_bot": false,
+          "first_name": "Dave",
+          "last_name": "Rolle",
+          "username": "DaveRolle",
+          "language_code": "en"
+        },
+        "message": {
+          "message_id": 710,
+          "from": {
+            "id": 7939204706,
+            "is_bot": true,
+            "first_name": "[DEV] Video buddy",
+            "username": "dev_mp4ify_bot"
+          },
+          "chat": {
+            "id": 60764253,
+            "first_name": "Dave",
+            "last_name": "Rolle",
+            "username": "DaveRolle",
+            "type": "private"
+          },
+          "date": 1772706706,
+          "text": "Learning test: click a button",
+          "reply_markup": {
+            "inline_keyboard": [
+              [
+                {
+                  "text": "Confirm",
+                  "callback_data": "test_confirm"
+                },
+                {
+                  "text": "Cancel",
+                  "callback_data": "test_cancel"
+                }
+              ]
+            ]
+          }
+        },
+        "chat_instance": "-2116614674922541568",
+        "data": "test_confirm"
+      }
+    },
     "inline_query_dm": {
       "update_id": 938557386,
       "inline_query": {

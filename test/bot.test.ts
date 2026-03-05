@@ -28,6 +28,7 @@ spyOn(Telegraf.prototype, 'launch').mockImplementation(async function () {
 // Mock ./handlers
 const textMessageHandler = spyMock(handlers, 'textMessageHandler');
 const inlineQueryHandler = spyMock(handlers, 'inlineQueryHandler');
+const callbackQueryHandler = spyMock(handlers, 'callbackQueryHandler');
 
 // Mock Bun.sleep
 const sleepSpy = spyOn(Bun, 'sleep');
@@ -142,6 +143,26 @@ describe('start', async () => {
     await bot.handleUpdate(inlineQuery);
     expect(inlineQueryHandler).toBeCalledTimes(1);
     expect(inlineQueryHandler.mock.calls[0]![0].update).toEqual(inlineQuery);
+  });
+
+  it('calls callbackQueryHandler with callback queries', async () => {
+    const callbackQuery: Update.CallbackQueryUpdate = {
+      update_id: 1,
+      callback_query: {
+        id: 'cb123',
+        from: {
+          id: 456,
+          is_bot: false,
+          first_name: 'Test',
+          username: 'testuser',
+        },
+        chat_instance: '456',
+        data: 'dl:test-id',
+      },
+    };
+    await bot.handleUpdate(callbackQuery);
+    expect(callbackQueryHandler).toBeCalledTimes(1);
+    expect(callbackQueryHandler.mock.calls[0]![0].update).toEqual(callbackQuery);
   });
 
   it('waits for polling to be true before continuing', async () => {

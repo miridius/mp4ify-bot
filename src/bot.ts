@@ -2,7 +2,11 @@ import { Telegraf } from 'telegraf';
 import { allOf, editedMessage, message, type Filter } from 'telegraf/filters';
 import type { Update } from 'telegraf/types';
 import { apiRoot } from './consts';
-import { inlineQueryHandler, textMessageHandler } from './handlers';
+import {
+  callbackQueryHandler,
+  inlineQueryHandler,
+  textMessageHandler,
+} from './handlers';
 
 export const start = async (botToken: string) => {
   const bot = new Telegraf(botToken, { telegram: { apiRoot } });
@@ -23,6 +27,7 @@ export const start = async (botToken: string) => {
     (ctx) => textMessageHandler(ctx),
   );
   bot.on('inline_query', (ctx) => inlineQueryHandler(ctx));
+  bot.on('callback_query', (ctx) => callbackQueryHandler(ctx));
 
   bot.use((ctx) => console.log('unhandled update:', ctx.update));
 
