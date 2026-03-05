@@ -18,7 +18,7 @@ exports[`message handler downloads https://www.instagram.com/reel/DKbYQgeoL3F/?i
 🎬 <b>Video info:</b>
 
 <b>URL</b>: https://www.instagram.com/reel/DKbYQgeoL3F/?igsh=MTh4MnpnYm9hdjJ5OA==
-<b>filename</b>: Video_by_disastra_memes-[DKbYQgeoL3F].3.mp4
+<b>filename</b>: Video_by_disastra_memes-[DKbYQgeoL3F].5.mp4
 <b>duration</b>: 12 sec
 <b>resolution</b>: 640x584
 
@@ -37,7 +37,7 @@ exports[`message handler downloads https://www.instagram.com/reel/DKbYQgeoL3F/?i
     },
     "reply_to_message_id": 0,
     "supports_streaming": true,
-    "video": "file:///storage/Instagram/Video_by_disastra_memes-%5BDKbYQgeoL3F%5D.3.mp4",
+    "video": "file:///storage/Instagram/Video_by_disastra_memes-%5BDKbYQgeoL3F%5D.5.mp4",
     "width": 640,
   },
 ]
@@ -60,7 +60,7 @@ exports[`message handler downloads https://www.instagram.com/reel/DKbYQgeoL3F/?i
 🎬 <b>Video info:</b>
 
 <b>URL</b>: https://www.instagram.com/reel/DKbYQgeoL3F/?igsh=MTh4MnpnYm9hdjJ5OA==
-<b>filename</b>: Video_by_disastra_memes-[DKbYQgeoL3F].3.mp4
+<b>filename</b>: Video_by_disastra_memes-[DKbYQgeoL3F].5.mp4
 <b>duration</b>: 12 sec
 <b>resolution</b>: 640x584"
 ,
@@ -75,7 +75,7 @@ exports[`message handler downloads https://www.instagram.com/reel/DKbYQgeoL3F/?i
     },
     "reply_to_message_id": 1,
     "supports_streaming": true,
-    "video": "11ej1fdh590e0",
+    "video": "4zkom5l8ldh1",
     "width": 640,
   },
 ]
@@ -98,7 +98,7 @@ exports[`message handler downloads https://www.instagram.com/reel/DKbYQgeoL3F/?i
 🎬 <b>Video info:</b>
 
 <b>URL</b>: https://www.instagram.com/reel/DKbYQgeoL3F/?igsh=MTh4MnpnYm9hdjJ5OA==
-<b>filename</b>: Video_by_disastra_memes-[DKbYQgeoL3F].3.mp4
+<b>filename</b>: Video_by_disastra_memes-[DKbYQgeoL3F].5.mp4
 <b>duration</b>: 12 sec
 <b>resolution</b>: 640x584"
 ,
@@ -113,7 +113,7 @@ exports[`message handler downloads https://www.instagram.com/reel/DKbYQgeoL3F/?i
     },
     "reply_to_message_id": 2,
     "supports_streaming": true,
-    "video": "11ej1fdh590e0",
+    "video": "4zkom5l8ldh1",
     "width": 640,
   },
 ]
@@ -134,33 +134,10 @@ exports[`message handler downloads https://www.reddit.com/r/nextfuckinglevel/s/i
     "text": 
 "🧐 <b>Scraping</b> https://www.reddit.com/r/nextfuckinglevel/s/iGEii0a7V6...
 
-🎬 <b>Video info:</b>
+<code>ERROR: [generic] Unable to download webpage: HTTP Error 403: Blocked (caused by &lt;HTTPError 403: Blocked&gt;)</code>
 
-<b>URL</b>: https://www.reddit.com/r/nextfuckinglevel/comments/1l68isw/mix_of_coolness_agility_technique_power_and_a/?share_id=ejTJZnh_f4BZuzlnfcOUo&utm_content=2&utm_medium=android_app&utm_name=androidcss&utm_source=share&utm_term=1
-<b>filename</b>: Mix_of_coolness_agility_technique_power_and_a_touch_of_madness-[auhgg4yoeo5f1].hls-1023+dash-6.mp4
-<b>duration</b>: 10 sec
-<b>size</b>: 0.01 MB
-<b>resolution</b>: 480x600
-<b>video codec</b>: avc1.4D401F @ 1023.275 kbps
-<b>audio codec</b>: mp4a.40.2 @ 132.978 kbps
-
-⬇️ <b>Downloading...</b>
-
-🚀 <b>Uploading (1.20 MB)...</b>"
+💥 <b>Download failed</b>: yt-dlp exited with code 1"
 ,
-  },
-  {
-    "chat_id": 1337,
-    "disable_notification": true,
-    "duration": 10,
-    "height": 600,
-    "reply_parameters": {
-      "message_id": 0,
-    },
-    "reply_to_message_id": 0,
-    "supports_streaming": true,
-    "video": "file:///storage/Reddit/Mix_of_coolness_agility_technique_power_and_a_touch_of_madness-%5Bauhgg4yoeo5f1%5D.hls-1023+dash-6.mp4",
-    "width": 480,
   },
 ]
 `;
@@ -178,30 +155,12 @@ exports[`message handler downloads https://www.reddit.com/r/nextfuckinglevel/s/i
       "message_id": 1,
     },
     "text": 
-"
-🎬 <b>Video info:</b>
+"🧐 <b>Scraping</b> https://www.reddit.com/r/nextfuckinglevel/s/iGEii0a7V6...
 
-<b>URL</b>: https://www.reddit.com/r/nextfuckinglevel/comments/1l68isw/mix_of_coolness_agility_technique_power_and_a/?share_id=ejTJZnh_f4BZuzlnfcOUo&utm_content=2&utm_medium=android_app&utm_name=androidcss&utm_source=share&utm_term=1
-<b>filename</b>: Mix_of_coolness_agility_technique_power_and_a_touch_of_madness-[auhgg4yoeo5f1].hls-1023+dash-6.mp4
-<b>duration</b>: 10 sec
-<b>size</b>: 0.01 MB
-<b>resolution</b>: 480x600
-<b>video codec</b>: avc1.4D401F @ 1023.275 kbps
-<b>audio codec</b>: mp4a.40.2 @ 132.978 kbps"
+<code>ERROR: [generic] Unable to download webpage: HTTP Error 403: Blocked (caused by &lt;HTTPError 403: Blocked&gt;)</code>
+
+💥 <b>Download failed</b>: yt-dlp exited with code 1"
 ,
-  },
-  {
-    "chat_id": 1337,
-    "disable_notification": true,
-    "duration": 10,
-    "height": 600,
-    "reply_parameters": {
-      "message_id": 1,
-    },
-    "reply_to_message_id": 1,
-    "supports_streaming": true,
-    "video": "uufngxsbt7v5",
-    "width": 480,
   },
 ]
 `;
@@ -219,30 +178,12 @@ exports[`message handler downloads https://www.reddit.com/r/nextfuckinglevel/s/i
       "message_id": 2,
     },
     "text": 
-"
-🎬 <b>Video info:</b>
+"🧐 <b>Scraping</b> https://www.reddit.com/r/nextfuckinglevel/s/iGEii0a7V6...
 
-<b>URL</b>: https://www.reddit.com/r/nextfuckinglevel/comments/1l68isw/mix_of_coolness_agility_technique_power_and_a/?share_id=ejTJZnh_f4BZuzlnfcOUo&utm_content=2&utm_medium=android_app&utm_name=androidcss&utm_source=share&utm_term=1
-<b>filename</b>: Mix_of_coolness_agility_technique_power_and_a_touch_of_madness-[auhgg4yoeo5f1].hls-1023+dash-6.mp4
-<b>duration</b>: 10 sec
-<b>size</b>: 0.01 MB
-<b>resolution</b>: 480x600
-<b>video codec</b>: avc1.4D401F @ 1023.275 kbps
-<b>audio codec</b>: mp4a.40.2 @ 132.978 kbps"
+<code>ERROR: [generic] Unable to download webpage: HTTP Error 403: Blocked (caused by &lt;HTTPError 403: Blocked&gt;)</code>
+
+💥 <b>Download failed</b>: yt-dlp exited with code 1"
 ,
-  },
-  {
-    "chat_id": 1337,
-    "disable_notification": true,
-    "duration": 10,
-    "height": 600,
-    "reply_parameters": {
-      "message_id": 2,
-    },
-    "reply_to_message_id": 2,
-    "supports_streaming": true,
-    "video": "uufngxsbt7v5",
-    "width": 480,
   },
 ]
 `;
@@ -393,16 +334,15 @@ exports[`message handler downloads http://youtube.com/shorts/0COu-qMC18Y: downlo
 🎬 <b>Video info:</b>
 
 <b>URL</b>: https://www.youtube.com/watch?v=0COu-qMC18Y
-<b>filename</b>: Zinger_Burgers-[0COu-qMC18Y].299+140.mp4
+<b>filename</b>: Zinger_Burgers-[0COu-qMC18Y].312+234-11.mp4
 <b>duration</b>: 57 sec
-<b>size</b>: 24.93 MB
+<b>size</b>: 0.29 MB
 <b>resolution</b>: 1080x1920
-<b>video codec</b>: avc1.64002a @ 3571.925 kbps
-<b>audio codec</b>: mp4a.40.2 @ 129.585 kbps
+<b>video codec</b>: avc1.64002A @ 5327.966 kbps
 
 ⬇️ <b>Downloading...</b>
 
-🚀 <b>Uploading (24.95 MB)...</b>"
+🚀 <b>Uploading (24.97 MB)...</b>"
 ,
   },
   {
@@ -415,7 +355,7 @@ exports[`message handler downloads http://youtube.com/shorts/0COu-qMC18Y: downlo
     },
     "reply_to_message_id": 0,
     "supports_streaming": true,
-    "video": "file:///storage/youtube/Zinger_Burgers-%5B0COu-qMC18Y%5D.299+140.mp4",
+    "video": "file:///storage/youtube/Zinger_Burgers-%5B0COu-qMC18Y%5D.312+234-11.mp4",
     "width": 1080,
   },
 ]
@@ -438,12 +378,11 @@ exports[`message handler downloads http://youtube.com/shorts/0COu-qMC18Y: mem ca
 🎬 <b>Video info:</b>
 
 <b>URL</b>: https://www.youtube.com/watch?v=0COu-qMC18Y
-<b>filename</b>: Zinger_Burgers-[0COu-qMC18Y].299+140.mp4
+<b>filename</b>: Zinger_Burgers-[0COu-qMC18Y].312+234-11.mp4
 <b>duration</b>: 57 sec
-<b>size</b>: 24.93 MB
+<b>size</b>: 0.29 MB
 <b>resolution</b>: 1080x1920
-<b>video codec</b>: avc1.64002a @ 3571.925 kbps
-<b>audio codec</b>: mp4a.40.2 @ 129.585 kbps"
+<b>video codec</b>: avc1.64002A @ 5327.966 kbps"
 ,
   },
   {
@@ -456,7 +395,7 @@ exports[`message handler downloads http://youtube.com/shorts/0COu-qMC18Y: mem ca
     },
     "reply_to_message_id": 1,
     "supports_streaming": true,
-    "video": "7jef1dex1i0d",
+    "video": "2dne2ojllzgw8",
     "width": 1080,
   },
 ]
@@ -479,12 +418,11 @@ exports[`message handler downloads http://youtube.com/shorts/0COu-qMC18Y: disk c
 🎬 <b>Video info:</b>
 
 <b>URL</b>: https://www.youtube.com/watch?v=0COu-qMC18Y
-<b>filename</b>: Zinger_Burgers-[0COu-qMC18Y].299+140.mp4
+<b>filename</b>: Zinger_Burgers-[0COu-qMC18Y].312+234-11.mp4
 <b>duration</b>: 57 sec
-<b>size</b>: 24.93 MB
+<b>size</b>: 0.29 MB
 <b>resolution</b>: 1080x1920
-<b>video codec</b>: avc1.64002a @ 3571.925 kbps
-<b>audio codec</b>: mp4a.40.2 @ 129.585 kbps"
+<b>video codec</b>: avc1.64002A @ 5327.966 kbps"
 ,
   },
   {
@@ -497,7 +435,7 @@ exports[`message handler downloads http://youtube.com/shorts/0COu-qMC18Y: disk c
     },
     "reply_to_message_id": 2,
     "supports_streaming": true,
-    "video": "7jef1dex1i0d",
+    "video": "2dne2ojllzgw8",
     "width": 1080,
   },
 ]
