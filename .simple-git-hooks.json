@@ -1,3 +1,3 @@
 {
-  "pre-commit": "docker compose exec dev bun lint"
+  "pre-commit": "docker compose exec -T dev bun lint"
 }

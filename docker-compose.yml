@@ -19,6 +19,7 @@ services:
     volumes:
       - bot-api-data:/var/lib/telegram-bot-api
       - storage:/storage
+    restart: always
 
   # Each of the services below runs a different bot, you may not want
   # to run all of them at the same time.
@@ -63,7 +64,7 @@ services:
     devices:
       - /dev/dri:/dev/dri
     user: '${UID:-1000}:${GID:-1000}'
-    restart: unless-stopped
+    restart: always
     depends_on:
       - bot-api
 
