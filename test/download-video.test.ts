@@ -341,19 +341,17 @@ describe('sendVideo', () => {
     mockExists.mockResolvedValueOnce(false); // id file
     mockExists.mockResolvedValueOnce(true); // video file
     const res = await sendVideo(ctx as any, log as any, VideoInfo, 123);
-    expect(mockSendVideo.mock.calls[0]).toMatchInlineSnapshot(`
-      [
-        123,
-        "file:///app/file.mp4",
-        {
-          "disable_notification": true,
-          "duration": 10,
-          "height": 100,
-          "supports_streaming": true,
-          "width": 100,
-        },
-      ]
-    `);
+    expect(mockSendVideo.mock.calls[0]).toEqual([
+      123,
+      Bun.pathToFileURL('file.mp4').href,
+      {
+        disable_notification: true,
+        duration: 10,
+        height: 100,
+        supports_streaming: true,
+        width: 100,
+      },
+    ]);
     expect(mockUnlink.mock.calls[0]).toMatchInlineSnapshot(`
       [
         "file.mp4",

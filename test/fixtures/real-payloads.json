@@ -1,0 +1,234 @@
+{
+  "description": "Real Telegram API payloads captured from getUpdates on 2026-03-05. Used as reference fixtures for MockBotApi learning tests.",
+  "payloads": {
+    "dm_plain_text": {
+      "update_id": 938557370,
+      "message": {
+        "message_id": 704,
+        "from": {
+          "id": 60764253,
+          "is_bot": false,
+          "first_name": "Dave",
+          "last_name": "Rolle",
+          "username": "DaveRolle",
+          "language_code": "en"
+        },
+        "chat": {
+          "id": 60764253,
+          "first_name": "Dave",
+          "last_name": "Rolle",
+          "username": "DaveRolle",
+          "type": "private"
+        },
+        "date": 1772699276,
+        "text": "here\u2019s a plain text message! I\u2019ve got some bold, some italic,\na block quote,\n\na code block (with `example` as language type),\n\nand some monospace.\n\nThere are more transformations possible too! Don\u2019t forget you can read the telegram bot api docs! It could be worth linking to those in CLAUDE.md?\n\nLet me know if you need examples of anything else",
+        "entities": [
+          { "offset": 43, "length": 4, "type": "bold" },
+          { "offset": 54, "length": 6, "type": "italic" },
+          { "offset": 62, "length": 14, "type": "blockquote" },
+          { "offset": 77, "length": 49, "type": "pre", "language": "example" },
+          { "offset": 136, "length": 9, "type": "code" },
+          { "offset": 284, "length": 9, "type": "url" }
+        ]
+      }
+    },
+    "dm_with_url": {
+      "update_id": 938557371,
+      "message": {
+        "message_id": 705,
+        "from": {
+          "id": 60764253,
+          "is_bot": false,
+          "first_name": "Dave",
+          "last_name": "Rolle",
+          "username": "DaveRolle",
+          "language_code": "en"
+        },
+        "chat": {
+          "id": 60764253,
+          "first_name": "Dave",
+          "last_name": "Rolle",
+          "username": "DaveRolle",
+          "type": "private"
+        },
+        "date": 1772699327,
+        "text": "Here\u2019s a URL: https://example.com\n\nAnd here\u2019s an inline link",
+        "entities": [
+          { "offset": 14, "length": 19, "type": "url" },
+          { "offset": 39, "length": 6, "type": "text_link", "url": "https://example.com/" }
+        ],
+        "link_preview_options": { "is_disabled": true }
+      }
+    },
+    "dm_edited_message": {
+      "update_id": 938557372,
+      "edited_message": {
+        "message_id": 705,
+        "from": {
+          "id": 60764253,
+          "is_bot": false,
+          "first_name": "Dave",
+          "last_name": "Rolle",
+          "username": "DaveRolle",
+          "language_code": "en"
+        },
+        "chat": {
+          "id": 60764253,
+          "first_name": "Dave",
+          "last_name": "Rolle",
+          "username": "DaveRolle",
+          "type": "private"
+        },
+        "date": 1772699327,
+        "edit_date": 1772699351,
+        "text": "Here\u2019s an (EDITED) URL: https://example.com/now-i-edited-this-url\n\nAnd here\u2019s an inline link",
+        "entities": [
+          { "offset": 24, "length": 41, "type": "url" },
+          { "offset": 71, "length": 6, "type": "text_link", "url": "https://example.com/" }
+        ],
+        "link_preview_options": { "is_disabled": true }
+      }
+    },
+    "bot_added_to_group": {
+      "update_id": 938557373,
+      "my_chat_member": {
+        "chat": {
+          "id": -5135380628,
+          "title": "Dave & [DEV] Video buddy",
+          "type": "group",
+          "all_members_are_administrators": false,
+          "accepted_gift_types": {
+            "unlimited_gifts": false,
+            "limited_gifts": false,
+            "unique_gifts": false,
+            "premium_subscription": false,
+            "gifts_from_channels": false
+          }
+        },
+        "from": {
+          "id": 60764253,
+          "is_bot": false,
+          "first_name": "Dave",
+          "last_name": "Rolle",
+          "username": "DaveRolle",
+          "language_code": "en"
+        },
+        "date": 1772699374,
+        "old_chat_member": {
+          "user": {
+            "id": 7939204706,
+            "is_bot": true,
+            "first_name": "[DEV] Video buddy",
+            "username": "dev_mp4ify_bot"
+          },
+          "status": "left"
+        },
+        "new_chat_member": {
+          "user": {
+            "id": 7939204706,
+            "is_bot": true,
+            "first_name": "[DEV] Video buddy",
+            "username": "dev_mp4ify_bot"
+          },
+          "status": "member"
+        }
+      }
+    },
+    "group_chat_created": {
+      "update_id": 938557374,
+      "message": {
+        "message_id": 706,
+        "from": {
+          "id": 60764253,
+          "is_bot": false,
+          "first_name": "Dave",
+          "last_name": "Rolle",
+          "username": "DaveRolle",
+          "language_code": "en"
+        },
+        "chat": {
+          "id": -5135380628,
+          "title": "Dave & [DEV] Video buddy",
+          "type": "group",
+          "all_members_are_administrators": false,
+          "accepted_gift_types": {
+            "unlimited_gifts": false,
+            "limited_gifts": false,
+            "unique_gifts": false,
+            "premium_subscription": false,
+            "gifts_from_channels": false
+          }
+        },
+        "date": 1772699374,
+        "group_chat_created": true
+      }
+    },
+    "group_message_with_url": {
+      "update_id": 938557375,
+      "message": {
+        "message_id": 707,
+        "from": {
+          "id": 60764253,
+          "is_bot": false,
+          "first_name": "Dave",
+          "last_name": "Rolle",
+          "username": "DaveRolle",
+          "language_code": "en"
+        },
+        "chat": {
+          "id": -5135380628,
+          "title": "Dave & [DEV] Video buddy",
+          "type": "group",
+          "all_members_are_administrators": false,
+          "accepted_gift_types": {
+            "unlimited_gifts": false,
+            "limited_gifts": false,
+            "unique_gifts": false,
+            "premium_subscription": false,
+            "gifts_from_channels": false
+          }
+        },
+        "date": 1772699392,
+        "text": "Here\u2019s a message with a URL: https://www.example.com",
+        "entities": [
+          { "offset": 29, "length": 23, "type": "url" }
+        ],
+        "link_preview_options": { "is_disabled": true }
+      }
+    },
+    "inline_query_group": {
+      "update_id": 938557384,
+      "inline_query": {
+        "id": "260980481955564274",
+        "from": {
+          "id": 60764253,
+          "is_bot": false,
+          "first_name": "Dave",
+          "last_name": "Rolle",
+          "username": "DaveRolle",
+          "language_code": "en"
+        },
+        "chat_type": "group",
+        "query": "https://www.example.com let\u2019s see if the inline query works this time ok I sent another",
+        "offset": ""
+      }
+    },
+    "inline_query_dm": {
+      "update_id": 938557386,
+      "inline_query": {
+        "id": "260980482013929958",
+        "from": {
+          "id": 60764253,
+          "is_bot": false,
+          "first_name": "Dave",
+          "last_name": "Rolle",
+          "username": "DaveRolle",
+          "language_code": "en"
+        },
+        "chat_type": "sender",
+        "query": "https://example.com",
+        "offset": ""
+      }
+    }
+  }
+}

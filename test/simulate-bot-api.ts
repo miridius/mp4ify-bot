@@ -1,3 +1,9 @@
+// Workaround for Bun test runner bug where process.stderr.fd becomes undefined,
+// which crashes the `debug` module used by telegraf
+if (process.stderr && process.stderr.fd === undefined) {
+  (process.stderr as any).fd = 2;
+}
+
 import { faker } from '@faker-js/faker';
 import { mock } from 'bun:test';
 import type { Message, Update } from 'telegraf/types';
@@ -68,17 +74,33 @@ export class MockBotApi {
       Message.TextMessage,
       'message_id' | 'from' | 'chat' | 'date'
     >,
+    chatOverride?: { id: number; title?: string; type: string },
   ) {
+    const chat = chatOverride ?? { ...this.user, type: 'private' };
     const message = {
       message_id: this.updates.length,
       from: { ...this.user, is_bot: false, language_code: 'en' },
-      chat: { ...this.user, type: 'private' },
+      chat,
       date: this.date++,
       ...partialMsg,
     } as Message.TextMessage;
-    this.sendUpdateToBot({
-      [Math.random() < 0.5 ? 'message' : 'edited_message']: message,
-    });
+    this.sendUpdateToBot({ message });
+  }
+
+  sendEditedMessageToBot(
+    partialMsg: Omit<
+      Message.TextMessage,
+      'message_id' | 'from' | 'chat' | 'date'
+    > & { message_id: number },
+  ) {
+    const message = {
+      from: { ...this.user, is_bot: false, language_code: 'en' },
+      chat: { ...this.user, type: 'private' },
+      date: this.date++,
+      edit_date: this.date++,
+      ...partialMsg,
+    } as Message.TextMessage;
+    this.sendUpdateToBot({ edited_message: message });
   }
 
   handle(url: URL, opts: RequestInit = {}) {
