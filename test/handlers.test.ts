@@ -10,6 +10,7 @@ import {
 } from 'bun:test';
 import * as fsPromises from 'node:fs/promises';
 import type { Message } from 'telegraf/types';
+import * as classifyUrl from '../src/classify-url.ts';
 import * as downloadVideo from '../src/download-video.ts';
 import {
   callbackQueryHandler,
@@ -73,6 +74,9 @@ const mockProbeDuration = spyOn(
   downloadVideo,
   'probeDuration',
 ).mockResolvedValue(undefined);
+const mockClassifyUrl = spyOn(classifyUrl, 'classifyUrl').mockResolvedValue(
+  'video',
+);
 
 describe.each([false, true])('textMessageHandler, edit: %p', (isEdit) => {
   it('handles a message with a URL', async () => {
@@ -517,6 +521,157 @@ describe('post-download duration check', () => {
       expect(mockSendVideo).not.toHaveBeenCalled();
       // Should delete the downloaded file
       expect(mockUnlink).toHaveBeenCalledWith('unknown-duration.mp4');
+    });
+  });
+});
+
+describe('article detection for generic extractor in group chats', () => {
+  const groupChat = { id: -100, type: 'group', title: 'Test Group' };
+
+  const mockGetInfoGeneric = (extractor: string = 'generic') =>
+    mockGetInfo.mockImplementation(
+      memoize(
+        mock(async (_log: any, url: string) => ({
+          webpage_url: url,
+          title: 'Some Page Title',
+          extractor,
+          id: 'id',
+          description: 'desc',
+          filename: 'video.mp4',
+          duration: 60,
+        })),
+      ),
+    );
+
+  describe.each([false, true])('textMessageHandler, edit: %p', (isEdit) => {
+    it('asks for confirmation when generic extractor + article URL in group chat', async () => {
+      mockGetInfoGeneric();
+      mockClassifyUrl.mockResolvedValueOnce('article');
+      const ctx = createMockMessageCtx(isEdit, { chat: groupChat });
+      await textMessageHandler(ctx as any);
+
+      // Should NOT download
+      expect(mockDownloadVideo).not.toHaveBeenCalled();
+      expect(mockSendVideo).not.toHaveBeenCalled();
+
+      // Should have called classifyUrl
+      expect(mockClassifyUrl).toHaveBeenCalledWith(
+        'https://example.com',
+        'Some Page Title',
+      );
+
+      // Should send confirmation message
+      expect(ctx.telegram.sendMessage).toHaveBeenCalledTimes(1);
+      const [chatId, text, opts] = (ctx.telegram.sendMessage as any).mock
+        .calls[0];
+      expect(chatId).toBe(-100);
+      expect(text).toBe(
+        'This looks like a news article, but it has an embedded video. Do you want me to extract the video?',
+      );
+      expect(opts.reply_markup.inline_keyboard[0]).toHaveLength(2);
+      expect(opts.reply_markup.inline_keyboard[0][0].callback_data).toMatch(
+        /^dl:/,
+      );
+      expect(opts.reply_markup.inline_keyboard[0][1].callback_data).toMatch(
+        /^no:/,
+      );
+    });
+
+    it('asks for confirmation with generic:quoted-html extractor', async () => {
+      mockGetInfoGeneric('generic:quoted-html');
+      mockClassifyUrl.mockResolvedValueOnce('article');
+      const ctx = createMockMessageCtx(isEdit, { chat: groupChat });
+      await textMessageHandler(ctx as any);
+
+      expect(mockClassifyUrl).toHaveBeenCalled();
+      expect(mockDownloadVideo).not.toHaveBeenCalled();
+      expect(ctx.telegram.sendMessage).toHaveBeenCalledTimes(1);
+      const [, text] = (ctx.telegram.sendMessage as any).mock.calls[0];
+      expect(text).toContain('news article');
+    });
+
+    it('proceeds normally when generic extractor + video URL in group chat', async () => {
+      mockGetInfoGeneric();
+      mockClassifyUrl.mockResolvedValueOnce('video');
+      const ctx = createMockMessageCtx(isEdit, { chat: groupChat });
+      await textMessageHandler(ctx as any);
+
+      expect(mockClassifyUrl).toHaveBeenCalled();
+      expect(mockDownloadVideo).toHaveBeenCalled();
+      expect(mockSendVideo).toHaveBeenCalled();
+    });
+
+    it('skips Haiku check for non-generic extractors in group chat', async () => {
+      // Default mock returns extractor: 'test', so classifyUrl should NOT be called
+      const ctx = createMockMessageCtx(isEdit, { chat: groupChat });
+      await textMessageHandler(ctx as any);
+
+      expect(mockClassifyUrl).not.toHaveBeenCalled();
+      expect(mockDownloadVideo).toHaveBeenCalled();
+      expect(mockSendVideo).toHaveBeenCalled();
+    });
+
+    it('skips Haiku check in private chat even with generic extractor', async () => {
+      mockGetInfoGeneric();
+      const ctx = createMockMessageCtx(isEdit); // private chat
+      await textMessageHandler(ctx as any);
+
+      expect(mockClassifyUrl).not.toHaveBeenCalled();
+      expect(mockDownloadVideo).toHaveBeenCalled();
+      expect(mockSendVideo).toHaveBeenCalled();
+    });
+
+    it('proceeds normally if classifyUrl fails', async () => {
+      mockGetInfoGeneric();
+      mockClassifyUrl.mockRejectedValueOnce(new Error('API down'));
+      const mockWarn = spyOn(console, 'warn').mockImplementationOnce(() => {});
+      const ctx = createMockMessageCtx(isEdit, { chat: groupChat });
+      await textMessageHandler(ctx as any);
+
+      // Should fall through and download anyway
+      expect(mockDownloadVideo).toHaveBeenCalled();
+      expect(mockSendVideo).toHaveBeenCalled();
+      expect(mockWarn).toHaveBeenCalled();
+    });
+  });
+
+  describe('callbackQueryHandler (article confirmation)', () => {
+    const triggerArticleConfirmation = async () => {
+      mockGetInfoGeneric();
+      mockClassifyUrl.mockResolvedValueOnce('article');
+      const msgCtx = createMockMessageCtx(false, { chat: groupChat });
+      await textMessageHandler(msgCtx as any);
+      const buttons = (msgCtx.telegram.sendMessage as any).mock.calls[0][2]
+        .reply_markup.inline_keyboard[0];
+      return {
+        msgCtx,
+        confirmData: buttons[0].callback_data as string,
+        cancelData: buttons[1].callback_data as string,
+      };
+    };
+
+    it('downloads after user confirms article video', async () => {
+      const { confirmData } = await triggerArticleConfirmation();
+
+      const cbCtx = createMockCallbackCtx(confirmData, 123);
+      await callbackQueryHandler(cbCtx as any);
+
+      expect(cbCtx.answerCbQuery).toHaveBeenCalledWith('Starting download...');
+      expect(cbCtx.deleteMessage).toHaveBeenCalled();
+      expect(mockDownloadVideo).toHaveBeenCalled();
+      expect(mockSendVideo).toHaveBeenCalled();
+    });
+
+    it('cancels after user declines article video', async () => {
+      const { cancelData } = await triggerArticleConfirmation();
+
+      const cbCtx = createMockCallbackCtx(cancelData, 123);
+      await callbackQueryHandler(cbCtx as any);
+
+      expect(cbCtx.answerCbQuery).toHaveBeenCalledWith('Cancelled.');
+      expect(cbCtx.deleteMessage).toHaveBeenCalled();
+      expect(mockDownloadVideo).not.toHaveBeenCalled();
+      expect(mockSendVideo).not.toHaveBeenCalled();
     });
   });
 });

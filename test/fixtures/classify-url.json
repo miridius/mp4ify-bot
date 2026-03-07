@@ -1,0 +1,35 @@
+{
+  "description": "Expected URL classifications for learning tests. Run with INTEGRATION=1 ANTHROPIC_API_KEY=... to re-verify.",
+  "cases": [
+    {
+      "url": "https://www.bbc.com/news/world-us-canada-61377951",
+      "title": "Baby formula shortage: How did it get so bad?",
+      "expected": "article"
+    },
+    {
+      "url": "https://arstechnica.com/science/2024/04/nasas-voyager-1-starts-talking-to-us-again/",
+      "title": "NASA's Voyager 1 starts talking to us again after 5 months of gibberish",
+      "expected": "article"
+    },
+    {
+      "url": "https://techcrunch.com/2024/01/09/apple-vision-pro-available-feb-2/",
+      "title": "Apple Vision Pro available February 2",
+      "expected": "article"
+    },
+    {
+      "url": "https://v.redd.it/abc123/DASH_720.mp4",
+      "title": "Funny cat video",
+      "expected": "video"
+    },
+    {
+      "url": "https://streamable.com/moo",
+      "title": "me irl",
+      "expected": "video"
+    },
+    {
+      "url": "https://clips.twitch.tv/FunnyClip123",
+      "title": "Streamer does something amazing",
+      "expected": "video"
+    }
+  ]
+}

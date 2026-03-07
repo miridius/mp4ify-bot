@@ -12,6 +12,7 @@
  */
 import { beforeEach, describe, expect, it } from 'bun:test';
 import payloads from './fixtures/real-payloads.json';
+import classifyFixtures from './fixtures/classify-url.json';
 import durationFixtures from './fixtures/video-info-duration.json';
 import { MockBotApi } from './simulate-bot-api';
 
@@ -272,6 +273,73 @@ describe('yt-dlp duration reporting (fixtures)', () => {
 // ─── Integration tests: live yt-dlp calls ───────────────────────────────────
 
 const describeIntegration = INTEGRATION ? describe : describe.skip;
+
+// ─── Shared assertion: Anthropic URL classification ─────────────────────────
+
+const assertClassification = (result: string, expected: string) => {
+  expect(result).toBeOneOf(['article', 'video']);
+  expect(result).toBe(expected);
+};
+
+// ─── Contract tests: URL classification fixtures ────────────────────────────
+
+describe('URL classification (fixtures)', () => {
+  it.each(classifyFixtures.cases)(
+    '$url → $expected',
+    ({ expected }) => {
+      // Fixture data is the ground truth — just validate it's well-formed
+      expect(expected).toBeOneOf(['article', 'video']);
+    },
+  );
+});
+
+// ─── Integration tests: live Anthropic API ──────────────────────────────────
+
+describeIntegration('URL classification (live Anthropic API)', () => {
+  const describeAnthropicApi = process.env.ANTHROPIC_API_KEY
+    ? describe
+    : describe.skip;
+
+  describeAnthropicApi('classifyUrl', () => {
+    it('returns expected response structure', async () => {
+      const Anthropic = (await import('@anthropic-ai/sdk')).default;
+      const client = new Anthropic();
+      const msg = await client.messages.create({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 1,
+        messages: [
+          {
+            role: 'user',
+            content:
+              'Is this URL a news article/blog post, or a video/media page? Reply with exactly one word: "article" or "video".\n\nURL: https://www.bbc.com/news/world-us-canada-61377951',
+          },
+        ],
+      });
+      // Verify response structure
+      expect(msg).toHaveProperty('id');
+      expect(msg).toHaveProperty('content');
+      expect(msg).toHaveProperty('model');
+      expect(msg).toHaveProperty('role', 'assistant');
+      expect(msg).toHaveProperty('stop_reason');
+      expect(msg.content).toBeArray();
+      expect(msg.content.length).toBeGreaterThan(0);
+      expect(msg.content[0]).toHaveProperty('type', 'text');
+      expect(msg.content[0]).toHaveProperty('text');
+      // With max_tokens=1, stop_reason should be 'max_tokens' or 'end_turn'
+      expect(msg.stop_reason).toBeOneOf(['max_tokens', 'end_turn']);
+    }, 30000);
+
+    it.each(classifyFixtures.cases)(
+      '$url → $expected',
+      async ({ url, title, expected }) => {
+        const { classifyUrl } = await import('../src/classify-url');
+        const result = await classifyUrl(url, title);
+        assertClassification(result, expected);
+      },
+      30000,
+    );
+  });
+});
 
 describeIntegration('yt-dlp duration reporting (live)', () => {
   const entries = Object.entries(durationFixtures.services)
