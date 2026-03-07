@@ -23,7 +23,7 @@
     "start": "bun .",
     "lint": "oxlint --deny-warnings --fix",
     "format": "prettier --write .",
-    "prepare": "bun run simple-git-hooks"
+    "prepare": "bun node_modules/.bin/simple-git-hooks"
   },
   "prettier": {
     "singleQuote": true
