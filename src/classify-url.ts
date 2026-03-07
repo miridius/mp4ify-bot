@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 
-const client = new Anthropic();
+const defaultClient = new Anthropic();
 
 export type Classification = 'article' | 'video';
 
@@ -11,6 +11,7 @@ export type Classification = 'article' | 'video';
 export const classifyUrl = async (
   url: string,
   title?: string,
+  client: Anthropic = defaultClient,
 ): Promise<Classification> => {
   const msg = await client.messages.create({
     model: 'claude-haiku-4-5-20251001',

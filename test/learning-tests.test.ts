@@ -281,16 +281,48 @@ const assertClassification = (result: string, expected: string) => {
   expect(result).toBe(expected);
 };
 
-// ─── Contract tests: URL classification fixtures ────────────────────────────
+/** Creates a fake Anthropic client that returns a canned text response */
+const fakeAnthropicClient = (response: string) =>
+  ({
+    messages: {
+      create: async () => ({
+        id: 'msg_fake',
+        type: 'message',
+        role: 'assistant',
+        model: 'claude-haiku-4-5-20251001',
+        content: [{ type: 'text', text: response }],
+        stop_reason: 'max_tokens',
+        usage: { input_tokens: 10, output_tokens: 1 },
+      }),
+    },
+  }) as any;
 
-describe('URL classification (fixtures)', () => {
+// ─── Contract tests: URL classification with mock client ────────────────────
+
+describe('URL classification (mock client)', () => {
   it.each(classifyFixtures.cases)(
     '$url → $expected',
-    ({ expected }) => {
-      // Fixture data is the ground truth — just validate it's well-formed
-      expect(expected).toBeOneOf(['article', 'video']);
+    async ({ url, title, expected }) => {
+      const { classifyUrl } = await import('../src/classify-url');
+      const client = fakeAnthropicClient(expected);
+      const result = await classifyUrl(url, title, client);
+      assertClassification(result, expected);
     },
   );
+
+  it('defaults to video for unrecognized response', async () => {
+    const { classifyUrl } = await import('../src/classify-url');
+    const client = fakeAnthropicClient('unknown');
+    const result = await classifyUrl('https://example.com', undefined, client);
+    expect(result).toBe('video');
+  });
+
+  it('handles case-insensitive response', async () => {
+    const { classifyUrl } = await import('../src/classify-url');
+    const client = fakeAnthropicClient('Article');
+    const result = await classifyUrl('https://example.com', undefined, client);
+    expect(result).toBe('article');
+  });
 });
 
 // ─── Integration tests: live Anthropic API ──────────────────────────────────
@@ -332,8 +364,9 @@ describeIntegration('URL classification (live Anthropic API)', () => {
     it.each(classifyFixtures.cases)(
       '$url → $expected',
       async ({ url, title, expected }) => {
+        const Anthropic = (await import('@anthropic-ai/sdk')).default;
         const { classifyUrl } = await import('../src/classify-url');
-        const result = await classifyUrl(url, title);
+        const result = await classifyUrl(url, title, new Anthropic());
         assertClassification(result, expected);
       },
       30000,
