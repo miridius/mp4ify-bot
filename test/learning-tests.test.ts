@@ -507,10 +507,57 @@ describeIntegration('URL classification (live Anthropic API)', () => {
   });
 });
 
-// NOTE: Article URL integration tests removed — all test URLs (BBC, Ars Technica, CNN)
-// return 403/404 from this environment. Per CLAUDE.md: "If we can't test it, don't include it."
-// To re-add: find article URLs that yt-dlp can actually fetch, add them here, and
-// update test/fixtures/ytdlp-article.json with captured data.
+describeIntegration('yt-dlp on news article URLs (live)', () => {
+  const articleUrls = [
+    ['bbc_news', 'https://www.bbc.com/news/world-us-canada-61377951'],
+    ['arstechnica', 'https://arstechnica.com/science/2024/04/nasas-voyager-1-starts-talking-to-us-again/'],
+    ['cnn_with_video', 'https://www.cnn.com/2024/04/08/weather/total-solar-eclipse-monday/index.html'],
+  ] as const;
+
+  const capturedArticles: Record<string, any> = {};
+  const ytdlpFields = ['extractor', 'extractor_key', 'webpage_url', 'title', 'duration', 'duration_string', 'is_live', 'was_live'] as const;
+
+  it.each(articleUrls)(
+    '%s: verify yt-dlp behavior on article URL (captures fixture)',
+    async (name, url) => {
+      const proc = Bun.spawn(
+        ['yt-dlp', url, '--no-warnings', '--dump-json', '--no-check-certificates', '--no-download'],
+        { stderr: 'pipe', timeout: 60000 },
+      );
+      const stdout = await new Response(proc.stdout).text();
+      const stderr = await new Response(proc.stderr).text();
+      const exitCode = await proc.exited;
+
+      if (exitCode !== 0 || !stdout.trim()) {
+        throw new Error(`yt-dlp failed for ${name} (exit ${exitCode}): ${stderr.trim().split('\n')[0]}`);
+      }
+
+      const info = JSON.parse(stdout);
+      console.log(`  ${name}: extractor=${info.extractor}, title=${info.title?.slice(0, 60)}`);
+
+      const captured: Record<string, any> = { url };
+      for (const field of ytdlpFields) {
+        captured[field] = info[field] ?? null;
+      }
+      capturedArticles[name] = captured;
+    },
+    120000,
+  );
+
+  it('saves captured article data to fixture', async () => {
+    if (Object.keys(capturedArticles).length === 0) {
+      throw new Error('No article data was captured');
+    }
+    await saveFixture('test/fixtures/ytdlp-article.json', {
+      description:
+        'yt-dlp output for news article URLs. Re-run with INTEGRATION=1 to update.',
+      articles: capturedArticles,
+    });
+    console.log(
+      `  Saved ${Object.keys(capturedArticles).length} articles to test/fixtures/ytdlp-article.json`,
+    );
+  });
+});
 
 describeIntegration('yt-dlp duration reporting (live)', () => {
   const durationFields = ['extractor', 'duration', 'duration_string', 'is_live', 'was_live'] as const;
