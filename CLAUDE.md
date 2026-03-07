@@ -96,8 +96,18 @@ docker compose up
 
 This verifies the local bot-api integration (2GB upload limit, etc.) that can't be tested in Claude Code Web.
 
+## Running Learning Tests
+
+The **only** command the user runs is `./learning-test.sh`. This builds the docker image and runs `INTEGRATION=1 bun test test/learning-tests.test.ts` inside docker. Do NOT create other scripts or tell the user to run other commands.
+
+- Integration tests capture/update fixture files directly as they run. There are no separate fixture capture scripts.
+- Missing `ANTHROPIC_API_KEY` must **fail loudly** — it is a real problem, not something to skip silently.
+- yt-dlp calls that fail due to auth requirements (reddit, instagram, facebook) should be skipped gracefully with a log message, not fail the test run.
+
 ## Gotchas & Surprises
 
 - Use `--no-check-certificates` when running yt-dlp.
 - **Telegram `sendMessage` with `reply_markup`:** When using curl for testing, `reply_markup` must be sent as a URL-encoded JSON string in form data, NOT as part of a JSON body. JSON body with `reply_markup` returns 404 from Telegram's API. The Telegraf library handles this internally.
 - **X/Twitter is banned:** The bot does not support X/Twitter for moral reasons. Do not add support for it.
+- **Don't create duplicate files.** Before creating a new file, check if one with a similar name/purpose already exists (e.g., `learning-test.sh` vs `learning-tests.sh`). Use `git ls-tree -r master --name-only` to check.
+- **Don't silently skip things that should fail.** If a required credential or dependency is missing, fail loudly. Only skip gracefully when the failure is expected/unavoidable (e.g., services requiring auth cookies in CI).
