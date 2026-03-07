@@ -1,23 +1,4 @@
 {
   "description": "yt-dlp output for news article URLs. Re-run with INTEGRATION=1 to update.",
-  "articles": {
-    "bbc_news": {
-      "url": "https://www.bbc.com/news/world-us-canada-61377951",
-      "error": "ERROR: [bbc] world-us-canada-61377951: Unable to download webpage: HTTP Error 403: Forbidden (caused by <HTTPError 403: Forbidden>)",
-      "exitCode": 1,
-      "note": "yt-dlp could not extract video from this article"
-    },
-    "arstechnica": {
-      "url": "https://arstechnica.com/science/2024/04/nasas-voyager-1-starts-talking-to-us-again/",
-      "error": "ERROR: [generic] Unable to download webpage: HTTP Error 403: Forbidden (caused by <HTTPError 403: Forbidden>)",
-      "exitCode": 1,
-      "note": "yt-dlp could not extract video from this article"
-    },
-    "cnn_with_video": {
-      "url": "https://www.cnn.com/2024/04/08/weather/total-solar-eclipse-monday/index.html",
-      "error": "ERROR: [CNN] Unable to download webpage: HTTP Error 404: Not Found (caused by <HTTPError 404: Not Found>)",
-      "exitCode": 1,
-      "note": "yt-dlp could not extract video from this article"
-    }
-  }
+  "articles": {}
 }

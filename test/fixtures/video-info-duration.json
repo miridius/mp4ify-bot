@@ -27,33 +27,6 @@
       "is_live": null,
       "was_live": null,
       "note": "was 12.0 (float) on older yt-dlp versions"
-    },
-    "reddit": {
-      "url": "https://www.reddit.com/r/FunnyAnimals/comments/1rjt4qf/_/",
-      "extractor": "Reddit",
-      "duration": 18,
-      "duration_string": "18",
-      "is_live": null,
-      "was_live": null,
-      "note": "duration is an integer"
-    },
-    "instagram": {
-      "url": "https://www.instagram.com/reel/DTC91kVCHza/",
-      "extractor": "Instagram",
-      "duration": 57.237,
-      "duration_string": "57",
-      "is_live": null,
-      "was_live": null,
-      "note": "duration is a float"
-    },
-    "facebook": {
-      "url": "https://www.facebook.com/share/r/1Mus5btQfP/",
-      "extractor": "facebook",
-      "duration": 56.875,
-      "duration_string": "56",
-      "is_live": null,
-      "was_live": null,
-      "note": "duration is a float"
     }
   }
 }
