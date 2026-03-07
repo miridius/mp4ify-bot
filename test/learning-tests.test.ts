@@ -586,10 +586,9 @@ describeIntegration('yt-dlp duration reporting (live)', () => {
       );
       const stdout = await new Response(proc.stdout).text();
       const stderr = await new Response(proc.stderr).text();
-      if (!stdout.trim()) {
-        console.log(`  ${service}: skipped (yt-dlp error: ${stderr.trim().split('\n')[0]})`);
-        return;
-      }
+      expect(stdout.trim()).not.toBe(
+        `${service}: yt-dlp failed: ${stderr.trim().split('\n')[0]}`,
+      );
       const info = JSON.parse(stdout);
       assertDurationInfo(info);
 
