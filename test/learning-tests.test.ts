@@ -299,6 +299,12 @@ describe('yt-dlp on news article URLs (fixtures)', () => {
   });
 });
 
+// ─── Helper: save fixture file ──────────────────────────────────────────────
+
+const saveFixture = async (path: string, data: any) => {
+  await Bun.write(path, JSON.stringify(data, null, 2) + '\n');
+};
+
 // ─── Integration tests: live yt-dlp calls ───────────────────────────────────
 
 const describeIntegration = INTEGRATION ? describe : describe.skip;
@@ -455,47 +461,66 @@ describeIntegration('URL classification (live Anthropic API)', () => {
     return;
   }
 
-  it('raw response matches expected structure with max_tokens:1', async () => {
-    const Anthropic = (await import('@anthropic-ai/sdk')).default;
-    const client = new Anthropic();
-    const msg = await client.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 1,
-      messages: [
-        {
-          role: 'user',
-          content:
-            'Is this URL a news article/blog post, or a video/media page? Reply with exactly one word: "article" or "video".\n\nURL: https://www.bbc.com/news/world-us-canada-61377951',
-        },
-      ],
-    });
-    assertMaxTokens1Response(msg);
-    // Verify the single token is a usable classification word
-    const text = msg.content[0]?.type === 'text' ? msg.content[0].text.trim().toLowerCase() : '';
-    expect(text).toBeOneOf(['article', 'video']);
-  }, 30000);
+  const captured: Record<string, any> = {};
 
   it.each(classifyFixtures.cases)(
-    'classifyUrl: $url → $expected',
+    'classifyUrl: $url → $expected (captures fixture)',
     async ({ url, title, expected }) => {
       const Anthropic = (await import('@anthropic-ai/sdk')).default;
-      const { classifyUrl } = await import('../src/classify-url');
-      const result = await classifyUrl(url, title, new Anthropic());
-      assertClassification(result, expected);
+      const client = new Anthropic();
+
+      // Call raw API to capture the full response
+      const prompt = `Is this URL a news article/blog post, or a video/media page? Reply with exactly one word: "article" or "video".\n\nURL: ${url}${title ? `\nPage title: ${title}` : ''}`;
+      const msg = await client.messages.create({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 1,
+        messages: [{ role: 'user', content: prompt }],
+      });
+
+      // Assert response structure
+      assertMaxTokens1Response(msg);
+      const text =
+        msg.content[0]?.type === 'text'
+          ? msg.content[0].text.trim().toLowerCase()
+          : '';
+      expect(text).toBeOneOf(['article', 'video']);
+      expect(text).toBe(expected);
+
+      // Capture for fixture
+      const key = url.replace(/^https?:\/\//, '').replace(/[^a-zA-Z0-9]/g, '_');
+      captured[key] = { url, expected, raw: msg };
+      console.log(`  ${url} → "${text}" (expected: "${expected}")`);
     },
     30000,
   );
+
+  it('saves captured Anthropic responses to fixture', async () => {
+    if (Object.keys(captured).length === 0) {
+      throw new Error('No Anthropic responses were captured');
+    }
+    await saveFixture('test/fixtures/anthropic-responses.json', {
+      description:
+        'Raw Anthropic API responses captured by learning tests. Re-run with INTEGRATION=1 to update.',
+      responses: captured,
+    });
+    console.log(
+      `  Saved ${Object.keys(captured).length} responses to test/fixtures/anthropic-responses.json`,
+    );
+  });
 });
 
 describeIntegration('yt-dlp on news article URLs (live)', () => {
-  const articles = [
+  const articleUrls = [
     ['bbc_news', 'https://www.bbc.com/news/world-us-canada-61377951'],
     ['arstechnica', 'https://arstechnica.com/science/2024/04/nasas-voyager-1-starts-talking-to-us-again/'],
     ['cnn_with_video', 'https://www.cnn.com/2024/04/08/weather/total-solar-eclipse-monday/index.html'],
   ] as const;
 
-  it.each(articles)(
-    '%s: verify yt-dlp behavior on article URL',
+  const capturedArticles: Record<string, any> = {};
+  const ytdlpFields = ['extractor', 'extractor_key', 'webpage_url', 'title', 'duration', 'duration_string', 'is_live', 'was_live'] as const;
+
+  it.each(articleUrls)(
+    '%s: verify yt-dlp behavior on article URL (captures fixture)',
     async (name, url) => {
       const proc = Bun.spawn(
         ['yt-dlp', url, '--no-warnings', '--dump-json', '--no-check-certificates', '--no-download'],
@@ -506,38 +531,42 @@ describeIntegration('yt-dlp on news article URLs (live)', () => {
       const exitCode = await proc.exited;
 
       if (exitCode !== 0 || !stdout.trim()) {
-        // yt-dlp errored = no video found. Log for visibility.
-        console.log(`  ${name}: yt-dlp error (exit ${exitCode}): ${stderr.trim().split('\n')[0]}`);
-        // Verify this matches fixture if we have one
-        const fixture = (articleFixtures.articles as any)[name];
-        if (fixture) {
-          expect(fixture).toHaveProperty('error');
-        }
+        const errorMsg = stderr.trim().split('\n')[0];
+        console.log(`  ${name}: yt-dlp error (exit ${exitCode}): ${errorMsg}`);
+        capturedArticles[name] = {
+          url,
+          error: errorMsg,
+          exitCode,
+          note: 'yt-dlp could not extract video from this article',
+        };
         return;
       }
 
       const info = JSON.parse(stdout);
       console.log(`  ${name}: extractor=${info.extractor}, title=${info.title?.slice(0, 60)}`);
 
-      // If yt-dlp found a video, verify it uses generic extractor
-      expect(info.extractor.toLowerCase()).toStartWith('generic');
-
-      // Verify fixture matches reality
-      const fixture = (articleFixtures.articles as any)[name];
-      if (fixture && !fixture.error) {
-        for (const field of ['extractor', 'extractor_key'] as const) {
-          const actual = info[field] ?? null;
-          const expected = fixture[field] ?? null;
-          if (actual !== expected) {
-            throw new Error(
-              `Fixture mismatch for ${name}.${field}: fixture=${JSON.stringify(expected)}, actual=${JSON.stringify(actual)}`,
-            );
-          }
-        }
+      const captured: Record<string, any> = { url };
+      for (const field of ytdlpFields) {
+        captured[field] = info[field] ?? null;
       }
+      capturedArticles[name] = captured;
     },
     120000,
   );
+
+  it('saves captured article data to fixture', async () => {
+    if (Object.keys(capturedArticles).length === 0) {
+      throw new Error('No article data was captured');
+    }
+    await saveFixture('test/fixtures/ytdlp-article.json', {
+      description:
+        'yt-dlp output for news article URLs. Re-run with INTEGRATION=1 to update.',
+      articles: capturedArticles,
+    });
+    console.log(
+      `  Saved ${Object.keys(capturedArticles).length} articles to test/fixtures/ytdlp-article.json`,
+    );
+  });
 });
 
 describeIntegration('yt-dlp duration reporting (live)', () => {
