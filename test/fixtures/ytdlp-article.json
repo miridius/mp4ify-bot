@@ -1,0 +1,4 @@
+{
+  "description": "yt-dlp --dump-json output for news article URLs. Run: INTEGRATION=1 bun scripts/capture-ytdlp-article-fixture.ts",
+  "articles": {}
+}

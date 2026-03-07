@@ -13,7 +13,9 @@
 import { beforeEach, describe, expect, it } from 'bun:test';
 import payloads from './fixtures/real-payloads.json';
 import classifyFixtures from './fixtures/classify-url.json';
+import anthropicFixtures from './fixtures/anthropic-responses.json';
 import durationFixtures from './fixtures/video-info-duration.json';
+import articleFixtures from './fixtures/ytdlp-article.json';
 import { MockBotApi } from './simulate-bot-api';
 
 const real = payloads.payloads;
@@ -270,12 +272,82 @@ describe('yt-dlp duration reporting (fixtures)', () => {
   });
 });
 
+// ─── Contract tests: yt-dlp on news article URLs (fixtures) ─────────────────
+
+describe('yt-dlp on news article URLs (fixtures)', () => {
+  const articles = Object.entries(articleFixtures.articles);
+
+  // Only run if fixtures have been captured
+  (articles.length > 0 ? describe : describe.skip)('captured articles', () => {
+    it.each(articles)('%s has extractor field', (_key, entry: any) => {
+      if (entry.error) {
+        // If yt-dlp errored, that's also valid data (means no video found)
+        expect(entry.error).toBeString();
+        return;
+      }
+      expect(entry).toHaveProperty('extractor');
+      expect(entry.extractor).toBeString();
+    });
+
+    it.each(articles.filter(([, e]: any) => !e.error))(
+      '%s uses generic extractor for article page',
+      (_key, entry: any) => {
+        // Key assumption: yt-dlp uses "generic" extractor for news articles
+        expect(entry.extractor.toLowerCase()).toStartWith('generic');
+      },
+    );
+  });
+});
+
 // ─── Integration tests: live yt-dlp calls ───────────────────────────────────
 
 const describeIntegration = INTEGRATION ? describe : describe.skip;
 
-// ─── Shared assertion: Anthropic URL classification ─────────────────────────
+// ─── Shared assertion: Anthropic messages.create response ───────────────────
 
+/** Asserts the raw Anthropic messages.create response has the expected shape */
+const assertAnthropicResponse = (msg: any) => {
+  expect(msg).toHaveProperty('id');
+  expect(msg.id).toBeString();
+  expect(msg.id).toStartWith('msg_');
+
+  expect(msg).toHaveProperty('type', 'message');
+  expect(msg).toHaveProperty('role', 'assistant');
+
+  expect(msg).toHaveProperty('model');
+  expect(msg.model).toBeString();
+
+  expect(msg).toHaveProperty('content');
+  expect(msg.content).toBeArray();
+  expect(msg.content.length).toBeGreaterThan(0);
+  expect(msg.content[0]).toHaveProperty('type', 'text');
+  expect(msg.content[0]).toHaveProperty('text');
+  expect(msg.content[0].text).toBeString();
+
+  expect(msg).toHaveProperty('stop_reason');
+  expect(msg.stop_reason).toBeString();
+
+  expect(msg).toHaveProperty('usage');
+  expect(msg.usage).toHaveProperty('input_tokens');
+  expect(msg.usage).toHaveProperty('output_tokens');
+  expect(msg.usage.input_tokens).toBeNumber();
+  expect(msg.usage.output_tokens).toBeNumber();
+};
+
+/** Asserts max_tokens:1 response: stop_reason is max_tokens, text is a single word */
+const assertMaxTokens1Response = (msg: any) => {
+  assertAnthropicResponse(msg);
+  expect(msg.stop_reason).toBe('max_tokens');
+  expect(msg.usage.output_tokens).toBe(1);
+
+  // With max_tokens:1, the text should still be a complete, usable word
+  const text = msg.content[0].text.trim();
+  expect(text.length).toBeGreaterThan(0);
+  // Should not contain spaces (single token = single word)
+  expect(text).not.toContain(' ');
+};
+
+/** Asserts classifyUrl returns a valid classification */
 const assertClassification = (result: string, expected: string) => {
   expect(result).toBeOneOf(['article', 'video']);
   expect(result).toBe(expected);
@@ -286,18 +358,63 @@ const fakeAnthropicClient = (response: string) =>
   ({
     messages: {
       create: async () => ({
-        id: 'msg_fake',
+        id: 'msg_fake123',
         type: 'message',
         role: 'assistant',
         model: 'claude-haiku-4-5-20251001',
         content: [{ type: 'text', text: response }],
         stop_reason: 'max_tokens',
+        stop_sequence: null,
         usage: { input_tokens: 10, output_tokens: 1 },
       }),
     },
   }) as any;
 
-// ─── Contract tests: URL classification with mock client ────────────────────
+// ─── Contract tests: Anthropic response fixtures ────────────────────────────
+
+describe('Anthropic API response structure (fixtures)', () => {
+  const fixtureEntries = Object.entries(anthropicFixtures.responses);
+
+  // Only run if fixtures have been captured
+  (fixtureEntries.length > 0 ? describe : describe.skip)(
+    'captured responses',
+    () => {
+      it.each(fixtureEntries)(
+        '%s has valid response structure',
+        (_key, entry: any) => {
+          assertMaxTokens1Response(entry.raw);
+        },
+      );
+
+      it.each(fixtureEntries)(
+        '%s response text is "article" or "video"',
+        (_key, entry: any) => {
+          const text = entry.raw.content[0].text.trim().toLowerCase();
+          expect(text).toBeOneOf(['article', 'video']);
+          expect(text).toBe(entry.expected);
+        },
+      );
+    },
+  );
+});
+
+// ─── Contract tests: fakeAnthropicClient parity ─────────────────────────────
+
+describe('fakeAnthropicClient matches real response structure', () => {
+  it('produces valid Anthropic response shape', async () => {
+    const client = fakeAnthropicClient('article');
+    const msg = await client.messages.create({});
+    assertAnthropicResponse(msg);
+  });
+
+  it('produces valid max_tokens:1 response', async () => {
+    const client = fakeAnthropicClient('article');
+    const msg = await client.messages.create({});
+    assertMaxTokens1Response(msg);
+  });
+});
+
+// ─── Contract tests: classifyUrl with mock client ───────────────────────────
 
 describe('URL classification (mock client)', () => {
   it.each(classifyFixtures.cases)(
@@ -338,46 +455,89 @@ describeIntegration('URL classification (live Anthropic API)', () => {
     return;
   }
 
-  describe('classifyUrl', () => {
-    it('returns expected response structure', async () => {
-      const Anthropic = (await import('@anthropic-ai/sdk')).default;
-      const client = new Anthropic();
-      const msg = await client.messages.create({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 1,
-        messages: [
-          {
-            role: 'user',
-            content:
-              'Is this URL a news article/blog post, or a video/media page? Reply with exactly one word: "article" or "video".\n\nURL: https://www.bbc.com/news/world-us-canada-61377951',
-          },
-        ],
-      });
-      // Verify response structure
-      expect(msg).toHaveProperty('id');
-      expect(msg).toHaveProperty('content');
-      expect(msg).toHaveProperty('model');
-      expect(msg).toHaveProperty('role', 'assistant');
-      expect(msg).toHaveProperty('stop_reason');
-      expect(msg.content).toBeArray();
-      expect(msg.content.length).toBeGreaterThan(0);
-      expect(msg.content[0]).toHaveProperty('type', 'text');
-      expect(msg.content[0]).toHaveProperty('text');
-      // With max_tokens=1, stop_reason should be 'max_tokens' or 'end_turn'
-      expect(msg.stop_reason).toBeOneOf(['max_tokens', 'end_turn']);
-    }, 30000);
+  it('raw response matches expected structure with max_tokens:1', async () => {
+    const Anthropic = (await import('@anthropic-ai/sdk')).default;
+    const client = new Anthropic();
+    const msg = await client.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 1,
+      messages: [
+        {
+          role: 'user',
+          content:
+            'Is this URL a news article/blog post, or a video/media page? Reply with exactly one word: "article" or "video".\n\nURL: https://www.bbc.com/news/world-us-canada-61377951',
+        },
+      ],
+    });
+    assertMaxTokens1Response(msg);
+    // Verify the single token is a usable classification word
+    const text = msg.content[0]?.type === 'text' ? msg.content[0].text.trim().toLowerCase() : '';
+    expect(text).toBeOneOf(['article', 'video']);
+  }, 30000);
 
-    it.each(classifyFixtures.cases)(
-      '$url → $expected',
-      async ({ url, title, expected }) => {
-        const Anthropic = (await import('@anthropic-ai/sdk')).default;
-        const { classifyUrl } = await import('../src/classify-url');
-        const result = await classifyUrl(url, title, new Anthropic());
-        assertClassification(result, expected);
-      },
-      30000,
-    );
-  });
+  it.each(classifyFixtures.cases)(
+    'classifyUrl: $url → $expected',
+    async ({ url, title, expected }) => {
+      const Anthropic = (await import('@anthropic-ai/sdk')).default;
+      const { classifyUrl } = await import('../src/classify-url');
+      const result = await classifyUrl(url, title, new Anthropic());
+      assertClassification(result, expected);
+    },
+    30000,
+  );
+});
+
+describeIntegration('yt-dlp on news article URLs (live)', () => {
+  const articles = [
+    ['bbc_news', 'https://www.bbc.com/news/world-us-canada-61377951'],
+    ['arstechnica', 'https://arstechnica.com/science/2024/04/nasas-voyager-1-starts-talking-to-us-again/'],
+    ['cnn_with_video', 'https://www.cnn.com/2024/04/08/weather/total-solar-eclipse-monday/index.html'],
+  ] as const;
+
+  it.each(articles)(
+    '%s: verify yt-dlp behavior on article URL',
+    async (name, url) => {
+      const proc = Bun.spawn(
+        ['yt-dlp', url, '--no-warnings', '--dump-json', '--no-check-certificates', '--no-download'],
+        { stderr: 'pipe', timeout: 60000 },
+      );
+      const stdout = await new Response(proc.stdout).text();
+      const stderr = await new Response(proc.stderr).text();
+      const exitCode = await proc.exited;
+
+      if (exitCode !== 0 || !stdout.trim()) {
+        // yt-dlp errored = no video found. Log for visibility.
+        console.log(`  ${name}: yt-dlp error (exit ${exitCode}): ${stderr.trim().split('\n')[0]}`);
+        // Verify this matches fixture if we have one
+        const fixture = (articleFixtures.articles as any)[name];
+        if (fixture) {
+          expect(fixture).toHaveProperty('error');
+        }
+        return;
+      }
+
+      const info = JSON.parse(stdout);
+      console.log(`  ${name}: extractor=${info.extractor}, title=${info.title?.slice(0, 60)}`);
+
+      // If yt-dlp found a video, verify it uses generic extractor
+      expect(info.extractor.toLowerCase()).toStartWith('generic');
+
+      // Verify fixture matches reality
+      const fixture = (articleFixtures.articles as any)[name];
+      if (fixture && !fixture.error) {
+        for (const field of ['extractor', 'extractor_key'] as const) {
+          const actual = info[field] ?? null;
+          const expected = fixture[field] ?? null;
+          if (actual !== expected) {
+            throw new Error(
+              `Fixture mismatch for ${name}.${field}: fixture=${JSON.stringify(expected)}, actual=${JSON.stringify(actual)}`,
+            );
+          }
+        }
+      }
+    },
+    120000,
+  );
 });
 
 describeIntegration('yt-dlp duration reporting (live)', () => {

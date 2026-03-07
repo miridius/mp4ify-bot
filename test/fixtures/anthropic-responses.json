@@ -1,0 +1,4 @@
+{
+  "description": "Raw Anthropic API responses captured for learning tests. Run: ANTHROPIC_API_KEY=... bun scripts/capture-anthropic-fixture.ts",
+  "responses": {}
+}
