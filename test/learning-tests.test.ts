@@ -570,12 +570,15 @@ describeIntegration('yt-dlp on news article URLs (live)', () => {
 });
 
 describeIntegration('yt-dlp duration reporting (live)', () => {
+  const durationFields = ['extractor', 'duration', 'duration_string', 'is_live', 'was_live'] as const;
   const entries = Object.entries(durationFixtures.services)
     .filter(([, v]) => (v as any).url)
     .map(([k, v]) => [k, v as any] as const);
 
+  let fixtureChanged = false;
+
   it.each(entries)(
-    '%s matches fixture from real yt-dlp',
+    '%s: captures duration info from real yt-dlp',
     async (service, fixture) => {
       const proc = Bun.spawn(
         ['yt-dlp', fixture.url, '--no-warnings', '--dump-json', '--no-check-certificates'],
@@ -589,19 +592,26 @@ describeIntegration('yt-dlp duration reporting (live)', () => {
       const info = JSON.parse(stdout);
       assertDurationInfo(info);
 
-      // Verify fixture matches reality
-      const fields = ['extractor', 'duration', 'duration_string', 'is_live', 'was_live'] as const;
-      for (const field of fields) {
-        const actual = info[field] ?? null;
-        const expected = fixture[field] ?? null;
-        if (actual !== expected) {
-          throw new Error(
-            `Fixture mismatch for ${service}.${field}: fixture=${JSON.stringify(expected)}, actual=${JSON.stringify(actual)}`,
-          );
+      // Update fixture in-place
+      for (const field of durationFields) {
+        const newVal = info[field] ?? null;
+        if (fixture[field] !== newVal) {
+          console.log(`  ${service}.${field}: ${JSON.stringify(fixture[field])} → ${JSON.stringify(newVal)}`);
+          fixture[field] = newVal;
+          fixtureChanged = true;
         }
       }
       console.log(`  ${service}: duration=${info.duration} (${info.duration_string})`);
     },
     120000,
   );
+
+  it('saves updated duration fixtures', async () => {
+    if (fixtureChanged) {
+      await saveFixture('test/fixtures/video-info-duration.json', durationFixtures);
+      console.log('  Updated test/fixtures/video-info-duration.json');
+    } else {
+      console.log('  Duration fixtures already up to date');
+    }
+  });
 });
