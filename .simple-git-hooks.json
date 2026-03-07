@@ -1,3 +1,4 @@
 {
-  "pre-commit": "bun run lint"
+  "pre-commit": "bun run lint",
+  "post-merge": "bun install"
 }
