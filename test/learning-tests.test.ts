@@ -328,11 +328,17 @@ describe('URL classification (mock client)', () => {
 // ─── Integration tests: live Anthropic API ──────────────────────────────────
 
 describeIntegration('URL classification (live Anthropic API)', () => {
-  const describeAnthropicApi = process.env.ANTHROPIC_API_KEY
-    ? describe
-    : describe.skip;
+  if (!process.env.ANTHROPIC_API_KEY) {
+    it('ANTHROPIC_API_KEY is required', () => {
+      throw new Error(
+        'ANTHROPIC_API_KEY is required for integration tests. ' +
+          'Add it to .env.dev or pass it to the container.',
+      );
+    });
+    return;
+  }
 
-  describeAnthropicApi('classifyUrl', () => {
+  describe('classifyUrl', () => {
     it('returns expected response structure', async () => {
       const Anthropic = (await import('@anthropic-ai/sdk')).default;
       const client = new Anthropic();
