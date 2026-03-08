@@ -102,7 +102,7 @@ The **only** command the user runs is `./learning-test.sh`. This builds the dock
 
 - Integration tests capture/update fixture files directly as they run. There are no separate fixture capture scripts.
 - Missing `ANTHROPIC_API_KEY` must **fail loudly** — it is a real problem, not something to skip silently.
-- yt-dlp calls that fail due to auth requirements (reddit, instagram, facebook) should fail the test. If we can't test it, don't include it — a test that skips on failure is worthless.
+- yt-dlp calls that fail (including auth-gated sites like reddit, instagram, facebook) should **fail the test loudly**, not skip or silently return. These services ARE testable from the user's machine via `./learning-test.sh` — do NOT remove them just because they fail from a sandbox environment. A test that skips on failure is worthless.
 
 ## Gotchas & Surprises
 
