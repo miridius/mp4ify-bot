@@ -380,6 +380,125 @@ describe('confirmation for long videos (>20 min)', () => {
   });
 });
 
+describe('news article confirmation', () => {
+  const groupChat = { id: -100, type: 'group', title: 'Test Group' };
+
+  const mockGetInfoNews = (extractor = 'bbc.co.uk:article') =>
+    mockGetInfo.mockImplementation(
+      memoize(
+        mock(async (_log: any, url: string) => ({
+          webpage_url: url,
+          title: 'News Video',
+          extractor,
+          id: 'id',
+          description: 'desc',
+          filename: 'news-video.mp4',
+          duration: 60,
+        })),
+      ),
+    );
+
+  const triggerNewsConfirmation = async () => {
+    mockGetInfoNews();
+    const msgCtx = createMockMessageCtx(false, { chat: groupChat });
+    await textMessageHandler(msgCtx as any);
+    const buttons = (msgCtx.telegram.sendMessage as any).mock.calls[0][2]
+      .reply_markup.inline_keyboard[0];
+    return {
+      msgCtx,
+      confirmData: buttons[0].callback_data as string,
+      cancelData: buttons[1].callback_data as string,
+    };
+  };
+
+  describe.each([false, true])('textMessageHandler, edit: %p', (isEdit) => {
+    it('news URL in group chat shows confirmation buttons', async () => {
+      mockGetInfoNews();
+      const ctx = createMockMessageCtx(isEdit, { chat: groupChat });
+      await textMessageHandler(ctx as any);
+
+      expect(mockDownloadVideo).not.toHaveBeenCalled();
+      expect(mockSendVideo).not.toHaveBeenCalled();
+
+      expect(ctx.telegram.sendMessage).toHaveBeenCalledTimes(1);
+      const [chatId, text, opts] = (ctx.telegram.sendMessage as any).mock
+        .calls[0];
+      expect(chatId).toBe(-100);
+      expect(text).toBe(
+        'This looks like a news article. Post the embedded video?',
+      );
+      expect(opts.reply_markup.inline_keyboard[0]).toHaveLength(2);
+    });
+
+    it('news URL in private chat downloads immediately', async () => {
+      mockGetInfoNews();
+      const ctx = createMockMessageCtx(isEdit);
+      await textMessageHandler(ctx as any);
+
+      expect(mockDownloadVideo).toHaveBeenCalled();
+      expect(mockSendVideo).toHaveBeenCalled();
+    });
+
+    it('non-news URL in group chat downloads immediately', async () => {
+      // Default mock uses extractor: 'test' and url: example.com — neither is news
+      const ctx = createMockMessageCtx(isEdit, { chat: groupChat });
+      await textMessageHandler(ctx as any);
+
+      expect(mockDownloadVideo).toHaveBeenCalled();
+      expect(mockSendVideo).toHaveBeenCalled();
+    });
+
+    it('news URL detection takes priority over duration check', async () => {
+      mockGetInfo.mockImplementation(
+        memoize(
+          mock(async (_log: any, url: string) => ({
+            webpage_url: url,
+            title: 'Long News Video',
+            extractor: 'bbc.co.uk:article',
+            id: 'id',
+            description: 'desc',
+            filename: 'long-news.mp4',
+            duration: 25 * 60, // over threshold
+          })),
+        ),
+      );
+      const ctx = createMockMessageCtx(isEdit, { chat: groupChat });
+      await textMessageHandler(ctx as any);
+
+      const [, text] = (ctx.telegram.sendMessage as any).mock.calls[0];
+      expect(text).toBe(
+        'This looks like a news article. Post the embedded video?',
+      );
+    });
+  });
+
+  describe('callbackQueryHandler', () => {
+    it('news confirmation confirm triggers download', async () => {
+      const { confirmData } = await triggerNewsConfirmation();
+
+      const cbCtx = createMockCallbackCtx(confirmData, 123);
+      await callbackQueryHandler(cbCtx as any);
+
+      expect(cbCtx.answerCbQuery).toHaveBeenCalledWith('Starting download...');
+      expect(cbCtx.deleteMessage).toHaveBeenCalled();
+      expect(mockDownloadVideo).toHaveBeenCalled();
+      expect(mockSendVideo).toHaveBeenCalled();
+    });
+
+    it('news confirmation cancel does not download', async () => {
+      const { cancelData } = await triggerNewsConfirmation();
+
+      const cbCtx = createMockCallbackCtx(cancelData, 123);
+      await callbackQueryHandler(cbCtx as any);
+
+      expect(cbCtx.answerCbQuery).toHaveBeenCalledWith('Cancelled.');
+      expect(cbCtx.deleteMessage).toHaveBeenCalled();
+      expect(mockDownloadVideo).not.toHaveBeenCalled();
+      expect(mockSendVideo).not.toHaveBeenCalled();
+    });
+  });
+});
+
 describe('post-download duration check', () => {
   const LONG_DURATION = 25 * 60;
   const groupChat = { id: -100, type: 'group', title: 'Test Group' };
