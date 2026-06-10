@@ -47,6 +47,31 @@ describe.each([false, true])('LogMessage, edit: %p', (isEdit) => {
     await log.flush();
     expect(ctx.reply).not.toHaveBeenCalled();
   });
+
+  it('flushes automatically after the debounce delay', async () => {
+    const ctx = createMockMessageCtx(isEdit);
+    new LogMessage(ctx, 'debounced');
+    expect(ctx.reply).not.toHaveBeenCalled();
+    await Bun.sleep(200); // DEBOUNCE_MS is 150
+    expect(ctx.reply).toHaveBeenCalledWith('debounced', expect.anything());
+  });
+
+  it('does not retry failed edits with the same content', async () => {
+    const ctx = createMockMessageCtx(isEdit);
+    const mockError = spyMock(console, 'error');
+    mockError.mockClear(); // spy persists across the describe.each variants
+    const log = new LogMessage(ctx, 'foo');
+    await log.flush();
+    (ctx.telegram.editMessageText as any).mockRejectedValueOnce(
+      new Error('message is not modified'),
+    );
+    log.append('bar');
+    await log.flush();
+    expect(mockError).toHaveBeenCalledTimes(1);
+    // Re-flushing the same content must not attempt another edit
+    await log.flush();
+    expect(ctx.telegram.editMessageText).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('NoLog', () => {

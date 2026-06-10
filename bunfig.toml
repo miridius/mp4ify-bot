@@ -2,3 +2,6 @@
 # This has to load first so that the mock of node-fetch applies to Telegraf:
 preload = ["./test/simulate-bot-api"]
 coverage = true
+# Quality gate: bun test fails if any file's coverage drops below these.
+# If they block you, write better tests - don't lower them.
+coverageThreshold = { lines = 0.95, functions = 0.9 }

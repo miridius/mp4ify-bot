@@ -25,9 +25,11 @@ import {
   spyMock,
 } from './test-utils.ts';
 
-beforeEach(() => {
+beforeEach(async () => {
   jest.clearAllMocks();
-  pendingDownloads.clearPending();
+  // Must await: a fire-and-forget cleanup races with the test body and can
+  // consume queued mockImplementationOnce's on the shared unlink spy.
+  await pendingDownloads.clearPending();
 });
 afterAll(() => mock.restore());
 spyMock(console, 'debug'); // suppress debug logs
@@ -319,6 +321,26 @@ describe('confirmation for long videos (>20 min)', () => {
       expect(mockDownloadVideo).not.toHaveBeenCalled();
     });
 
+    it('answers silently for malformed callback data', async () => {
+      const cbCtx = createMockCallbackCtx('garbage', 123);
+      await callbackQueryHandler(cbCtx as any);
+      expect(cbCtx.answerCbQuery).toHaveBeenCalledWith('');
+      expect(mockDownloadVideo).not.toHaveBeenCalled();
+    });
+
+    it('survives answerCbQuery failures', async () => {
+      const mockError = spyOn(console, 'error').mockImplementation(() => {});
+      const cbCtx = createMockCallbackCtx('garbage', 123);
+      (cbCtx.answerCbQuery as any).mockImplementationOnce(() =>
+        Promise.reject(new Error('query is too old')),
+      );
+      await callbackQueryHandler(cbCtx as any);
+      expect(mockError).toHaveBeenCalledWith(
+        'answerCbQuery failed:',
+        expect.any(Error),
+      );
+    });
+
     it('responds with unavailable for unknown callback data', async () => {
       const cbCtx = createMockCallbackCtx('dl:nonexistent', 123);
       await callbackQueryHandler(cbCtx as any);
@@ -509,6 +531,23 @@ describe('post-download duration check', () => {
       expect(mockDownloadVideo).not.toHaveBeenCalled();
       // Should upload
       expect(mockSendVideo).toHaveBeenCalled();
+    });
+
+    it('logs unexpected cleanup failures on cancel', async () => {
+      const { cancelData } = await triggerPostDownloadConfirmation();
+      const mockError = spyOn(console, 'error').mockImplementation(() => {});
+      mockUnlink.mockImplementationOnce(() =>
+        Promise.reject(Object.assign(new Error('busy'), { code: 'EBUSY' })),
+      );
+
+      const cbCtx = createMockCallbackCtx(cancelData, 123);
+      await callbackQueryHandler(cbCtx as any);
+
+      expect(cbCtx.answerCbQuery).toHaveBeenCalledWith('Cancelled.');
+      expect(mockError).toHaveBeenCalledWith(
+        expect.stringContaining('Failed to clean up'),
+        expect.any(Error),
+      );
     });
 
     it('deletes file and does not upload on cancel', async () => {

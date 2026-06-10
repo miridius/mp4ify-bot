@@ -15,6 +15,7 @@ import * as fsPromises from 'node:fs/promises';
 import {
   downloadVideo,
   getInfo,
+  probeDuration,
   sendInfo,
   sendVideo,
   updateYtdlp,
@@ -143,6 +144,39 @@ describe('updateYtdlp', () => {
       'yt-dlp self-update failed:',
       expect.any(Error),
     );
+  });
+});
+
+describe('probeDuration', () => {
+  it('returns the rounded duration from ffprobe', async () => {
+    mockSpawn.mockImplementationOnce(mockSpawnImpl('12.7\n'));
+    expect(await probeDuration('file.mp4')).toBe(13);
+    expect(mockSpawn.mock.calls[0]![0]).toEqual([
+      'ffprobe',
+      '-v',
+      'error',
+      '-show_entries',
+      'format=duration',
+      '-of',
+      'csv=p=0',
+      'file.mp4',
+    ]);
+  });
+
+  it('returns undefined and logs when ffprobe fails', async () => {
+    const consoleError = spyOn(console, 'error').mockImplementation(mock());
+    mockSpawn.mockImplementationOnce(
+      mockSpawnImpl('', 'No such file', { exitCode: 1 }),
+    );
+    expect(await probeDuration('missing.mp4')).toBeUndefined();
+    expect(consoleError).toHaveBeenCalledWith(
+      expect.stringContaining('ffprobe failed for missing.mp4'),
+    );
+  });
+
+  it('returns undefined for unparseable output', async () => {
+    mockSpawn.mockImplementationOnce(mockSpawnImpl('N/A\n'));
+    expect(await probeDuration('weird.mp4')).toBeUndefined();
   });
 });
 
