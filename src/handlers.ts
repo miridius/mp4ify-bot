@@ -9,7 +9,6 @@ import {
   type VideoInfo,
 } from './download-video';
 import { LogMessage, NoLog } from './log-message';
-import { isNewsUrl } from './news-detection';
 import {
   addPending,
   LONG_VIDEO_THRESHOLD_SECS,
@@ -40,13 +39,6 @@ export const textMessageHandler = async (ctx: MessageContext) => {
           await sendInfo(log, info, verbose);
           const duration = calcDuration(info);
           const isGroupChat = chat.type !== 'private';
-          if (isGroupChat && isNewsUrl(info.webpage_url || url, info.extractor)) {
-            await requestConfirmation(
-              ctx, info, verbose, message_id, false,
-              'This looks like a news article. Post the embedded video?',
-            );
-            return;
-          }
           if (isGroupChat && duration && duration > LONG_VIDEO_THRESHOLD_SECS) {
             await requestConfirmation(ctx, info, verbose, message_id);
             return;
@@ -85,8 +77,9 @@ const requestConfirmation = async (
   verbose: boolean,
   messageId: number,
   postDownload: boolean = false,
-  message?: string,
 ) => {
+  const duration = calcDuration(info)!;
+
   const id = await addPending({
     info,
     verbose,
@@ -96,14 +89,9 @@ const requestConfirmation = async (
     postDownload,
   });
 
-  const text = message ?? (() => {
-    const duration = calcDuration(info)!;
-    return `This video is pretty long (${formatDuration(duration)}), do you want me to download it anyway?`;
-  })();
-
   await ctx.telegram.sendMessage(
     ctx.chat!.id,
-    text,
+    `This video is pretty long (${formatDuration(duration)}), do you want me to download it anyway?`,
     {
       reply_parameters: { message_id: messageId },
       reply_markup: {

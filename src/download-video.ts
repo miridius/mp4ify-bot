@@ -34,7 +34,6 @@ export type VideoInfo = {
   tbr?: number;
   filesize?: number;
   filesize_approx?: number;
-  extractor?: string;
   sponsorblock_chapters?: {
     start_time: number;
     end_time: number;
