@@ -40,3 +40,6 @@ enforce:
   incomplete or wrong in places.
 - yt-dlp needs --no-check-certificates in cloud sandboxes; the code adds it
   automatically when CLAUDE_CODE_REMOTE=true.
+- reddit/youtube hard-block datacenter IPs (403 / "account authentication
+  required"), so e2e tests only work from residential IPs — they run pre-push
+  and at deploy, deliberately NOT in CI or cloud sandboxes.
