@@ -1,5 +1,20 @@
 {
+  "permissions": {
+    "ask": ["Bash(./prod.sh*)"]
+  },
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "if": "Bash(gh pr merge*)",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/check-pr-green.sh"
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [

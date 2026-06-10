@@ -15,13 +15,15 @@ local telegram-bot-api server (raises the upload limit to 2GB).
 
 ## Workflow
 
-- Features go on a branch with a PR; CI (lint, tests, coverage thresholds,
-  gitleaks) must be green to merge. Trivial fixes (typos, config) may go
+Most quality gates are enforced mechanically (pre-commit: lint + gitleaks +
+tests + coverage; hooks: commit-before-stop, green-CI-before-merge; GitHub
+push protection). The conventions hooks can't enforce:
+
+- Features go on a branch with a PR; trivial fixes (typos, config) may go
   straight to main.
-- Every behavior change ships with tests covering it. Coverage thresholds live
-  in bunfig.toml — if they block you, write better tests, don't lower them.
+- Every behavior change ships with tests covering it. If the coverage
+  thresholds in bunfig.toml block you, write better tests — don't lower them.
 - Run /code-review on the PR before handing it to the owner.
-- A Stop hook blocks ending a session with uncommitted changes.
 
 ## Gotchas
 
