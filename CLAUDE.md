@@ -38,8 +38,7 @@ enforce:
 - Verify Telegram API behavior empirically: capture real payloads, keep
   MockBotApi in parity (test/simulate-bot-api.ts). The official docs are
   incomplete or wrong in places.
-- yt-dlp needs --no-check-certificates in cloud sandboxes; the code adds it
-  automatically when CLAUDE_CODE_REMOTE=true.
 - reddit/youtube hard-block datacenter IPs (403 / "account authentication
-  required"), so e2e tests only work from residential IPs — they run pre-push
-  and at deploy, deliberately NOT in CI or cloud sandboxes.
+  required"), so anything involving real yt-dlp downloads only works from
+  residential IPs. This is why e2e runs pre-push and at deploy but NOT in CI,
+  and why this project can't be developed from cloud environments.

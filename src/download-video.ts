@@ -44,16 +44,12 @@ export type VideoInfo = {
   }[];
 };
 
-// Cloud environments (e.g. Claude Code Web) often have SSL interception
-const certFlags = () =>
-  Bun.env.CLAUDE_CODE_REMOTE === 'true' ? ['--no-check-certificates'] : [];
-
 // Self-update yt-dlp so extractors keep up with site changes (e.g. Reddit
 // requiring auth from older versions). Never throws: a failed update just
 // means we keep using the current version.
 export const updateYtdlp = async () => {
   try {
-    const proc = Bun.spawn(['yt-dlp', '--update', ...certFlags()], {
+    const proc = Bun.spawn(['yt-dlp', '--update'], {
       stdout: 'pipe',
       stderr: 'pipe',
       timeout: 120_000,
@@ -85,7 +81,6 @@ const execYtdlp = async (
     'yt-dlp',
     url,
     verbose ? '--verbose' : '--no-warnings',
-    ...certFlags(),
     ...extraArgs,
   ];
   console.debug(command.join(' '));

@@ -13,9 +13,4 @@ else
   exit 1
 fi
 
-if command -v docker >/dev/null 2>&1; then
-  UID=$(id -u) GID=$(id -g) docker compose run --rm --no-deps test bun test
-else
-  # No docker (e.g. cloud sandbox): run directly, needs a writable /storage
-  bun test
-fi
+UID=$(id -u) GID=$(id -g) docker compose run --rm --no-deps test bun test
