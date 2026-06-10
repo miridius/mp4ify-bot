@@ -196,6 +196,25 @@ describe('getInfo', () => {
     expect(mockAppend).not.toHaveBeenCalled();
   });
 
+  it('discards a corrupt cache entry and re-scrapes', async () => {
+    mockExists.mockResolvedValueOnce(true);
+    mockJson.mockImplementationOnce(() =>
+      Promise.reject(new SyntaxError('Unexpected token')),
+    );
+    const consoleError = spyOn(console, 'error').mockImplementation(mock());
+    mockUnlink.mockImplementationOnce(async () => {}); // .catch needs a promise
+    mockSpawn.mockImplementationOnce(mockSpawnImpl(JSON.stringify(VideoInfo)));
+
+    const info = await getInfo(log as any, 'url');
+
+    expect(consoleError).toHaveBeenCalledWith(
+      expect.stringContaining('Discarding corrupt info cache'),
+      expect.any(SyntaxError),
+    );
+    expect(mockUnlink).toHaveBeenCalledWith('/mocked/file');
+    expect(info.filename).toBe(VideoInfo.filename); // re-scraped
+  });
+
   it('fetches info if not cached', async () => {
     mockExists.mockResolvedValueOnce(false);
     mockSpawn.mockImplementationOnce(mockSpawnImpl(JSON.stringify(VideoInfo)));

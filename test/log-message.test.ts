@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, spyOn } from 'bun:test';
 import { LogMessage, NoLog } from '../src/log-message';
 import { createMockMessageCtx, spyMock } from './test-utils';
 
@@ -54,6 +54,48 @@ describe.each([false, true])('LogMessage, edit: %p', (isEdit) => {
     expect(ctx.reply).not.toHaveBeenCalled();
     await Bun.sleep(200); // DEBOUNCE_MS is 150
     expect(ctx.reply).toHaveBeenCalledWith('debounced', expect.anything());
+  });
+
+  it('retries a failed initial reply on the next flush', async () => {
+    const ctx = createMockMessageCtx(isEdit);
+    const mockError = spyMock(console, 'error');
+    mockError.mockClear();
+    (ctx.reply as any).mockImplementationOnce(() =>
+      Promise.reject(new Error('429: Too Many Requests')),
+    );
+    const log = new LogMessage(ctx, 'hello');
+    await log.flush(); // must not throw
+    expect(mockError).toHaveBeenCalledTimes(1);
+    await log.flush();
+    expect(ctx.reply).toHaveBeenCalledTimes(2); // retried
+  });
+
+  it('does not leak an unhandled rejection when the debounced flush fails', async () => {
+    const ctx = createMockMessageCtx(isEdit);
+    const mockError = spyMock(console, 'error');
+    mockError.mockClear();
+    (ctx.reply as any).mockImplementationOnce(() =>
+      Promise.reject(new Error('chat deleted')),
+    );
+    new LogMessage(ctx, 'debounced');
+    await Bun.sleep(200); // let the debounce timer fire
+    expect(mockError).toHaveBeenCalled();
+  });
+
+  it('catches unexpected flush failures from the debounce timer', async () => {
+    const ctx = createMockMessageCtx(isEdit);
+    const mockError = spyMock(console, 'error');
+    mockError.mockClear();
+    const log = new LogMessage(ctx);
+    spyOn(log as any, 'flush').mockImplementationOnce(() =>
+      Promise.reject(new Error('unexpected')),
+    );
+    log.append('x');
+    await Bun.sleep(200); // let the debounce timer fire
+    expect(mockError).toHaveBeenCalledWith(
+      'Log flush failed:',
+      expect.any(Error),
+    );
   });
 
   it('does not retry failed edits with the same content', async () => {

@@ -99,6 +99,30 @@ describe.each([false, true])('textMessageHandler, edit: %p', (isEdit) => {
     );
   });
 
+  it('still logs the original error when reporting to the user fails', async () => {
+    const ctx = createMockMessageCtx(isEdit);
+    mockGetInfo.mockImplementationOnce(() =>
+      Promise.reject(new Error('oh noes!')),
+    );
+    const mockError = spyOn(console, 'error').mockImplementation(() => {});
+    mockLog.flush.mockImplementationOnce(() =>
+      Promise.reject(new Error('telegram down')),
+    );
+    await textMessageHandler(ctx as any); // must not throw
+    const logged = mockError.mock.calls.map(([first]) => first);
+    expect(logged).toContainEqual(expect.objectContaining({ message: 'oh noes!' }));
+  });
+
+  it('reports non-Error throws sensibly', async () => {
+    const ctx = createMockMessageCtx(isEdit);
+    mockGetInfo.mockImplementationOnce(() => Promise.reject('string error'));
+    spyOn(console, 'error').mockImplementation(() => {});
+    await textMessageHandler(ctx as any);
+    expect(mockLog.append).toHaveBeenCalledWith(
+      '\n💥 <b>Download failed</b>: string error',
+    );
+  });
+
   it('does nothing if no url entities', async () => {
     const ctx = createMockMessageCtx(isEdit);
     (ctx.message || ctx.editedMessage).entities = [];
@@ -319,6 +343,20 @@ describe('confirmation for long videos (>20 min)', () => {
         "Only the requester can cancel.",
       );
       expect(mockDownloadVideo).not.toHaveBeenCalled();
+    });
+
+    it('answers gracefully when handling throws unexpectedly', async () => {
+      const mockError = spyOn(console, 'error').mockImplementation(() => {});
+      spyOn(pendingDownloads, 'takePending').mockImplementationOnce(() => {
+        throw new Error('disk on fire');
+      });
+      const cbCtx = createMockCallbackCtx('dl:aaaa', 123);
+      await callbackQueryHandler(cbCtx as any); // must not throw
+      expect(mockError).toHaveBeenCalledWith(
+        'Error handling callback query:',
+        expect.any(Error),
+      );
+      expect(cbCtx.answerCbQuery).toHaveBeenCalledWith('Something went wrong.');
     });
 
     it('answers silently for malformed callback data', async () => {

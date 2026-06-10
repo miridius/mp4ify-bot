@@ -20,7 +20,7 @@ export const reply = (ctx: MessageContext, text: string) =>
 // Writes log output to a private chat by updating a single message.
 export class LogMessage {
   private texts: string[] = [];
-  private messages: Message.TextMessage[] = [];
+  private messages: (Message.TextMessage | undefined)[] = [];
   private ctx?: MessageContext;
   private timer?: Timer;
 
@@ -45,7 +45,11 @@ export class LogMessage {
         this.texts[this.texts.length - 1] = newText;
       }
     }
-    this.timer = setTimeout(() => this.flush(), DEBOUNCE_MS);
+    // the timer rejection has no awaiter, so it must catch its own errors
+    this.timer = setTimeout(
+      () => this.flush().catch((e) => console.error('Log flush failed:', e)),
+      DEBOUNCE_MS,
+    );
   }
 
   async flush() {
@@ -61,7 +65,12 @@ export class LogMessage {
 
   private async setMessageText(text: string, message?: Message.TextMessage) {
     if (!message) {
-      return await reply(this.ctx!, text);
+      try {
+        return await reply(this.ctx!, text);
+      } catch (e) {
+        console.error('Failed to send log message', text, e);
+        return undefined; // retried on the next flush
+      }
     } else if (message.text !== text.replaceAll(/<[^>]+>/g, '')) {
       try {
         return (await this.ctx!.telegram.editMessageText(

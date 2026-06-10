@@ -2,7 +2,11 @@ import { Telegraf } from 'telegraf';
 import { allOf, editedMessage, message, type Filter } from 'telegraf/filters';
 import type { Update } from 'telegraf/types';
 import { apiRoot } from './consts';
-import { updateYtdlp, YTDLP_UPDATE_INTERVAL_MS } from './download-video';
+import {
+  DOWNLOAD_TIMEOUT_SECS,
+  updateYtdlp,
+  YTDLP_UPDATE_INTERVAL_MS,
+} from './download-video';
 import {
   callbackQueryHandler,
   inlineQueryHandler,
@@ -14,8 +18,20 @@ export const start = async (botToken: string) => {
   updateYtdlp();
   setInterval(updateYtdlp, YTDLP_UPDATE_INTERVAL_MS).unref();
 
-  const bot = new Telegraf(botToken, { telegram: { apiRoot } });
+  const bot = new Telegraf(botToken, {
+    telegram: { apiRoot },
+    // must exceed the worst-case handler (scrape + download = two yt-dlp
+    // runs, plus headroom for a multi-GB upload): telegraf's 90s default
+    // made handleUpdate reject mid-download, which killed the polling loop
+    handlerTimeout: (2 * DOWNLOAD_TIMEOUT_SECS + 20 * 60) * 1000,
+  });
   console.debug(bot.telegram.options);
+
+  // without this, any error escaping a handler aborts polling permanently
+  bot.catch((err, ctx) => {
+    console.error('Unhandled error while processing', ctx.update, err);
+    process.exitCode = 1; // keep telegraf's exit-code-on-error behavior
+  });
 
   bot.on(message('text'), (ctx) => textMessageHandler(ctx));
   bot.on(
@@ -36,9 +52,19 @@ export const start = async (botToken: string) => {
 
   bot.use((ctx) => console.log('unhandled update:', ctx.update));
 
-  bot.launch();
-  // wait for the bot to start
-  while (!(bot as any).polling) await Bun.sleep(100);
+  // launch() only settles when polling stops, so don't await it — but a
+  // fatal polling crash must kill the process (docker restarts it) instead
+  // of leaving a zombie that looks alive and answers nothing
+  await new Promise<void>((onLaunch) => {
+    bot.launch(onLaunch).catch((e) => {
+      console.error('Bot crashed:', e);
+      process.exit(1);
+    });
+  });
+  // onLaunch fires before telegraf assigns its polling field, and stop()
+  // throws until it does - wait (bounded, in case telegraf renames it)
+  const deadline = Date.now() + 30_000;
+  while (!(bot as any).polling && Date.now() < deadline) await Bun.sleep(5);
 
   // Enable graceful stop
   process.once('SIGINT', () => bot.stop('SIGINT'));

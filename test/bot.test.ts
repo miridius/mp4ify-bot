@@ -15,16 +15,27 @@ import type { Message, Update } from 'telegraf/types';
 import { start } from '../src/bot';
 import { apiRoot } from '../src/consts';
 import * as downloadVideo from '../src/download-video';
-import { YTDLP_UPDATE_INTERVAL_MS } from '../src/download-video';
+import {
+  DOWNLOAD_TIMEOUT_SECS,
+  YTDLP_UPDATE_INTERVAL_MS,
+} from '../src/download-video';
 import * as handlers from '../src/handlers';
 import { spyMock } from './test-utils';
 
 beforeEach(() => jest.clearAllMocks());
 afterAll(() => mock.restore());
 
-spyOn(Telegraf.prototype, 'launch').mockImplementation(async function () {
+let launched = false;
+spyOn(Telegraf.prototype, 'launch').mockImplementation(async function (
+  ...args: any[]
+) {
   await Bun.sleep(10);
-  (this as any).polling = true;
+  launched = true;
+  (this as any).polling = {}; // telegraf assigns this when polling starts
+  // invoke the onLaunch callback like the real launch() does, then stay
+  // pending like the real launch() does (it only settles when polling stops)
+  args.find((a) => typeof a === 'function')?.();
+  return new Promise<never>(() => {});
 });
 
 // Mock ./handlers
@@ -35,9 +46,6 @@ const callbackQueryHandler = spyMock(handlers, 'callbackQueryHandler');
 // Mock the yt-dlp self-update (and watch setInterval to check it's scheduled)
 const updateYtdlp = spyMock(downloadVideo, 'updateYtdlp');
 const setIntervalSpy = spyOn(globalThis, 'setInterval');
-
-// Mock Bun.sleep
-const sleepSpy = spyOn(Bun, 'sleep');
 
 // Mock process.once
 const processOnce = spyMock(process, 'once');
@@ -178,9 +186,60 @@ describe('start', async () => {
     expect(callbackQueryHandler.mock.calls[0]![0].update).toEqual(callbackQuery);
   });
 
-  it('waits for polling to be true before continuing', async () => {
-    const bot = await start('test-token');
-    expect((bot as any).polling).toBeTruthy();
-    expect(sleepSpy).toHaveBeenCalledWith(100);
+  it('resolves only once launch reports the bot has started', async () => {
+    launched = false; // suite-level start() already set it; reset to re-pin
+    await start('test-token');
+    expect(launched).toBe(true);
+  });
+
+  it('sets handlerTimeout above the worst case of two sequential yt-dlp runs', () => {
+    expect((bot as any).options.handlerTimeout).toBeGreaterThan(
+      2 * DOWNLOAD_TIMEOUT_SECS * 1000,
+    );
+  });
+
+  it('exits the process if polling crashes fatally', async () => {
+    const consoleError = spyOn(console, 'error').mockImplementation(mock());
+    const exitSpy = spyOn(process, 'exit').mockImplementation(
+      (() => undefined) as any,
+    );
+    (Telegraf.prototype.launch as any).mockImplementationOnce(async function (
+      this: any,
+      ...args: any[]
+    ) {
+      this.polling = {}; // crash strikes after polling had started
+      args.find((a: any) => typeof a === 'function')?.();
+      throw new Error('fatal polling error');
+    });
+    await start('crash-token');
+    await Bun.sleep(1); // let the launch rejection reach the catch
+    expect(consoleError).toHaveBeenCalledWith('Bot crashed:', expect.any(Error));
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it('contains handler errors instead of crashing the polling loop', async () => {
+    const consoleError = spyOn(console, 'error').mockImplementation(mock());
+    textMessageHandler.mockImplementationOnce(() =>
+      Promise.reject(new Error('handler boom')),
+    );
+    const msgUpdate: Update.MessageUpdate<Message.TextMessage> = {
+      update_id: 99,
+      message: {
+        message_id: 100,
+        date: Math.floor(Date.now() / 1000),
+        text: 'boom',
+        chat: { id: 123, type: 'private', first_name: 'Test' },
+        from: { id: 456, is_bot: false, first_name: 'Test' },
+      },
+    };
+    // must resolve, not reject: a rejection here is what used to abort polling
+    await bot.handleUpdate(msgUpdate);
+    expect(consoleError).toHaveBeenCalledWith(
+      'Unhandled error while processing',
+      expect.anything(),
+      expect.any(Error),
+    );
+    expect(process.exitCode).toBe(1); // telegraf-parity error signal
+    process.exitCode = 0; // don't fail the test run itself
   });
 });

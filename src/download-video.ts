@@ -1,4 +1,4 @@
-import { mkdir, stat, symlink, unlink } from 'fs/promises';
+import { mkdir, realpath, stat, symlink, unlink } from 'fs/promises';
 import { basename } from 'path';
 import type { Message } from 'telegraf/types';
 import { LogMessage } from './log-message';
@@ -6,7 +6,7 @@ import type { AnyContext } from './types';
 import { memoize } from './utils';
 
 const MAX_FILE_SIZE_BYTES = 2000 * 1024 * 1024; // 2000 MB
-const DOWNLOAD_TIMEOUT_SECS = 300;
+export const DOWNLOAD_TIMEOUT_SECS = 300;
 export const YTDLP_UPDATE_INTERVAL_MS = 1000 * 60 * 60 * 24; // 1 day
 const INFO_CACHE_DIR = '/storage/_video-info/';
 await mkdir(INFO_CACHE_DIR, { recursive: true }); // $`mkdir -p ${INFO_CACHE_DIR}`;
@@ -124,22 +124,51 @@ export const getInfo = memoize(
     verbose: boolean = false,
   ): Promise<VideoInfo> => {
     const infoFile = urlInfoFile(url);
-    if (await infoFile.exists()) return await infoFile.json();
+    if (await infoFile.exists()) {
+      try {
+        return await infoFile.json();
+      } catch (e) {
+        // corrupted cache entry (e.g. interrupted write): discard & re-scrape
+        console.error(`Discarding corrupt info cache for ${url}:`, e);
+        try {
+          // the entry may be a symlink to the canonical entry, in which case
+          // the target holds the corrupt data and must go too
+          const target = await realpath(infoFile.name!).catch(
+            () => infoFile.name!,
+          );
+          if (target !== infoFile.name!) await unlink(target);
+          await unlink(infoFile.name!);
+        } catch (e2) {
+          console.error('Failed to delete corrupt cache file:', e2);
+        }
+      }
+    }
 
     log.append(`🧐 <b>Scraping</b> ${url}...`);
 
     const infoStr = await execYtdlp(log, url, verbose, '--dump-json');
     const info = JSON.parse(infoStr) as VideoInfo;
     info.webpage_url ||= url;
-    const { webpage_url } = info;
-    if (webpage_url && webpage_url !== url) {
-      const mainInfoFile = Bun.file(INFO_CACHE_DIR + filenamify(webpage_url));
-      if (!(await mainInfoFile.exists())) {
-        await Bun.write(mainInfoFile, infoStr);
+    // cache write failures must not fail the request: info is already in hand
+    try {
+      const { webpage_url } = info;
+      if (webpage_url && webpage_url !== url) {
+        const mainInfoFile = Bun.file(INFO_CACHE_DIR + filenamify(webpage_url));
+        if (!(await mainInfoFile.exists())) {
+          await Bun.write(mainInfoFile, infoStr);
+        }
+        try {
+          await symlink(filenamify(webpage_url), infoFile.name!);
+        } catch (e: any) {
+          // EEXIST: a dangling sibling symlink to the same (just-rewritten)
+          // target - already correct, nothing to do
+          if (e.code !== 'EEXIST') throw e;
+        }
+      } else {
+        if (!(await infoFile.exists())) await Bun.write(infoFile, infoStr);
       }
-      await symlink(filenamify(webpage_url), infoFile.name!);
-    } else {
-      if (!(await infoFile.exists())) Bun.write(infoFile, infoStr);
+    } catch (e) {
+      console.error('Failed to write info cache:', e);
     }
     return info;
   },

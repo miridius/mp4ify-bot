@@ -55,15 +55,22 @@ export const textMessageHandler = async (ctx: MessageContext) => {
           }
           await sendVideo(ctx, log, info, ctx.chat.id, message_id);
         } catch (e: any) {
-          log.append(
-            `\n💥 <b>Download failed</b>: ${Bun.escapeHTML(e.message)}`,
-          );
-          await log.flush();
+          // log first: reporting to the user can itself fail, and the root
+          // cause must never be lost to a secondary Telegram error
           console.error(e);
+          try {
+            log.append(`\n💥 <b>Download failed</b>: ${errMsg(e)}`);
+            await log.flush();
+          } catch (notifyErr) {
+            console.error('Failed to report the error to the user:', notifyErr);
+          }
         }
       }) || [],
   );
 };
+
+// non-Error throws (strings, objects) must still render sensibly
+const errMsg = (e: any) => Bun.escapeHTML(e?.message || String(e));
 
 const formatDuration = (secs: number) => {
   const m = Math.floor(secs / 60);
@@ -119,11 +126,22 @@ const handleUnavailable = async (ctx: CallbackQueryContext) => {
 };
 
 export const callbackQueryHandler = async (ctx: CallbackQueryContext) => {
+  try {
+    await handleCallbackQuery(ctx);
+  } catch (e) {
+    // an escaped rejection would otherwise take down the polling loop
+    console.error('Error handling callback query:', e);
+    await safeAnswer(ctx, 'Something went wrong.');
+  }
+};
+
+const handleCallbackQuery = async (ctx: CallbackQueryContext) => {
   const data = (ctx.callbackQuery as any).data as string | undefined;
   if (!data) return;
 
   const match = data.match(/^(dl|no):([a-z0-9-]+)$/);
   if (!match) {
+    console.error('Unrecognized callback data:', data);
     await safeAnswer(ctx, '');
     return;
   }
@@ -177,7 +195,7 @@ export const callbackQueryHandler = async (ctx: CallbackQueryContext) => {
     try {
       await ctx.telegram.sendMessage(
         chatId,
-        `💥 <b>Download failed</b>: ${Bun.escapeHTML(e.message)}`,
+        `💥 <b>Download failed</b>: ${errMsg(e)}`,
         {
           reply_parameters: { message_id: messageId },
           parse_mode: 'HTML',
@@ -255,8 +273,9 @@ export const inlineQueryHandler = async (ctx: InlineQueryContext) => {
           },
         },
       ]);
-    } catch {
+    } catch (e2) {
       // answerInlineQuery can fail if too much time has passed
+      console.error('Failed to send inline error result:', e2);
     }
   }
 };
