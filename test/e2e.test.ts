@@ -43,8 +43,9 @@ const testUrls = [
   'https://www.reddit.com/r/nextfuckinglevel/s/iGEii0a7V6',
   // canonical url for same video
   'https://www.reddit.com/r/nextfuckinglevel/comments/1l68isw/mix_of_coolness_agility_technique_power_and_a/?share_id=ejTJZnh_f4BZuzlnfcOUo',
-  // fails if we run the test too often
-  'http://youtube.com/shorts/0COu-qMC18Y',
+  // NO youtube url: it rate-limits aggressively ("Sign in to confirm you're
+  // not a bot") when the suite runs more than a few times per hour, which a
+  // pre-push gate does. See 571670e for the first time we learned this.
 ];
 
 const clearDiskCache = async () => $`rm -rf /storage/*`.catch(() => null);
