@@ -24,8 +24,13 @@ enforce:
   straight to main.
 - Every behavior change ships with tests covering it. If the coverage
   thresholds in bunfig.toml block you, write better tests — don't lower them.
-- Run /code-review before handing a PR to the owner, and FIX what it finds —
-  don't post review comments on your own PR.
+- While developing non-trivial changes, run the pr-review-toolkit agents that
+  match the work (silent-failure-hunter for error handling, pr-test-analyzer
+  for test quality, type-design-analyzer for new types, code-simplifier after
+  a big chunk). Fix the findings you agree with; dismiss bad ones with stated
+  reasoning.
+- Before handing a PR to the owner, run /code-review --fix as the final
+  precision pass. Never post review comments on your own PR.
 - e2e snapshot mismatches where only yt-dlp format ids / filenames changed are
   staleness, not bugs: refresh with
   `docker compose run --rm -T test bash -c "TEST_E2E=true bun --config=bunfig.e2e.toml test e2e -u"`
