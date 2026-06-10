@@ -177,6 +177,7 @@ describe('MockBotApi', () => {
     //@ts-ignore
     spyOn(Bun, 'file').mockReturnValue({
       exists: mock().mockResolvedValue(true),
+      size: 1,
     });
     const url = new URL(`${apiRoot}/bot${api.botToken}/sendVideo`);
     const body = JSON.stringify({
@@ -190,6 +191,26 @@ describe('MockBotApi', () => {
     const json = await resp.json();
     expect(json.ok).toBe(true);
     expect(json.result.video.file_name).toBe('/tmp/real.mp4');
+  });
+
+  it('handle sendVideo returns error if file is empty', async () => {
+    //@ts-ignore
+    spyOn(Bun, 'file').mockReturnValue({
+      exists: mock().mockResolvedValue(true),
+      size: 0,
+    });
+    const url = new URL(`${apiRoot}/bot${api.botToken}/sendVideo`);
+    const body = JSON.stringify({
+      chat_id: api['user'].id,
+      video: Bun.pathToFileURL('/tmp/empty.mp4'),
+      width: 1,
+      height: 1,
+      duration: 1,
+    });
+    const resp = (await api.handle(url, { method: 'POST', body })) as Response;
+    const json = await resp.json();
+    expect(json.ok).toBe(false);
+    expect(json.description).toMatch(/file is empty/);
   });
 
   it('handle unknown command throws', () => {

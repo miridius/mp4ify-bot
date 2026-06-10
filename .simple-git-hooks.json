@@ -1,3 +1,4 @@
 {
-  "pre-commit": "bun run lint"
+  "pre-commit": "./check.sh",
+  "pre-push": "./e2e.sh"
 }

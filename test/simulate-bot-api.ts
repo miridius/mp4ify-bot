@@ -14,6 +14,11 @@ import { apiRoot } from '../src/consts';
 // we should probably consolidate final state of edited messages
 // The only part we intercept is where it asks for updates.
 
+// matches the `.{format_id}.` filename segment yt-dlp produces (plain or
+// URL-encoded `]` before it). Shared by the e2e snapshot scrubber and the
+// mock's file_id hashing so the two can't drift apart.
+export const FORMAT_ID_RE = /(\]|%5D)\.[\w+-]+(\.mp4)/g;
+
 const okResp = (result: any, description?: string) =>
   new Response(
     JSON.stringify({ ok: true, result, ...(description && { description }) }),
@@ -288,10 +293,17 @@ export class MockBotApi {
       file_id = video;
     } else {
       file_name = Bun.fileURLToPath(video);
-      if (!(await Bun.file(file_name).exists())) {
+      const file = Bun.file(file_name);
+      if (!(await file.exists())) {
         return errResp(`Bad Request: file not found: ${file_name}`);
       }
-      file_id = Bun.hash(video).toString(36);
+      // the real bot-api rejects empty uploads; catches truncated downloads
+      if (file.size === 0) {
+        return errResp(`Bad Request: file is empty: ${file_name}`);
+      }
+      // hash a format-normalized name so the file_id (pinned in e2e
+      // snapshots) stays stable when yt-dlp's format selection drifts
+      file_id = Bun.hash(video.replaceAll(FORMAT_ID_RE, '$1$2')).toString(36);
       this.fileIds.set(file_id, file_name);
     }
     const message = {

@@ -9,7 +9,7 @@ import {
   mock,
 } from 'bun:test';
 import { downloadVideo, getInfo, sendVideo } from '../src/download-video';
-import { withBotApi } from './simulate-bot-api';
+import { FORMAT_ID_RE, withBotApi } from './simulate-bot-api';
 import { spyMock, waitUntil } from './test-utils';
 
 beforeEach(() => jest.clearAllMocks());
@@ -43,11 +43,24 @@ const testUrls = [
   'https://www.reddit.com/r/nextfuckinglevel/s/iGEii0a7V6',
   // canonical url for same video
   'https://www.reddit.com/r/nextfuckinglevel/comments/1l68isw/mix_of_coolness_agility_technique_power_and_a/?share_id=ejTJZnh_f4BZuzlnfcOUo',
-  // fails if we run the test too often
-  'http://youtube.com/shorts/0COu-qMC18Y',
+  // only in full mode - see e2e.sh for the modes and why
+  ...(Bun.env.TEST_E2E_FULL ? ['http://youtube.com/shorts/0COu-qMC18Y'] : []),
 ];
 
 const clearDiskCache = async () => $`rm -rf /storage/*`.catch(() => null);
+
+// yt-dlp's format selection shifts as sites change their offerings, which
+// changes format ids in filenames, sizes, and bitrates without any change in
+// bot behavior. Scrub the most volatile of those. NOT scrubbed (and still
+// snapshot-breaking if the chosen format changes shape): codec profile
+// strings, resolution, and duration - those are real signal.
+const scrub = (messages: unknown) =>
+  JSON.parse(
+    JSON.stringify(messages)
+      .replaceAll(FORMAT_ID_RE, '$1.<formats>$2')
+      .replaceAll(/\d+(\.\d+)? MB/g, '<n> MB')
+      .replaceAll(/@ \d+(\.\d+)? kbps/g, '@ <n> kbps'),
+  );
 
 const clearInMemoryCache = () => {
   getInfo.cache.clear();
@@ -84,20 +97,20 @@ describe.if(!!Bun.env.TEST_E2E)('message handler', async () => {
         clearInMemoryCache();
         api.sendTextMessageToBot(urlMessage(url));
         await waitForVideo(25_000);
-        expect(api.sentMessages).toMatchSnapshot('download');
+        expect(scrub(api.sentMessages)).toMatchSnapshot('download');
 
         // in memory cache
         api.sentMessages.length = 0;
         api.sendTextMessageToBot(urlMessage(url));
         await waitForVideo(5_000);
-        expect(api.sentMessages).toMatchSnapshot('mem cache');
+        expect(scrub(api.sentMessages)).toMatchSnapshot('mem cache');
 
         // disk cache
         clearInMemoryCache();
         api.sentMessages.length = 0;
         api.sendTextMessageToBot(urlMessage(url));
         await waitForVideo(5_000);
-        expect(api.sentMessages).toMatchSnapshot('disk cache');
+        expect(scrub(api.sentMessages)).toMatchSnapshot('disk cache');
       }),
     40_000,
   );
