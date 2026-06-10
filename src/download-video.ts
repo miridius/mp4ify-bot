@@ -7,6 +7,7 @@ import { memoize } from './utils';
 
 const MAX_FILE_SIZE_BYTES = 2000 * 1024 * 1024; // 2000 MB
 const DOWNLOAD_TIMEOUT_SECS = 300;
+export const YTDLP_UPDATE_INTERVAL_MS = 1000 * 60 * 60 * 24; // 1 day
 const INFO_CACHE_DIR = '/storage/_video-info/';
 await mkdir(INFO_CACHE_DIR, { recursive: true }); // $`mkdir -p ${INFO_CACHE_DIR}`;
 
@@ -43,6 +44,37 @@ export type VideoInfo = {
   }[];
 };
 
+// Cloud environments (e.g. Claude Code Web) often have SSL interception
+const certFlags = () =>
+  Bun.env.CLAUDE_CODE_REMOTE === 'true' ? ['--no-check-certificates'] : [];
+
+// Self-update yt-dlp so extractors keep up with site changes (e.g. Reddit
+// requiring auth from older versions). Never throws: a failed update just
+// means we keep using the current version.
+export const updateYtdlp = async () => {
+  try {
+    const proc = Bun.spawn(['yt-dlp', '--update', ...certFlags()], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+      timeout: 120_000,
+    });
+    const [stdout, stderr] = await Promise.all([
+      Bun.readableStreamToText(proc.stdout),
+      Bun.readableStreamToText(proc.stderr),
+    ]);
+    await proc.exited;
+    if (proc.exitCode === 0) {
+      console.log('yt-dlp self-update:', stdout.trim());
+    } else {
+      console.error(
+        `yt-dlp self-update failed (${proc.signalCode ?? `exit code ${proc.exitCode}`}): ${stderr.trim()}`,
+      );
+    }
+  } catch (e) {
+    console.error('yt-dlp self-update failed:', e);
+  }
+};
+
 const execYtdlp = async (
   logMsg: LogMessage,
   url: string,
@@ -53,8 +85,7 @@ const execYtdlp = async (
     'yt-dlp',
     url,
     verbose ? '--verbose' : '--no-warnings',
-    // Cloud environments (e.g. Claude Code Web) often have SSL interception
-    ...(Bun.env.CLAUDE_CODE_REMOTE === 'true' ? ['--no-check-certificates'] : []),
+    ...certFlags(),
     ...extraArgs,
   ];
   console.debug(command.join(' '));

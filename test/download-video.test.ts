@@ -17,6 +17,7 @@ import {
   getInfo,
   sendInfo,
   sendVideo,
+  updateYtdlp,
 } from '../src/download-video';
 import { spyMock } from './test-utils';
 
@@ -89,6 +90,61 @@ const mockStat = spyOn(fsPromises, 'stat').mockResolvedValue({
 const mockUnlink = spyMock(fsPromises, 'unlink');
 spyMock(fsPromises, 'symlink');
 spyMock(fsPromises, 'mkdir');
+
+describe('updateYtdlp', () => {
+  const consoleLog = spyOn(console, 'log').mockImplementation(mock());
+  const consoleError = spyOn(console, 'error').mockImplementation(mock());
+
+  it('runs yt-dlp --update and logs the result', async () => {
+    mockSpawn.mockImplementationOnce(mockSpawnImpl('yt-dlp is up to date'));
+
+    await updateYtdlp();
+
+    expect(mockSpawn.mock.calls[0]).toMatchInlineSnapshot(`
+      [
+        [
+          "yt-dlp",
+          "--update",
+        ],
+        {
+          "stderr": "pipe",
+          "stdout": "pipe",
+          "timeout": 120000,
+        },
+      ]
+    `);
+    expect(consoleLog).toHaveBeenCalledWith(
+      'yt-dlp self-update:',
+      'yt-dlp is up to date',
+    );
+    expect(consoleError).not.toHaveBeenCalled();
+  });
+
+  it('logs but does not throw when the update fails', async () => {
+    mockSpawn.mockImplementationOnce(
+      mockSpawnImpl('', 'ERROR: no write permission', { exitCode: 1 }),
+    );
+
+    await updateYtdlp();
+
+    expect(consoleError).toHaveBeenCalledWith(
+      'yt-dlp self-update failed (exit code 1): ERROR: no write permission',
+    );
+  });
+
+  it('does not throw when spawning fails entirely', async () => {
+    mockSpawn.mockImplementationOnce(() => {
+      throw new Error('spawn failed');
+    });
+
+    await updateYtdlp();
+
+    expect(consoleError).toHaveBeenCalledWith(
+      'yt-dlp self-update failed:',
+      expect.any(Error),
+    );
+  });
+});
 
 describe('getInfo', () => {
   beforeEach(() => getInfo.cache.clear());

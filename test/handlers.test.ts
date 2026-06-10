@@ -345,7 +345,13 @@ describe('confirmation for long videos (>20 min)', () => {
 
     it('handles download errors gracefully on confirm and notifies user', async () => {
       const { confirmData } = await triggerConfirmation();
-      mockDownloadVideo.mockRejectedValueOnce(new Error('network fail'));
+      // Reject lazily: mockRejectedValueOnce creates the rejected promise
+      // eagerly, and the handler crosses an event loop tick (file I/O in
+      // takePending) before awaiting it, so Bun reports it as an unhandled
+      // rejection and fails the test.
+      mockDownloadVideo.mockImplementationOnce(() =>
+        Promise.reject(new Error('network fail')),
+      );
       const mockError = spyOn(console, 'error').mockImplementation(() => {});
 
       const cbCtx = createMockCallbackCtx(confirmData, 123);
