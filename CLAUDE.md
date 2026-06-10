@@ -16,14 +16,19 @@ local telegram-bot-api server (raises the upload limit to 2GB).
 ## Workflow
 
 Most quality gates are enforced mechanically (pre-commit: lint + gitleaks +
-tests + coverage; hooks: commit-before-stop, green-CI-before-merge; GitHub
-push protection). The conventions hooks can't enforce:
+tests + coverage; pre-push: e2e; hooks: commit-before-stop,
+green-CI-before-merge; GitHub push protection). The conventions hooks can't
+enforce:
 
 - Features go on a branch with a PR; trivial fixes (typos, config) may go
   straight to main.
 - Every behavior change ships with tests covering it. If the coverage
   thresholds in bunfig.toml block you, write better tests — don't lower them.
-- Run /code-review on the PR before handing it to the owner.
+- Run /code-review before handing a PR to the owner, and FIX what it finds —
+  don't post review comments on your own PR.
+- e2e snapshot mismatches where only yt-dlp format ids / filenames changed are
+  staleness, not bugs: refresh with
+  `docker compose run --rm -T test bash -c "TEST_E2E=true bun --config=bunfig.e2e.toml test e2e -u"`
 
 ## Gotchas
 

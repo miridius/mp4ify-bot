@@ -1,2 +1,2 @@
 #!/bin/sh
-docker compose run --remove-orphans --rm -it test bash -c 'TEST_E2E=true bun test e2e'
+docker compose run --remove-orphans --rm -T test bash -c "TEST_E2E=true bun --config=bunfig.e2e.toml test e2e"

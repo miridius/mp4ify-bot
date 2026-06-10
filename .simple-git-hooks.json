@@ -1,3 +1,4 @@
 {
-  "pre-commit": "./check.sh"
+  "pre-commit": "./check.sh",
+  "pre-push": "./e2e.sh"
 }

@@ -1,0 +1,4 @@
+# bunfig for e2e runs (./e2e.sh): no coverage thresholds, since a partial
+# run can't meet whole-suite coverage. Keep preload in sync with bunfig.toml.
+[test]
+preload = ["./test/simulate-bot-api"]

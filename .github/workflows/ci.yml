@@ -19,3 +19,22 @@ jobs:
         env:
           BOT_TOKEN: dummy
           OWNER_ID: '0'
+
+  # Real yt-dlp downloads against a mocked Telegram API. May prove flaky from
+  # datacenter IPs (sites rate-limit them harder) - if so, demote or remove.
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+          sudo curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
+          sudo chmod a+rx /usr/local/bin/yt-dlp
+      - run: sudo mkdir -p -m 777 /storage
+      - run: bun --config=bunfig.e2e.toml test e2e
+        env:
+          TEST_E2E: 'true'
+          BOT_TOKEN: dummy
+          OWNER_ID: '0'
