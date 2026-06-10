@@ -16,21 +16,20 @@ local telegram-bot-api server (raises the upload limit to 2GB).
 ## Workflow
 
 Most quality gates are enforced mechanically (pre-commit: lint + gitleaks +
-tests + coverage; pre-push: e2e; hooks: commit-before-stop,
-green-CI-before-merge; GitHub push protection). The conventions hooks can't
+tests + coverage; pre-push: e2e; Stop hook: commit before finishing; GitHub:
+secret push protection, and branch protection on main requiring a PR with
+green CI — no direct pushes, admins included). The conventions hooks can't
 enforce:
 
-- Features go on a branch with a PR; trivial fixes (typos, config) may go
-  straight to main.
+- EVERY change goes on a branch with a PR, however small. The owner reviews
+  and merges all PRs.
 - Every behavior change ships with tests covering it. If the coverage
   thresholds in bunfig.toml block you, write better tests — don't lower them.
-- While developing non-trivial changes, run the pr-review-toolkit agents that
-  match the work (silent-failure-hunter for error handling, pr-test-analyzer
-  for test quality, type-design-analyzer for new types, code-simplifier after
-  a big chunk). Fix the findings you agree with; dismiss bad ones with stated
-  reasoning.
-- Before handing a PR to the owner, run /code-review --fix as the final
-  precision pass. Never post review comments on your own PR.
+- Every change gets the full review treatment (the skills are fast on small
+  changes): /pr-review-toolkit:review-pr during development, then
+  /code-review --fix before handing the PR to the owner. Fix the findings you
+  agree with, dismiss bad ones with stated reasoning, and never post review
+  comments on your own PR.
 - e2e snapshot mismatches where only yt-dlp format ids / filenames changed are
   staleness, not bugs: refresh with
   `docker compose run --rm -T test bash -c "TEST_E2E=true bun --config=bunfig.e2e.toml test e2e -u"`
