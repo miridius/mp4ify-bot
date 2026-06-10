@@ -25,11 +25,12 @@ enforce:
   and merges all PRs.
 - Every behavior change ships with tests covering it. If the coverage
   thresholds in bunfig.toml block you, write better tests — don't lower them.
-- Every change gets the full review treatment (the skills are fast on small
-  changes): /pr-review-toolkit:review-pr during development, then
-  /code-review --fix before handing the PR to the owner. Fix the findings you
-  agree with, dismiss bad ones with stated reasoning, and never post review
-  comments on your own PR.
+- Every change gets the full review treatment BEFORE the PR is opened (the
+  skills are fast on small changes): /pr-review-toolkit:review-pr while
+  developing, /code-review --fix when the branch feels done, and only then
+  raise the PR — it should contain finished, already-reviewed code. Fix the
+  findings you agree with, dismiss bad ones with stated reasoning, and never
+  post review comments on your own PR.
 - e2e snapshot mismatches where only yt-dlp format ids / filenames changed are
   staleness, not bugs: refresh with
   `docker compose run --rm -T test bash -c "TEST_E2E=true bun --config=bunfig.e2e.toml test e2e -u"`
