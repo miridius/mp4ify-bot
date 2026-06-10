@@ -14,6 +14,8 @@ import { Telegraf } from 'telegraf';
 import type { Message, Update } from 'telegraf/types';
 import { start } from '../src/bot';
 import { apiRoot } from '../src/consts';
+import * as downloadVideo from '../src/download-video';
+import { YTDLP_UPDATE_INTERVAL_MS } from '../src/download-video';
 import * as handlers from '../src/handlers';
 import { spyMock } from './test-utils';
 
@@ -30,6 +32,10 @@ const textMessageHandler = spyMock(handlers, 'textMessageHandler');
 const inlineQueryHandler = spyMock(handlers, 'inlineQueryHandler');
 const callbackQueryHandler = spyMock(handlers, 'callbackQueryHandler');
 
+// Mock the yt-dlp self-update (and watch setInterval to check it's scheduled)
+const updateYtdlp = spyMock(downloadVideo, 'updateYtdlp');
+const setIntervalSpy = spyOn(globalThis, 'setInterval');
+
 // Mock Bun.sleep
 const sleepSpy = spyOn(Bun, 'sleep');
 
@@ -40,6 +46,13 @@ describe('start', async () => {
   const botToken = 'test-token';
 
   const bot = await start(botToken);
+
+  // updates yt-dlp on start and schedules a daily update
+  expect(updateYtdlp).toHaveBeenCalledTimes(1);
+  expect(setIntervalSpy).toHaveBeenCalledWith(
+    updateYtdlp,
+    YTDLP_UPDATE_INTERVAL_MS,
+  );
 
   expect(processOnce).toHaveBeenCalledWith('SIGINT', expect.any(Function));
   expect(processOnce).toHaveBeenCalledWith('SIGTERM', expect.any(Function));

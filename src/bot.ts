@@ -2,6 +2,7 @@ import { Telegraf } from 'telegraf';
 import { allOf, editedMessage, message, type Filter } from 'telegraf/filters';
 import type { Update } from 'telegraf/types';
 import { apiRoot } from './consts';
+import { updateYtdlp, YTDLP_UPDATE_INTERVAL_MS } from './download-video';
 import {
   callbackQueryHandler,
   inlineQueryHandler,
@@ -9,6 +10,10 @@ import {
 } from './handlers';
 
 export const start = async (botToken: string) => {
+  // keep yt-dlp fresh: extractors break as sites change out from under us
+  updateYtdlp();
+  setInterval(updateYtdlp, YTDLP_UPDATE_INTERVAL_MS).unref();
+
   const bot = new Telegraf(botToken, { telegram: { apiRoot } });
   console.debug(bot.telegram.options);
 

@@ -5,7 +5,7 @@ if (process.stderr && process.stderr.fd === undefined) {
 }
 
 import { faker } from '@faker-js/faker';
-import { mock } from 'bun:test';
+import { mock, spyOn } from 'bun:test';
 import type { Message, Update } from 'telegraf/types';
 import { apiRoot } from '../src/consts';
 
@@ -335,6 +335,9 @@ export const withBotApi = async (fn: TestFn) => {
   try {
     // NOTE: it's very important that the tests do not import the bot until
     // after the mocks are set up, else it doesn't use the mocked fetch.
+    // Also stub the yt-dlp self-update so starting the bot doesn't spawn it.
+    const downloadVideo = await import('../src/download-video');
+    spyOn(downloadVideo, 'updateYtdlp').mockImplementation(async () => {});
     const { start } = await import('../src/bot');
     const bot = await start(api.botToken);
     try {
