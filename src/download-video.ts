@@ -128,7 +128,6 @@ export const getInfo = memoize(
       try {
         return await infoFile.json();
       } catch (e) {
-        // corrupted cache entry (e.g. interrupted write): discard & re-scrape
         console.error(`Discarding corrupt info cache for ${url}:`, e);
         try {
           // the entry may be a symlink to the canonical entry, in which case

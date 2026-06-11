@@ -69,7 +69,6 @@ export const textMessageHandler = async (ctx: MessageContext) => {
   );
 };
 
-// non-Error throws (strings, objects) must still render sensibly
 const errMsg = (e: any) => Bun.escapeHTML(e?.message || String(e));
 
 const formatDuration = (secs: number) => {

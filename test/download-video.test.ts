@@ -212,7 +212,7 @@ describe('getInfo', () => {
       expect.any(SyntaxError),
     );
     expect(mockUnlink).toHaveBeenCalledWith('/mocked/file');
-    expect(info.filename).toBe(VideoInfo.filename); // re-scraped
+    expect(info.filename).toBe(VideoInfo.filename);
   });
 
   it('fetches info if not cached', async () => {

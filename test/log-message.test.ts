@@ -67,7 +67,7 @@ describe.each([false, true])('LogMessage, edit: %p', (isEdit) => {
     await log.flush(); // must not throw
     expect(mockError).toHaveBeenCalledTimes(1);
     await log.flush();
-    expect(ctx.reply).toHaveBeenCalledTimes(2); // retried
+    expect(ctx.reply).toHaveBeenCalledTimes(2);
   });
 
   it('does not leak an unhandled rejection when the debounced flush fails', async () => {

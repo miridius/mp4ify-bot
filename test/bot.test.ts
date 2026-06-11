@@ -32,8 +32,7 @@ spyOn(Telegraf.prototype, 'launch').mockImplementation(async function (
   await Bun.sleep(10);
   launched = true;
   (this as any).polling = {}; // telegraf assigns this when polling starts
-  // invoke the onLaunch callback like the real launch() does, then stay
-  // pending like the real launch() does (it only settles when polling stops)
+  // like the real launch(): invoke onLaunch, then stay pending
   args.find((a) => typeof a === 'function')?.();
   return new Promise<never>(() => {});
 });
@@ -239,7 +238,7 @@ describe('start', async () => {
       expect.anything(),
       expect.any(Error),
     );
-    expect(process.exitCode).toBe(1); // telegraf-parity error signal
+    expect(process.exitCode).toBe(1);
     process.exitCode = 0; // don't fail the test run itself
   });
 });
