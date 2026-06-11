@@ -129,7 +129,8 @@ export const callbackQueryHandler = async (ctx: CallbackQueryContext) => {
   try {
     await handleCallbackQuery(ctx);
   } catch (e) {
-    // an escaped rejection would otherwise take down the polling loop
+    // bot.catch would contain this too, but only answering the callback
+    // query stops the user's button from spinning forever
     console.error('Error handling callback query:', e);
     await safeAnswer(ctx, 'Something went wrong.');
   }

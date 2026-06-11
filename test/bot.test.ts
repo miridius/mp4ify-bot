@@ -232,7 +232,7 @@ describe('start', async () => {
         from: { id: 456, is_bot: false, first_name: 'Test' },
       },
     };
-    // must resolve, not reject: a rejection here is what used to abort polling
+    // must resolve, not reject: a rejection escaping handleUpdate crashes the bot
     await bot.handleUpdate(msgUpdate);
     expect(consoleError).toHaveBeenCalledWith(
       'Unhandled error while processing',

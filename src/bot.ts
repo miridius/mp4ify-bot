@@ -21,13 +21,15 @@ export const start = async (botToken: string) => {
   const bot = new Telegraf(botToken, {
     telegram: { apiRoot },
     // must exceed the worst-case handler (scrape + download = two yt-dlp
-    // runs, plus headroom for a multi-GB upload): telegraf's 90s default
-    // made handleUpdate reject mid-download, which killed the polling loop
+    // runs, plus headroom for a multi-GB upload); telegraf's default is
+    // 90s, after which handleUpdate rejects even if the handler is still
+    // making progress
     handlerTimeout: (2 * DOWNLOAD_TIMEOUT_SECS + 20 * 60) * 1000,
   });
   console.debug(bot.telegram.options);
 
-  // without this, any error escaping a handler aborts polling permanently
+  // telegraf's default error handler rethrows out of the polling loop, so
+  // a single escaped handler error would crash the bot mid-batch
   bot.catch((err, ctx) => {
     console.error('Unhandled error while processing', ctx.update, err);
     process.exitCode = 1; // keep telegraf's exit-code-on-error behavior
@@ -52,9 +54,10 @@ export const start = async (botToken: string) => {
 
   bot.use((ctx) => console.log('unhandled update:', ctx.update));
 
-  // launch() only settles when polling stops, so don't await it — but a
-  // fatal polling crash must kill the process (docker restarts it) instead
-  // of leaving a zombie that looks alive and answers nothing
+  // launch() only settles when polling stops, so don't await it — but catch
+  // its rejection so a fatal polling crash exits logged and deliberate
+  // rather than as an anonymous unhandled rejection (docker restarts us
+  // either way)
   await new Promise<void>((onLaunch) => {
     bot.launch(onLaunch).catch((e) => {
       console.error('Bot crashed:', e);
