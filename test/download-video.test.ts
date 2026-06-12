@@ -86,7 +86,7 @@ const mockStat = spyOn(fsPromises, 'stat').mockResolvedValue({
   size: 1000,
 } as any);
 const mockUnlink = spyMock(fsPromises, 'unlink');
-spyMock(fsPromises, 'symlink');
+const mockSymlink = spyMock(fsPromises, 'symlink');
 spyMock(fsPromises, 'mkdir');
 
 describe('updateYtdlp', () => {
@@ -215,6 +215,26 @@ describe('getInfo', () => {
     expect(info.filename).toBe(VideoInfo.filename);
   });
 
+  it('discards both the symlink and its corrupt target', async () => {
+    mockExists.mockResolvedValueOnce(true);
+    mockJson.mockImplementationOnce(() =>
+      Promise.reject(new SyntaxError('Unexpected token')),
+    );
+    spyOn(fsPromises, 'realpath').mockResolvedValueOnce('/mocked/target');
+    const consoleError = spyOn(console, 'error').mockImplementation(mock());
+    mockSpawn.mockImplementationOnce(mockSpawnImpl(JSON.stringify(VideoInfo)));
+
+    const info = await getInfo(log as any, 'url');
+
+    expect(mockUnlink).toHaveBeenCalledWith('/mocked/target');
+    expect(mockUnlink).toHaveBeenCalledWith('/mocked/file');
+    expect(consoleError).not.toHaveBeenCalledWith(
+      'Failed to delete corrupt cache file:',
+      expect.anything(),
+    );
+    expect(info.filename).toBe(VideoInfo.filename);
+  });
+
   it('fetches info if not cached', async () => {
     mockExists.mockResolvedValueOnce(false);
     mockSpawn.mockImplementationOnce(mockSpawnImpl(JSON.stringify(VideoInfo)));
@@ -273,6 +293,41 @@ describe('getInfo', () => {
       ],
     ]
   `);
+  });
+
+  it('tolerates a dangling sibling symlink (EEXIST)', async () => {
+    mockExists.mockResolvedValueOnce(false);
+    const consoleError = spyOn(console, 'error').mockImplementation(mock());
+    mockSymlink.mockImplementationOnce(() =>
+      Promise.reject(Object.assign(new Error('exists'), { code: 'EEXIST' })),
+    );
+    mockSpawn.mockImplementationOnce(
+      mockSpawnImpl(JSON.stringify({ ...VideoInfo, webpage_url: 'canon' })),
+    );
+
+    const info = await getInfo(log as any, 'share-link');
+
+    expect(info.webpage_url).toBe('canon');
+    expect(consoleError).not.toHaveBeenCalled();
+  });
+
+  it('returns scraped info even when the cache write fails', async () => {
+    mockExists.mockResolvedValueOnce(false);
+    const consoleError = spyOn(console, 'error').mockImplementation(mock());
+    mockSymlink.mockImplementationOnce(() =>
+      Promise.reject(Object.assign(new Error('nope'), { code: 'EPERM' })),
+    );
+    mockSpawn.mockImplementationOnce(
+      mockSpawnImpl(JSON.stringify({ ...VideoInfo, webpage_url: 'canon2' })),
+    );
+
+    const info = await getInfo(log as any, 'another-share-link');
+
+    expect(info.webpage_url).toBe('canon2');
+    expect(consoleError).toHaveBeenCalledWith(
+      'Failed to write info cache:',
+      expect.any(Error),
+    );
   });
 });
 

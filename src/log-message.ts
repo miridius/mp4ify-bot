@@ -45,7 +45,6 @@ export class LogMessage {
         this.texts[this.texts.length - 1] = newText;
       }
     }
-    // the timer rejection has no awaiter, so it must catch its own errors
     this.timer = setTimeout(
       () => this.flush().catch((e) => console.error('Log flush failed:', e)),
       DEBOUNCE_MS,

@@ -55,8 +55,7 @@ export const textMessageHandler = async (ctx: MessageContext) => {
           }
           await sendVideo(ctx, log, info, ctx.chat.id, message_id);
         } catch (e: any) {
-          // log first: reporting to the user can itself fail, and the root
-          // cause must never be lost to a secondary Telegram error
+          // log first: reporting to the user can itself fail
           console.error(e);
           try {
             log.append(`\n💥 <b>Download failed</b>: ${errMsg(e)}`);

@@ -26,7 +26,6 @@ export const start = async (botToken: string) => {
   });
   console.debug(bot.telegram.options);
 
-  // the default error handler rethrows from the polling loop, crashing the bot
   bot.catch((err, ctx) => {
     console.error('Unhandled error while processing', ctx.update, err);
     process.exitCode = 1; // keep telegraf's exit-code-on-error behavior
