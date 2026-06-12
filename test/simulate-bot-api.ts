@@ -344,6 +344,14 @@ export type TestFn = (api: MockBotApi) => void | Promise<void>;
 export const withBotApi = async (fn: TestFn) => {
   const api = new MockBotApi();
   mockBotApis.add(api);
+  // the bot exits the process on a fatal polling crash (so docker restarts
+  // it in production); under bun test that would kill the whole test runner,
+  // e.g. when a poll in flight during teardown hits "unexpected request"
+  const exitSpy = spyOn(process, 'exit').mockImplementation(((
+    code?: number,
+  ) => {
+    console.error(`suppressed process.exit(${code}) during tests`);
+  }) as any);
   try {
     // NOTE: it's very important that the tests do not import the bot until
     // after the mocks are set up, else it doesn't use the mocked fetch.
@@ -361,5 +369,20 @@ export const withBotApi = async (fn: TestFn) => {
     }
   } finally {
     mockBotApis.delete(api);
+    // a job left queued, in flight, or on disk would run against the next
+    // test's bot (and this already-deregistered MockBotApi)
+    const { resetJobQueue, jobsIdle, stopJobQueue } = await import(
+      '../src/job-queue'
+    );
+    stopJobQueue();
+    const { waitUntil } = await import('./test-utils');
+    await waitUntil(jobsIdle, 10_000);
+    exitSpy.mockRestore();
+    resetJobQueue();
+    await import('fs/promises').then(({ rm, mkdir }) =>
+      rm('/storage/_jobs', { recursive: true, force: true }).then(() =>
+        mkdir('/storage/_jobs', { recursive: true }),
+      ),
+    );
   }
 };

@@ -1,6 +1,8 @@
 {
   "permissions": {
-    "ask": ["Bash(./prod.sh*)"]
+    "ask": [
+      "Bash(./prod.sh*)"
+    ]
   },
   "hooks": {
     "Stop": [
@@ -13,5 +15,6 @@
         ]
       }
     ]
-  }
+  },
+  "enabledPlugins": {}
 }

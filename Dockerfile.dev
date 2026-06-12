@@ -15,6 +15,9 @@ RUN apt-get update && \
 
 ENV PATH="/opt/yt-dlp:$PATH"
 
+# Test stubs shadow the real binaries; they delegate unless /tmp/stub exists
+ENV PATH="/app/test/bin:$PATH"
+
 RUN mkdir /storage && chmod 777 /storage
 
 ENV NODE_ENV=development

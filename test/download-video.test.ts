@@ -1,3 +1,7 @@
+// These tests run against the real filesystem and real child processes:
+// test/bin/ contains stub yt-dlp/ffprobe executables driven by control files
+// in /tmp/stub (Bun.spawn snapshots the env at startup, so env vars can't
+// reach the child). Only the Telegram client (an unowned boundary) is mocked.
 import {
   afterAll,
   beforeEach,
@@ -8,7 +12,7 @@ import {
   mock,
   spyOn,
 } from 'bun:test';
-import * as fsPromises from 'node:fs/promises';
+import { mkdir, readlink, rm, symlink, truncate } from 'fs/promises';
 import {
   downloadVideo,
   getInfo,
@@ -17,35 +21,57 @@ import {
   sendVideo,
   updateYtdlp,
 } from '../src/download-video';
-import { spyMock } from './test-utils';
 
-beforeEach(() => jest.clearAllMocks());
-afterAll(() => mock.restore());
+const INFO_CACHE_DIR = '/storage/_video-info/';
+const VIDEO_DIR = '/storage/test-videos/';
 
-// Mocks
+// control files for the test/bin stub executables (on PATH via Dockerfile.dev)
+const STUB_DIR = '/tmp/stub';
+const stub = (files: Record<string, string>) =>
+  Promise.all(
+    Object.entries(files).map(([k, v]) => Bun.write(`${STUB_DIR}/${k}`, v)),
+  );
+const stubArgs = async () =>
+  (await Bun.file(`${STUB_DIR}/args`).text().catch(() => '')).trim();
+
+afterAll(async () => {
+  await rm(STUB_DIR, { recursive: true, force: true });
+  mock.restore();
+});
+
+// mirrors filenamify in src/download-video.ts
+const filenamify = (s: string) =>
+  new Bun.CryptoHasher('sha256')
+    .update(s)
+    .digest('base64')
+    .slice(0, -1)
+    .replaceAll('/', '_');
+const cachePath = (url: string) => INFO_CACHE_DIR + filenamify(url);
+
+beforeEach(async () => {
+  jest.clearAllMocks();
+  getInfo.cache.clear();
+  downloadVideo.cache.clear();
+  sendVideo.cache.clear();
+  await rm(STUB_DIR, { recursive: true, force: true });
+  await mkdir(STUB_DIR, { recursive: true });
+  await rm(VIDEO_DIR, { recursive: true, force: true });
+  await mkdir(VIDEO_DIR, { recursive: true });
+});
+
+// Mocks (Telegram boundary + log observer)
 const mockAppend = mock();
 const appendedText = () => mockAppend.mock.calls.map(([s]) => s).join('\n');
 const mockFlush = mock();
 const log = { append: mockAppend, flush: mockFlush };
 
-const mockWrite = spyMock(Bun, 'write');
-
 const mockSendVideo = mock();
-const mockJson = mock();
-const mockText = mock();
-const mockExists = mock();
-const mockFile = spyOn(Bun, 'file').mockImplementation(
-  () =>
-    ({
-      exists: mockExists,
-      text: mockText,
-      json: mockJson,
-      name: '/mocked/file',
-    }) as any,
-);
+const telegram = {
+  sendVideo: mockSendVideo.mockResolvedValue({ video: { file_id: 'id' } }),
+} as any;
 
 const VideoInfo = {
-  filename: 'file.mp4',
+  filename: `${VIDEO_DIR}file.mp4`,
   title: 'Test',
   webpage_url: 'url',
   duration: 10,
@@ -53,64 +79,16 @@ const VideoInfo = {
   height: 100,
 };
 
-const mockSpawnImpl =
-  (stdout?: string, stderr?: string, overrides?: any) => () => ({
-    stdout: new ReadableStream({
-      start(controller) {
-        stdout && controller.enqueue(new TextEncoder().encode(stdout));
-        controller.close();
-      },
-    }),
-    stderr: new ReadableStream({
-      start(controller) {
-        stderr && controller.enqueue(new TextEncoder().encode(stderr));
-        controller.close();
-      },
-    }),
-    exitCode: 0,
-    exited: Promise.resolve(),
-    ...overrides,
-  });
-
-const mockSpawn = spyOn(Bun, 'spawn').mockImplementation(() => {
-  throw new Error('unexpected call to spawn');
-});
-
-const telegram = {
-  sendVideo: mockSendVideo.mockResolvedValue({ video: { file_id: 'id' } }),
-};
-const ctx = { me: 'bot', telegram };
-
-// Mock modules
-const mockStat = spyOn(fsPromises, 'stat').mockResolvedValue({
-  size: 1000,
-} as any);
-const mockUnlink = spyMock(fsPromises, 'unlink');
-spyMock(fsPromises, 'symlink');
-spyMock(fsPromises, 'mkdir');
-
 describe('updateYtdlp', () => {
   const consoleLog = spyOn(console, 'log').mockImplementation(mock());
   const consoleError = spyOn(console, 'error').mockImplementation(mock());
 
   it('runs yt-dlp --update and logs the result', async () => {
-    mockSpawn.mockImplementationOnce(mockSpawnImpl('yt-dlp is up to date'));
+    await stub({ stdout: 'yt-dlp is up to date' });
 
     await updateYtdlp();
 
-    expect(mockSpawn.mock.calls[0]).toMatchInlineSnapshot(`
-      [
-        [
-          "yt-dlp",
-          "--update",
-        ],
-        {
-          "stderr": "pipe",
-          "stdout": "pipe",
-          "timeout": 120000,
-        },
-      ]
-    `);
+    expect(await stubArgs()).toEndWith('yt-dlp --update');
     expect(consoleLog).toHaveBeenCalledWith(
       'yt-dlp self-update:',
       'yt-dlp is up to date',
@@ -119,175 +97,211 @@ describe('updateYtdlp', () => {
   });
 
   it('logs but does not throw when the update fails', async () => {
-    mockSpawn.mockImplementationOnce(
-      mockSpawnImpl('', 'ERROR: no write permission', { exitCode: 1 }),
-    );
+    await stub({ exit: '1', stderr: 'no permission' });
 
     await updateYtdlp();
 
     expect(consoleError).toHaveBeenCalledWith(
-      'yt-dlp self-update failed (exit code 1): ERROR: no write permission',
+      'yt-dlp self-update failed (exit code 1): no permission',
     );
   });
 
   it('does not throw when spawning fails entirely', async () => {
-    mockSpawn.mockImplementationOnce(() => {
-      throw new Error('spawn failed');
+    // the one boundary file control can't reach: the spawn API itself failing
+    spyOn(Bun, 'spawn').mockImplementationOnce(() => {
+      throw new Error('ENOENT');
     });
-
     await updateYtdlp();
-
     expect(consoleError).toHaveBeenCalledWith(
       'yt-dlp self-update failed:',
-      expect.any(Error),
+      expect.anything(),
     );
   });
 });
 
 describe('probeDuration', () => {
   it('returns the rounded duration from ffprobe', async () => {
-    mockSpawn.mockImplementationOnce(mockSpawnImpl('12.7\n'));
+    await stub({ stdout: '12.62\n' });
     expect(await probeDuration('file.mp4')).toBe(13);
-    expect(mockSpawn.mock.calls[0]![0]).toEqual([
-      'ffprobe',
-      '-v',
-      'error',
-      '-show_entries',
-      'format=duration',
-      '-of',
-      'csv=p=0',
-      'file.mp4',
-    ]);
+    expect(await stubArgs()).toContain('ffprobe');
+    expect(await stubArgs()).toEndWith('file.mp4');
   });
 
   it('returns undefined and logs when ffprobe fails', async () => {
     const consoleError = spyOn(console, 'error').mockImplementation(mock());
-    mockSpawn.mockImplementationOnce(
-      mockSpawnImpl('', 'No such file', { exitCode: 1 }),
-    );
-    expect(await probeDuration('missing.mp4')).toBeUndefined();
+    await stub({ exit: '1', stderr: 'corrupt file' });
+
+    expect(await probeDuration('file.mp4')).toBeUndefined();
     expect(consoleError).toHaveBeenCalledWith(
-      expect.stringContaining('ffprobe failed for missing.mp4'),
+      'ffprobe failed for file.mp4 (exit 1): corrupt file',
     );
   });
 
   it('returns undefined for unparseable output', async () => {
-    mockSpawn.mockImplementationOnce(mockSpawnImpl('N/A\n'));
-    expect(await probeDuration('weird.mp4')).toBeUndefined();
+    await stub({ stdout: 'not a number' });
+    expect(await probeDuration('file.mp4')).toBeUndefined();
   });
 });
 
 describe('getInfo', () => {
-  beforeEach(() => getInfo.cache.clear());
+  const url = 'https://test.invalid/getinfo';
+  const urlInfo = { ...VideoInfo, webpage_url: url };
+  const infoStr = JSON.stringify(urlInfo);
+
+  beforeEach(async () => {
+    await rm(cachePath(url), { force: true });
+    await stub({ stdout: infoStr });
+  });
 
   it('returns cached info if file exists', async () => {
-    mockExists.mockResolvedValueOnce(true);
-    mockJson.mockResolvedValueOnce({ filename: 'cached.mp4' });
+    await Bun.write(cachePath(url), JSON.stringify({ filename: 'cached.mp4' }));
 
-    const info = await getInfo(log as any, 'url');
+    const info = await getInfo(log as any, url);
 
-    expect(mockExists).toHaveBeenCalledTimes(1);
     expect(info.filename).toBe('cached.mp4');
-    expect(mockFile.mock.calls[0]).toMatchInlineSnapshot(`
-      [
-        "/storage/_video-info/KOXrq9nY9uI332PaK1A3hQk_AikkG8cCEZj2PEO5Mmk",
-      ]
-    `);
+    expect(await stubArgs()).toBe(''); // no scrape
     expect(mockAppend).not.toHaveBeenCalled();
   });
 
-  it('fetches info if not cached', async () => {
-    mockExists.mockResolvedValueOnce(false);
-    mockSpawn.mockImplementationOnce(mockSpawnImpl(JSON.stringify(VideoInfo)));
+  it('fetches info if not cached and writes the cache file', async () => {
+    const info = await getInfo(log as any, url);
 
-    const info = await getInfo(log as any, 'url');
+    expect(info).toEqual(urlInfo);
+    expect(appendedText()).toBe(`🧐 <b>Scraping</b> ${url}...`);
+    expect(await stubArgs()).toEndWith(
+      `yt-dlp ${url} --no-warnings --dump-json`,
+    );
+    expect(await Bun.file(cachePath(url)).json()).toEqual(urlInfo);
+  });
 
-    expect(mockExists).toHaveBeenCalled();
-    expect(appendedText()).toMatchInlineSnapshot(`"🧐 <b>Scraping</b> url..."`);
-    expect(mockSpawn.mock.calls[0]).toMatchInlineSnapshot(`
-      [
-        [
-          "yt-dlp",
-          "url",
-          "--no-warnings",
-          "--dump-json",
-        ],
-        {
-          "stderr": "pipe",
-          "timeout": 300000,
-        },
-      ]
-    `);
-    expect(mockWrite.mock.calls[0]).toMatchInlineSnapshot(`
-      [
-        {
-          "exists": [class Function],
-          "json": [class Function],
-          "name": "/mocked/file",
-          "text": [class Function],
-        },
-        "{"filename":"file.mp4","title":"Test","webpage_url":"url","duration":10,"width":100,"height":100}",
-      ]
-    `);
-    expect(info.filename).toBe(VideoInfo.filename);
+  it('discards a corrupt cache entry, re-scrapes, and rewrites the file', async () => {
+    const consoleError = spyOn(console, 'error').mockImplementation(mock());
+    await Bun.write(cachePath(url), '{ corrupt');
+
+    const info = await getInfo(log as any, url);
+
+    expect(consoleError).toHaveBeenCalledWith(
+      expect.stringContaining('Discarding corrupt info cache'),
+      expect.any(SyntaxError),
+    );
+    expect(info).toEqual(urlInfo);
+    // the file must be restored: downloadVideo loads it via --load-info-json
+    expect(await Bun.file(cachePath(url)).json()).toEqual(urlInfo);
+  });
+
+  it('discards both the symlink and its corrupt target', async () => {
+    const consoleError = spyOn(console, 'error').mockImplementation(mock());
+    const canon = 'https://test.invalid/getinfo-canon';
+    await rm(cachePath(canon), { force: true });
+    await Bun.write(cachePath(canon), '{ corrupt');
+    await symlink(filenamify(canon), cachePath(url));
+    const canonInfo = { ...VideoInfo, webpage_url: canon };
+    await stub({ stdout: JSON.stringify(canonInfo) });
+
+    const info = await getInfo(log as any, url);
+
+    expect(info.webpage_url).toBe(canon);
+    expect(consoleError).not.toHaveBeenCalledWith(
+      'Failed to delete corrupt cache file:',
+      expect.anything(),
+    );
+    // both recreated: target with the fresh scrape, entry as symlink to it
+    expect(await Bun.file(cachePath(canon)).json()).toEqual(canonInfo);
+    expect(await readlink(cachePath(url))).toBe(filenamify(canon));
   });
 
   it('handles canonical urls', async () => {
-    // Simulate info.webpage_url !== url
-    mockExists.mockResolvedValueOnce(false);
-    const infoWithCanonical = { ...VideoInfo, webpage_url: 'canonical-url' };
-    mockSpawn.mockImplementationOnce(
-      mockSpawnImpl(JSON.stringify(infoWithCanonical)),
-    );
-    const info = await getInfo(log as any, 'not-canonical-url');
-    expect(info.webpage_url).toBe('canonical-url');
-    expect(mockWrite.mock.calls).toMatchInlineSnapshot(`
-    [
-      [
-        {
-          "exists": [class Function],
-          "json": [class Function],
-          "name": "/mocked/file",
-          "text": [class Function],
-        },
-        "{"filename":"file.mp4","title":"Test","webpage_url":"canonical-url","duration":10,"width":100,"height":100}",
-      ],
-    ]
-  `);
+    const canon = 'https://test.invalid/canonical';
+    await rm(cachePath(canon), { force: true });
+    const canonInfo = { ...VideoInfo, webpage_url: canon };
+    await stub({ stdout: JSON.stringify(canonInfo) });
+
+    const info = await getInfo(log as any, url);
+
+    expect(info.webpage_url).toBe(canon);
+    expect(await Bun.file(cachePath(canon)).json()).toEqual(canonInfo);
+    expect(await readlink(cachePath(url))).toBe(filenamify(canon));
+  });
+
+  it('tolerates a dangling sibling symlink (EEXIST)', async () => {
+    const consoleError = spyOn(console, 'error').mockImplementation(mock());
+    const canon = 'https://test.invalid/eexist-canon';
+    await rm(cachePath(canon), { force: true });
+    await symlink(filenamify(canon), cachePath(url)); // dangling
+    const canonInfo = { ...VideoInfo, webpage_url: canon };
+    await stub({ stdout: JSON.stringify(canonInfo) });
+
+    const info = await getInfo(log as any, url);
+
+    expect(info.webpage_url).toBe(canon);
+    expect(consoleError).not.toHaveBeenCalled();
+  });
+
+  it('returns scraped info even when the cache write fails', async () => {
+    const consoleError = spyOn(console, 'error').mockImplementation(mock());
+    const canon = 'https://test.invalid/write-fails';
+    // a directory at the target path makes the real write fail with EISDIR
+    await rm(cachePath(canon), { recursive: true, force: true });
+    await mkdir(cachePath(canon));
+    const canonInfo = { ...VideoInfo, webpage_url: canon };
+    await stub({ stdout: JSON.stringify(canonInfo) });
+    try {
+      const info = await getInfo(log as any, url);
+      expect(info.webpage_url).toBe(canon);
+      expect(consoleError).toHaveBeenCalledWith(
+        'Failed to write info cache:',
+        expect.anything(),
+      );
+    } finally {
+      await rm(cachePath(canon), { recursive: true, force: true });
+    }
+  });
+});
+
+describe('yt-dlp concurrency', () => {
+  it('runs at most 3 yt-dlp processes at once', async () => {
+    const urls = [0, 1, 2, 3, 4].map((i) => `https://test.invalid/cap/${i}`);
+    await Promise.all(urls.map((u) => rm(cachePath(u), { force: true })));
+    await stub({ stdout: JSON.stringify(VideoInfo), block: '1' });
+
+    const all = Promise.all(urls.map((u) => getInfo(log as any, u)));
+    const spawned = async () =>
+      (await stubArgs()).split('\n').filter(Boolean).length;
+    const deadline = Date.now() + 4000;
+    while ((await spawned()) < 3 && Date.now() < deadline) await Bun.sleep(50);
+    await Bun.sleep(150); // give a 4th process the chance to (wrongly) spawn
+    expect(await spawned()).toBe(3);
+
+    await rm(`${STUB_DIR}/block`);
+    await all;
+    expect((await stubArgs()).split('\n').filter(Boolean)).toHaveLength(5);
+    await Promise.all(urls.map((u) => rm(cachePath(u), { force: true })));
   });
 });
 
 describe('sendInfo', () => {
   it('logs video info', async () => {
     await sendInfo(log as any, VideoInfo);
-    expect(appendedText()).toMatchInlineSnapshot(`
-      "
-      🎬 <b>Video info:</b>
+    expect(appendedText()).toBe(
+      `
+🎬 <b>Video info:</b>
 
-      <b>URL</b>: url
-      <b>filename</b>: file.mp4
-      <b>duration</b>: 10 sec
-      <b>resolution</b>: 100x100"
-    `);
+<b>URL</b>: url
+<b>filename</b>: file.mp4
+<b>duration</b>: 10 sec
+<b>resolution</b>: 100x100`,
+    );
   });
 
   it('logs formats', async () => {
-    // Provide formats array to logFormats
+    const consoleTable = spyOn(console, 'table').mockImplementation(mock());
     const infoWithFormats = {
       ...VideoInfo,
       formats: [
-        {
-          format: 'best',
-          ext: 'mp4',
-          vcodec: 'h264',
-          acodec: 'aac',
-          tbr: 1000,
-          filesize: 10485760,
-        },
+        { format: 'best', ext: 'mp4', vcodec: 'h264', acodec: 'aac', tbr: 1 },
       ],
     };
-    const consoleTable = spyOn(console, 'table').mockImplementation(mock());
-    await sendInfo(log as any, infoWithFormats);
+    await sendInfo(log as any, infoWithFormats as any);
     expect(consoleTable).toHaveBeenCalled();
   });
 
@@ -295,189 +309,134 @@ describe('sendInfo', () => {
     { resolution: '1920x1080', expected: '1920x1080' },
     { height: 1080, width: 0, expected: '1080p' },
     { height: 0, width: 0, format_id: 'hd', expected: 'HD' },
-  ])('parses %o', async ({ expected, ...overrides }) => {
-    // Test parseRes via sendInfo
-    const info = { ...VideoInfo, ...overrides };
-    await sendInfo(log as any, info);
-    expect(appendedText()).toInclude(`<b>resolution</b>: ${expected}`);
+  ])('parses %j', async ({ expected, ...res }) => {
+    await sendInfo(log as any, { ...VideoInfo, ...res } as any);
+    expect(appendedText()).toContain(`<b>resolution</b>: ${expected}`);
   });
 
   it('calculates duration without sponsors', async () => {
-    // Test sponsorblock_chapters are subtracted from duration
     const infoWithSponsors = {
       ...VideoInfo,
       duration: 100,
       sponsorblock_chapters: [
-        {
-          start_time: 10,
-          end_time: 20,
-          category: 'sponsor',
-          title: 'Sponsor',
-          type: 'skip',
-        },
-        {
-          start_time: 30,
-          end_time: 40,
-          category: 'sponsor',
-          title: 'Sponsor',
-          type: 'skip',
-        },
+        { start_time: 0, end_time: 25, category: 'sponsor', type: 'skip' },
       ],
     };
-    await sendInfo(log as any, infoWithSponsors);
-    // Duration should be 80 (100 - (10+10))
-    expect(appendedText()).toMatchInlineSnapshot(`
-      "
-      🎬 <b>Video info:</b>
-  
-      <b>URL</b>: url
-      <b>filename</b>: file.mp4
-      <b>duration</b>: 80 sec (100s before removing sponsors)
-      <b>resolution</b>: 100x100"
-    `);
+    await sendInfo(log as any, infoWithSponsors as any);
+    expect(appendedText()).toContain(
+      '<b>duration</b>: 75 sec (100s before removing sponsors)',
+    );
   });
 });
 
 describe('downloadVideo', () => {
-  beforeEach(() => downloadVideo.cache.clear());
+  const infoPath = cachePath(VideoInfo.webpage_url);
+
+  it.each([
+    { signal: 'TERM', message: 'Timed out after 300 seconds' },
+    { signal: 'KILL', message: 'yt-dlp was killed with signal SIGKILL' },
+    { exit: '1', message: 'yt-dlp exited with code 1' },
+  ])('error messages for failures: %j', async ({ signal, exit, message }) => {
+    if (signal) await stub({ signal });
+    if (exit) await stub({ exit });
+    await expect(
+      downloadVideo('bot', log as any, VideoInfo),
+    ).rejects.toThrow(message);
+  });
 
   it("returns 'already downloaded' if id file exists", async () => {
-    mockExists.mockResolvedValueOnce(true);
-    const result = await downloadVideo(ctx as any, log as any, VideoInfo);
-    expect(mockFile.mock.calls[0]).toMatchInlineSnapshot(`
-      [
-        "file.mp4.bot.id",
-      ]
-    `);
-    expect(result).toBe('already downloaded');
+    await Bun.write(`${VideoInfo.filename}.bot.id`, 'file-id');
+    expect(await downloadVideo('bot', log as any, VideoInfo)).toBe(
+      'already downloaded',
+    );
+    expect(await stubArgs()).toBe('');
   });
 
   it("returns 'already downloaded' if video file exists", async () => {
-    mockExists.mockResolvedValueOnce(false);
-    mockExists.mockResolvedValueOnce(true);
-    const result = await downloadVideo(ctx as any, log as any, VideoInfo);
-    expect(mockFile.mock.calls[1]).toMatchInlineSnapshot(`
-      [
-        "file.mp4",
-      ]
-    `);
-    expect(result).toBe('already downloaded');
+    await Bun.write(VideoInfo.filename, 'video bytes');
+    expect(await downloadVideo('bot', log as any, VideoInfo)).toBe(
+      'already downloaded',
+    );
+    expect(await stubArgs()).toBe('');
   });
 
-  it('calls yt-dlp if not downloaded', async () => {
-    mockExists.mockResolvedValue(false);
-    mockSpawn.mockImplementationOnce(mockSpawnImpl('some output'));
-
-    const result = await downloadVideo(ctx as any, log as any, VideoInfo);
-
-    expect(appendedText()).toMatchInlineSnapshot(`
-      "
-      ⬇️ <b>Downloading...</b>"
-    `);
-    expect(mockSpawn.mock.calls[0]).toMatchInlineSnapshot(`
-      [
-        [
-          "yt-dlp",
-          "",
-          "--no-warnings",
-          "--load-info-json",
-          "/mocked/file",
-        ],
-        {
-          "stderr": "pipe",
-          "timeout": 300000,
-        },
-      ]
-    `);
-    expect(result).toBe('some output');
+  it('calls yt-dlp with the cached info file if not downloaded', async () => {
+    await stub({ stdout: 'downloaded ok' });
+    expect(await downloadVideo('bot', log as any, VideoInfo)).toBe(
+      'downloaded ok',
+    );
+    expect(await stubArgs()).toEndWith(
+      `yt-dlp  --no-warnings --load-info-json ${infoPath}`,
+    );
+    expect(appendedText()).toContain('⬇️ <b>Downloading...</b>');
   });
 
-  it('logs stderr', async () => {
-    mockExists.mockResolvedValue(false);
-    mockSpawn.mockImplementationOnce(mockSpawnImpl('', 'foo\nbar\n'));
-    await downloadVideo(ctx as any, log as any, VideoInfo);
-    expect(appendedText()).toMatchInlineSnapshot(`
-      "
-      ⬇️ <b>Downloading...</b>
-  
-      <code>foo
-      bar</code>"
-    `);
-  });
-
-  describe('error messages for failures', () => {
-    it.each([
-      ['SIGTERM', 1, 'Timed out after 300 seconds'],
-      ['FOO', 1, 'yt-dlp was killed with signal FOO'],
-      [undefined, 123, 'yt-dlp exited with code 123'],
-    ])('signalCode: %p', async (signalCode, exitCode, message) => {
-      expect.assertions(1);
-      mockExists.mockResolvedValue(false);
-
-      mockSpawn.mockImplementationOnce(
-        mockSpawnImpl('', '', { signalCode, exitCode }),
-      );
-      expect(downloadVideo(ctx as any, log as any, VideoInfo)).rejects.toThrow(
-        message,
-      );
-    });
+  it('logs stderr as it streams', async () => {
+    await stub({ stderr: 'progress line' });
+    await downloadVideo('bot', log as any, VideoInfo);
+    expect(appendedText()).toContain('<code>progress line</code>');
   });
 });
 
 describe('sendVideo', () => {
-  beforeEach(() => sendVideo.cache.clear());
+  const idFile = `${VideoInfo.filename}.bot.id`;
 
-  it('uploads video if no fileId', async () => {
-    mockExists.mockResolvedValueOnce(false); // id file
-    mockExists.mockResolvedValueOnce(true); // video file
-    const res = await sendVideo(ctx as any, log as any, VideoInfo, 123);
-    expect(mockSendVideo.mock.calls[0]).toEqual([
+  it('uploads the video, stores the file_id, and deletes the upload', async () => {
+    await Bun.write(VideoInfo.filename, 'video bytes');
+
+    const msg = await sendVideo(telegram, 'bot', log as any, VideoInfo, 123);
+
+    expect(mockSendVideo).toHaveBeenCalledWith(
       123,
-      Bun.pathToFileURL('file.mp4').href,
-      {
-        disable_notification: true,
-        duration: 10,
-        height: 100,
-        supports_streaming: true,
-        width: 100,
-      },
-    ]);
-    expect(mockUnlink.mock.calls[0]).toMatchInlineSnapshot(`
-      [
-        "file.mp4",
-      ]
-    `);
-    expect(res?.video.file_id).toBe('id');
+      Bun.pathToFileURL(VideoInfo.filename).href,
+      expect.objectContaining({ width: 100, height: 100, duration: 10 }),
+    );
+    expect(msg!.video.file_id).toBe('id');
+    expect(await Bun.file(idFile).text()).toBe('id');
+    expect(await Bun.file(VideoInfo.filename).exists()).toBe(false);
   });
 
-  it('returns undefined if video too large', async () => {
-    mockExists.mockResolvedValueOnce(false); // id file
-    mockExists.mockResolvedValueOnce(true); // video file
-    mockStat.mockResolvedValueOnce({ size: 3000 * 1024 * 1024 } as any); // too big
-    const res = await sendVideo(ctx as any, log as any, VideoInfo, 123);
-    expect(res).toBeUndefined();
-    expect(mockAppend).toHaveBeenCalledWith(
-      expect.stringContaining('too large'),
+  it('resends by file_id without touching the video file', async () => {
+    await Bun.write(idFile, 'cached-file-id');
+
+    await sendVideo(telegram, 'bot', log as any, VideoInfo, 123);
+
+    expect(mockSendVideo).toHaveBeenCalledWith(
+      123,
+      'cached-file-id',
+      expect.anything(),
     );
   });
 
+  it('returns undefined if video too large', async () => {
+    await Bun.write(VideoInfo.filename, ''); // allocate, then grow sparsely
+    await truncate(VideoInfo.filename, 2001 * 1024 * 1024);
+
+    expect(
+      await sendVideo(telegram, 'bot', log as any, VideoInfo, 123),
+    ).toBeUndefined();
+    expect(appendedText()).toContain('😞 Video too large (2001.00 MB)');
+    expect(mockSendVideo).not.toHaveBeenCalled();
+  });
+
   it('throws if video file not found', async () => {
-    expect.assertions(1);
-    mockExists.mockResolvedValueOnce(false); // id file
-    mockExists.mockResolvedValueOnce(false); // video file
     await expect(
-      sendVideo(ctx as any, log as any, VideoInfo, 123),
+      sendVideo(telegram, 'bot', log as any, VideoInfo, 123),
     ).rejects.toThrow('yt-dlp output file not found');
   });
 
   it('sends the video as a reply message if requested', async () => {
-    // sendVideo with replyToMessageId
-    mockExists.mockResolvedValueOnce(false); // id file
-    mockExists.mockResolvedValueOnce(true); // video file
-    const replyToMessageId = 456;
-    await sendVideo(ctx as any, log as any, VideoInfo, 123, replyToMessageId);
-    expect(mockSendVideo.mock.calls[0]?.[2]).toMatchObject({
-      reply_to_message_id: replyToMessageId,
-    });
+    await Bun.write(VideoInfo.filename, 'video bytes');
+
+    await sendVideo(telegram, 'bot', log as any, VideoInfo, 123, 42);
+
+    expect(mockSendVideo).toHaveBeenCalledWith(
+      123,
+      expect.anything(),
+      expect.objectContaining({
+        reply_parameters: { message_id: 42 },
+        reply_to_message_id: 42,
+      }),
+    );
   });
 });
