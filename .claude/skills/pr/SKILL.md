@@ -1,84 +1,18 @@
 ---
 name: pr
-description: The only way to open or update a PR — manual QA on the dev bot, then a description written to standard and audited cold. Re-run whenever the branch changes after a review or QA pass.
+description: Use to open or update ANY PR instead of raw `gh pr create`. Re-run whenever the branch changes after a review or QA pass.
 ---
 
-Per-commit code review is /commit's job; this skill owns everything
-PR-shaped. Re-running it after the branch changes is not optional — a QA
-pass or review of stale code is worth nothing.
-
-## 1. Manual QA on the dev bot
-
-The dev container hot-reloads the working tree, so @dev_mp4ify_bot is
-already running this branch. Do not switch branches while QA is in
-flight — the bot serves whatever the tree holds.
-
-- Derive a checklist from the PR's user-visible changes. Include failure
-  paths, not just happy paths — set up fixtures deliberately (e.g. poison a
-  cache entry, pick a video sized to cross a limit).
-- Exercise each case by messaging the dev bot: via web.telegram.org with the
-  browser tools when a logged-in session is available, otherwise hand the
-  user the checklist with exact links/messages to send.
-- Watch `docker compose logs dev` while each case runs; verify the log path
-  taken, not just the chat-visible outcome.
-- Findings → fix → /commit → re-test the broken case. On re-runs of this
-  skill after a fix, QA may be scoped to the cases the change touches.
-
-## 2. Toolkit lenses
-
-Spawn in parallel on the full `git diff main...HEAD`:
-
-- pr-review-toolkit `pr-test-analyzer`: is every behavior change pinned by
-  a test that would fail without it? (test-gap analysis is a class
-  /code-review ignores)
-- pr-review-toolkit `silent-failure-hunter`: swallowed errors, silent
-  fallbacks, error paths that lose the root cause. (overlaps /code-review's
-  remit; kept as deliberate redundancy — it has the best track record in
-  this repo)
-
-Findings → fix → /commit → re-run the lens that flagged it plus the
-relevant QA cases. Record dismissed lens findings in the PR description's
-open decisions so re-runs don't re-litigate them.
-
-## 3. PR description
-
-Draft (or refresh) the title and body. A PR is a pitch to a reviewer with
-zero prior knowledge: convince them it should be merged. Describe what it
-does and why, or what problem it solves and how. For every line ask: does
-this change the merge decision, or is it TMI? Assume nothing from your own
-context — no session jargon, no codenames, no issue shorthand without
-links. Structure: Problem (user-visible symptom first, then mechanism) →
-Fix. Never include self-review narration (what reviews ran, what was fixed
-before the PR opened). Always surface the genuine open decisions the
-reviewer must weigh in on.
-
-## 4. Cold-context audit
-
-Spawn ONE fresh general-purpose agent with the full `git diff main...HEAD`,
-the draft title/body, and the audit instructions below verbatim. The author
-cannot audit their own prose — confidence in it is the failure mode. Fix
-every confirmed violation.
-
-### Audit instructions (pass to the agent verbatim)
-
-You are auditing a PR diff and its draft description. You have no other
-context about this work; that is deliberate — read everything as a stranger
-would. Report only violations, each with a quote and a suggested rewrite.
-The description is a pitch to a reviewer with zero prior knowledge.
-Violations:
-
-- The problem is missing, vague, or stated in project/session jargon a
-  stranger can't follow.
-- Claims about production behavior ("this crashes", "users hit X") with no
-  stated evidence. Unobserved mechanisms must be labeled as latent/found by
-  review.
-- Self-review narration (what reviews ran, what was fixed pre-PR) — the
-  reviewer sees only the final diff; this is noise.
-- Missing open decisions: if the diff contains judgment calls (tunable
-  values, accepted trade-offs, behavior changes a reasonable reviewer might
-  push back on), the description must name them and ask.
-
-## 5. Open or update
-
-Push, then `gh pr create` — or if the PR exists, update its body and
-re-request review.
+1. QA every user-visible change against the live dev bot — it serves the
+   working tree, so don't switch branches mid-QA. Include failure paths by
+   building fixtures (e.g. poison a cache entry). Verify the path taken in
+   `docker compose logs dev`, not just the chat-visible outcome. Message
+   the bot via web.telegram.org (browser tools); if no logged-in session,
+   give the user an exact checklist. On re-runs, QA only what changed.
+2. Spawn pr-review-toolkit's `pr-test-analyzer` on `git diff main...HEAD`
+   (coverage thresholds don't catch hollow tests). Fixes → /commit →
+   re-run the lens. Record dismissed findings in the PR's open decisions.
+3. Write the description: Problem (user-visible symptom, then mechanism) →
+   Fix → open decisions. Then spawn a `pr-description-audit` agent on the
+   diff + draft and fix its findings.
+4. Push; create the PR or update its body.
