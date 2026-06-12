@@ -4,6 +4,7 @@
 d=/tmp/stub
 [ -d "$d" ] || exec /usr/bin/ffprobe "$@"
 echo "$0 $*" >> "$d/args"
+while [ -f "$d/block" ]; do sleep 0.05; done
 [ -f "$d/stderr" ] && cat "$d/stderr" >&2
 [ -f "$d/signal" ] && kill "-$(cat "$d/signal")" $$
 [ -f "$d/stdout" ] && cat "$d/stdout"

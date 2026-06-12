@@ -258,6 +258,27 @@ describe('getInfo', () => {
   });
 });
 
+describe('yt-dlp concurrency', () => {
+  it('runs at most 3 yt-dlp processes at once', async () => {
+    const urls = [0, 1, 2, 3, 4].map((i) => `https://test.invalid/cap/${i}`);
+    await Promise.all(urls.map((u) => rm(cachePath(u), { force: true })));
+    await stub({ stdout: JSON.stringify(VideoInfo), block: '1' });
+
+    const all = Promise.all(urls.map((u) => getInfo(log as any, u)));
+    const spawned = async () =>
+      (await stubArgs()).split('\n').filter(Boolean).length;
+    const deadline = Date.now() + 4000;
+    while ((await spawned()) < 3 && Date.now() < deadline) await Bun.sleep(50);
+    await Bun.sleep(150); // give a 4th process the chance to (wrongly) spawn
+    expect(await spawned()).toBe(3);
+
+    await rm(`${STUB_DIR}/block`);
+    await all;
+    expect((await stubArgs()).split('\n').filter(Boolean)).toHaveLength(5);
+    await Promise.all(urls.map((u) => rm(cachePath(u), { force: true })));
+  });
+});
+
 describe('sendInfo', () => {
   it('logs video info', async () => {
     await sendInfo(log as any, VideoInfo);

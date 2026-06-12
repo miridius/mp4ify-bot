@@ -49,6 +49,7 @@ const processOnce = spyMock(process, 'once');
 
 // the queue is covered by its own suite; here just watch the wiring
 const startJobQueue = spyMock(jobQueue, 'startJobQueue');
+const stopJobQueue = spyMock(jobQueue, 'stopJobQueue');
 
 describe('start', async () => {
   const botToken = 'test-token';
@@ -70,6 +71,7 @@ describe('start', async () => {
   bot.stop = mock();
   processOnce.mock.calls.find(([signal]) => signal === 'SIGINT')![1]();
   expect(bot.stop).toHaveBeenCalledWith('SIGINT');
+  expect(stopJobQueue).toHaveBeenCalled();
 
   processOnce.mock.calls.find(([signal]) => signal === 'SIGTERM')![1]();
   expect(bot.stop).toHaveBeenCalledWith('SIGTERM');

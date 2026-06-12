@@ -129,6 +129,15 @@ describe.each([false, true])('textMessageHandler, edit: %p', (isEdit) => {
     );
   });
 
+  it('enqueues with fromId 0 when the message has no sender', async () => {
+    const ctx = createMockMessageCtx(isEdit, { from: null });
+    delete (ctx.message || ctx.editedMessage).from;
+    await handle(ctx as any); // must not throw
+    expect(mockEnqueue).toHaveBeenCalledWith(
+      expect.objectContaining({ fromId: 0 }),
+    );
+  });
+
   it('handles a message with a URL', async () => {
     const ctx = createMockMessageCtx(isEdit);
     await handle(ctx as any);

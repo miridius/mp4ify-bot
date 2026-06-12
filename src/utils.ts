@@ -33,13 +33,19 @@ export const limit = <F extends (...args: any[]) => Promise<any>>(
   let running = 0;
   const waiters: (() => void)[] = [];
   return (async (...args: Parameters<F>) => {
-    if (running >= n) await new Promise<void>((next) => waiters.push(next));
-    running++;
+    if (running >= n) {
+      // the releaser hands its slot over, so running stays unchanged —
+      // decrementing first would let a new arrival sneak past the cap
+      await new Promise<void>((next) => waiters.push(next));
+    } else {
+      running++;
+    }
     try {
       return await f(...args);
     } finally {
-      running--;
-      waiters.shift()?.();
+      const next = waiters.shift();
+      if (next) next();
+      else running--;
     }
   }) as F;
 };

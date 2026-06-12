@@ -38,7 +38,7 @@ it('processes an enqueued job and removes its file', async () => {
   await enqueueJob(job());
 
   await waitUntil(jobsIdle);
-  expect(processor).toHaveBeenCalledWith(job());
+  expect(processor).toHaveBeenCalledWith(job(), expect.any(Function));
   expect(await readdir(JOBS_DIR)).toEqual([]);
 });
 
@@ -63,7 +63,7 @@ it('recovers persisted jobs on start', async () => {
   await startJobQueue(processor);
 
   await waitUntil(jobsIdle);
-  expect(processor).toHaveBeenCalledWith(job('https://r'));
+  expect(processor).toHaveBeenCalledWith(job('https://r'), expect.any(Function));
   expect(await readdir(JOBS_DIR)).toEqual([]);
 });
 
@@ -165,4 +165,76 @@ it('logs when a finished job file cannot be removed', async () => {
     ),
   );
   await rm(`${JOBS_DIR}${name}`, { recursive: true, force: true });
+});
+
+it('does not start new jobs after stopJobQueue; recovery picks them up', async () => {
+  const { stopJobQueue } = await import('../src/job-queue');
+  let finish!: () => void;
+  const processor = mock(() => new Promise<void>((r) => (finish = r)));
+  await startJobQueue(processor);
+  await enqueueJob(job('https://running'));
+  await waitUntil(() => processor.mock.calls.length === 1);
+
+  stopJobQueue();
+  await enqueueJob(job('https://parked'));
+  finish();
+  await Bun.sleep(100);
+  expect(processor).toHaveBeenCalledTimes(1);
+  expect(await readdir(JOBS_DIR)).toHaveLength(1); // parked job survives
+
+  resetJobQueue();
+  const processor2 = mock(async () => {});
+  await startJobQueue(processor2);
+  await waitUntil(jobsIdle);
+  expect(processor2).toHaveBeenCalledWith(
+    job('https://parked'),
+    expect.any(Function),
+  );
+});
+
+it('drops a job marked sending instead of replaying it on recovery', async () => {
+  const consoleError = spyOn(console, 'error').mockImplementation(mock());
+  let mark!: () => Promise<void>;
+  let finish!: () => void;
+  const processor = mock((_j: Job, markSending: () => Promise<void>) => {
+    mark = markSending;
+    return new Promise<void>((r) => (finish = r));
+  });
+  await startJobQueue(processor);
+  await enqueueJob(job());
+  await waitUntil(() => processor.mock.calls.length === 1);
+
+  await mark();
+  expect(await readdir(JOBS_DIR)).toEqual([
+    expect.stringMatching(/\.sending$/),
+  ]);
+
+  // simulate the crash: never finish; reset and recover in a "new process"
+  resetJobQueue();
+  const processor2 = mock(async () => {});
+  await startJobQueue(processor2);
+  // can't wait on jobsIdle: the crashed run still holds a worker slot
+  await waitUntil(
+    () =>
+      consoleError.mock.calls.length > 0 &&
+      processor2.mock.calls.length === 0,
+    1000,
+  );
+  expect(processor2).not.toHaveBeenCalled();
+  expect(await readdir(JOBS_DIR)).toEqual([]);
+  expect(consoleError).toHaveBeenCalledWith(
+    expect.stringContaining('interrupted mid-send'),
+  );
+  finish(); // let the original run's cleanup settle
+});
+
+it('recovers persisted jobs in FIFO order', async () => {
+  await Bun.write(`${JOBS_DIR}1-a.json`, JSON.stringify(job('https://first')));
+  await Bun.write(`${JOBS_DIR}2-b.json`, JSON.stringify(job('https://second')));
+  const order: string[] = [];
+  await startJobQueue(async (j) => {
+    order.push((j as { url: string }).url);
+  });
+  await waitUntil(jobsIdle);
+  expect(order).toEqual(['https://first', 'https://second']);
 });

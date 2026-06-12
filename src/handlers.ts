@@ -62,12 +62,24 @@ export const textMessageHandler = async (ctx: MessageContext) => {
   );
 };
 
-export const processJob = async (telegram: Telegram, me: string, job: Job) =>
-  job.kind === 'url'
-    ? processUrlJob(telegram, me, job)
-    : processConfirmedJob(telegram, me, job);
+const noMark = async () => {};
 
-const processUrlJob = async (telegram: Telegram, me: string, job: UrlJob) => {
+export const processJob = async (
+  telegram: Telegram,
+  me: string,
+  job: Job,
+  markSending: () => Promise<void> = noMark,
+) =>
+  job.kind === 'url'
+    ? processUrlJob(telegram, me, job, markSending)
+    : processConfirmedJob(telegram, me, job, markSending);
+
+const processUrlJob = async (
+  telegram: Telegram,
+  me: string,
+  job: UrlJob,
+  markSending: () => Promise<void>,
+) => {
   const { url, chatId, chatType, messageId, verbose } = job;
   const log = new LogMessage(telegram, {
     chatId,
@@ -92,6 +104,7 @@ const processUrlJob = async (telegram: Telegram, me: string, job: UrlJob) => {
         return;
       }
     }
+    await markSending();
     await sendVideo(telegram, me, log, info, chatId, messageId);
   } catch (e: any) {
     // log first: reporting to the user can itself fail
@@ -109,6 +122,7 @@ const processConfirmedJob = async (
   telegram: Telegram,
   me: string,
   job: ConfirmedJob,
+  markSending: () => Promise<void>,
 ) => {
   const { info, chatId, messageId, verbose, postDownload } = job;
   const log = new NoLog();
@@ -116,6 +130,7 @@ const processConfirmedJob = async (
     if (!postDownload) {
       console.debug(await downloadVideo(me, log, info, verbose));
     }
+    await markSending();
     await sendVideo(telegram, me, log, info, chatId, messageId);
   } catch (e: any) {
     console.error('Download failed after confirmation:', e);

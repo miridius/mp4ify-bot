@@ -1,4 +1,4 @@
-import { mkdir, readdir } from 'fs/promises';
+import { mkdir, readdir, rename, unlink } from 'fs/promises';
 import type { PendingDownload } from './pending-downloads';
 
 export type UrlJob = {
@@ -23,7 +23,9 @@ await mkdir(JOBS_DIR, { recursive: true });
 
 export const JOB_CONCURRENCY = 3;
 
-type Processor = (job: Job) => Promise<void>;
+// markSending flips the job to at-most-once: call it right before the
+// telegram send, so a crash after delivery can't replay the send on boot
+type Processor = (job: Job, markSending: () => Promise<void>) => Promise<void>;
 let processor: Processor | undefined;
 const pending: string[] = [];
 // every queued or in-flight id: the recovery scan races concurrent
@@ -33,6 +35,12 @@ let active = 0;
 let stopped = false;
 
 const file = (id: string) => Bun.file(`${JOBS_DIR}${id}.json`);
+const sendingPath = (id: string) => `${JOBS_DIR}${id}.sending`;
+
+const markJobSending = (id: string) =>
+  rename(file(id).name!, sendingPath(id)).catch((e) =>
+    console.error(`Failed to mark job ${id} as sending:`, e),
+  );
 
 // the job file is written before this resolves: once the handler returns
 // (and telegram considers the update acked), the queue entry is the
@@ -52,6 +60,13 @@ export const startJobQueue = async (p: Processor) => {
   await mkdir(JOBS_DIR, { recursive: true }); // e2e wipes /storage wholesale
   const names = (await readdir(JOBS_DIR)).sort();
   for (const name of names) {
+    if (name.endsWith('.sending')) {
+      // the crash hit between marking and cleanup — the send very likely
+      // went out, so replaying it would duplicate the message
+      console.error(`Dropping job ${name}: interrupted mid-send`);
+      await unlink(JOBS_DIR + name).catch(() => {});
+      continue;
+    }
     if (!name.endsWith('.json')) continue;
     const id = name.slice(0, -5);
     if (!known.has(id)) {
@@ -100,14 +115,19 @@ const run = async (id: string) => {
     return;
   }
   try {
-    await processor!(job);
+    await processor!(job, () => markJobSending(id));
   } catch (e) {
     // the processor reports its own failures to the user; reaching here is
     // a bug, and retrying a deterministic bug would crash-loop on boot
     console.error(`Job ${id} failed:`, e);
   }
+  await unlink(sendingPath(id)).catch(() => {});
   await f
     .unlink()
-    .catch((e) => console.error(`Failed to remove job file ${id}:`, e));
+    .catch((e) =>
+      e.code === 'ENOENT'
+        ? undefined // it was renamed to .sending and removed above
+        : console.error(`Failed to remove job file ${id}:`, e),
+    );
   known.delete(id);
 };
