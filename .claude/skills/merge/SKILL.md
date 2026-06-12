@@ -9,9 +9,8 @@ Run only when the user has reviewed the PR and asked for the merge.
 
 Run `/code-review high` (the built-in; the official plugin, which posted
 PR comments and lacked `--fix`, is uninstalled) — effort pinned so the
-gate doesn't vary with the session's /effort setting. For large or risky
-PRs the user may run `/code-review ultra` themselves instead (billed). In
-parallel, spawn two agents covering the lenses the built-in lacks:
+gate doesn't vary with the session's /effort setting. In parallel, spawn
+two agents covering the lenses the built-in lacks:
 
 - **History**: read the git blame and prior PRs touching the modified
   files; flag changes that conflict with that context.
