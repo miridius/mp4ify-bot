@@ -24,7 +24,23 @@ flight — the bot serves whatever the tree holds.
 - Findings → fix → /commit → re-test the broken case. On re-runs of this
   skill after a fix, QA may be scoped to the cases the change touches.
 
-## 2. PR description
+## 2. Toolkit lenses
+
+Spawn in parallel on the full `git diff main...HEAD`:
+
+- pr-review-toolkit `pr-test-analyzer`: is every behavior change pinned by
+  a test that would fail without it? (test-gap analysis is a class
+  /code-review ignores)
+- pr-review-toolkit `silent-failure-hunter`: swallowed errors, silent
+  fallbacks, error paths that lose the root cause. (overlaps /code-review's
+  remit; kept as deliberate redundancy — it has the best track record in
+  this repo)
+
+Findings → fix → /commit → re-run the lens that flagged it plus the
+relevant QA cases. Record dismissed lens findings in the PR description's
+open decisions so re-runs don't re-litigate them.
+
+## 3. PR description
 
 Draft (or refresh) the title and body. A PR is a pitch to a reviewer with
 zero prior knowledge: convince them it should be merged. Describe what it
@@ -36,7 +52,7 @@ Fix. Never include self-review narration (what reviews ran, what was fixed
 before the PR opened). Always surface the genuine open decisions the
 reviewer must weigh in on.
 
-## 3. Cold-context audit
+## 4. Cold-context audit
 
 Spawn ONE fresh general-purpose agent with the full `git diff main...HEAD`,
 the draft title/body, and the audit instructions below verbatim. The author
@@ -62,7 +78,7 @@ Violations:
   values, accepted trade-offs, behavior changes a reasonable reviewer might
   push back on), the description must name them and ask.
 
-## 4. Open or update
+## 5. Open or update
 
 Push, then `gh pr create` — or if the PR exists, update its body and
 re-request review.

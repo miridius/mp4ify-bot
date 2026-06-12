@@ -7,10 +7,13 @@ Run only when the user has reviewed the PR and asked for the merge.
 
 ## 1. Final review gate
 
-Run `/code-review high` (the built-in; the official plugin, which posted
-PR comments and lacked `--fix`, is uninstalled) — effort pinned so the
-gate doesn't vary with the session's /effort setting. In parallel, spawn
-two agents covering the lenses the built-in lacks:
+Run `/code-review max main...HEAD` — scope pinned explicitly (the
+default scope, commits ahead of upstream plus uncommitted changes, is
+EMPTY once the branch is pushed and clean, which it always is here) and
+effort pinned so the gate doesn't vary with the session's /effort
+setting. max surfaces uncertainty-labeled findings; the fix-if-unsure
+rule below absorbs them. In parallel, spawn two agents covering lenses
+/code-review lacks:
 
 - **History**: read the git blame and prior PRs touching the modified
   files; flag changes that conflict with that context.
@@ -19,14 +22,18 @@ two agents covering the lenses the built-in lacks:
 
 For every finding from any of the three:
 
-- **Fix it** if you agree or are unsure. Fixes go through /commit and /pr
-  (QA scoped to what the fix touches); wait for CI.
+- **Fix it** if you agree or are unsure. Gate fixes go through /commit
+  with its review step skipped — this gate's own repeat is the
+  authoritative re-review — and through /pr scoped to re-QA of what the
+  fix touches; wait for CI.
 - **To dismiss it**, you MUST present the finding together with your
   refuting evidence to the user via AskUserQuestion and receive explicit
   approval. There are no self-service dismissals at this gate — this is the
   one place a human signs off on every dropped finding.
 
 Repeat until all three come back clean or every finding is dispositioned.
+Settled findings (fixed, or dismissed with user approval) are not
+re-litigated on repeat.
 
 ## 2. Full e2e gate
 

@@ -1,6 +1,6 @@
 ---
 name: commit
-description: The only way to commit in this repo — use instead of raw `git commit` for every commit. Fast gates, simplify, scoped review of the pending diff, then commit.
+description: The only way to commit in this repo — use instead of raw `git commit` for every commit. Fast gates, /code-review with fixes applied by judgment, comment audit, then commit.
 ---
 
 Run for every commit, no matter how small. Do not skip a step because the
@@ -9,17 +9,17 @@ change seems trivial — that judgment is what this skill exists to remove.
 1. Stage the changes (`git add`).
 2. Run `./check.sh` (lint with warnings fatal, gitleaks, unit tests). Fix
    until green — review effort is wasted on code that fails mechanical gates.
-3. Run `/simplify` (built-in; quality-only review that applies its fixes —
-   bug-hunting is /merge's `/code-review`). Keep the fixes you agree with;
-   if code changed, re-stage and re-run `./check.sh`.
-4. Review the pending diff — just this commit, not the whole branch. Spawn
-   in parallel:
-   - the pr-review-toolkit `code-reviewer` agent on `git diff HEAD`, and
-   - a general-purpose agent with `git diff HEAD` plus the comment standards
-     below, verbatim.
-   Fix the findings you agree with. Findings you dismiss here are dropped
-   — they only reach the human gate if the /merge review gate re-finds
-   them — so when in doubt, fix or surface it in the PR's open decisions.
+3. Run `/code-review high` (report-only — NOT `--fix`: its scope is all
+   unpushed commits plus the working tree, so auto-applied fixes would
+   resurrect ones already reverted on earlier commits) and apply the
+   findings you agree with yourself. Findings on earlier unpushed commits
+   may recur on later runs; hold your dispositions rather than
+   re-litigating. If code changed, re-stage and re-run `./check.sh`.
+4. Spawn a general-purpose agent with `git diff HEAD` plus the comment
+   standards below, verbatim. Fix the findings you agree with. Findings
+   you dismiss here are dropped — no later gate re-audits comment
+   standards — so when in doubt, fix or surface it in the PR's open
+   decisions.
 5. Re-stage everything (`git add`) so the commit contains exactly what was
    tested and reviewed, then `git commit`. The pre-commit hook re-runs the
    mechanical gates as a backstop; the reduced e2e suite runs on push. If a
