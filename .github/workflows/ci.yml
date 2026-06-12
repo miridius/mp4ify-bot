@@ -15,6 +15,9 @@ jobs:
       - run: bunx oxlint --deny-warnings
       # download-video.ts writes its info cache under /storage at import time
       - run: sudo mkdir -p -m 777 /storage
+      # the tests spawn the stub yt-dlp/ffprobe from test/bin (in the dev
+      # image this is baked into PATH by Dockerfile.dev)
+      - run: echo "$GITHUB_WORKSPACE/test/bin" >> "$GITHUB_PATH"
       - run: bun test
         env:
           BOT_TOKEN: dummy
