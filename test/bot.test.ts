@@ -15,11 +15,9 @@ import type { Message, Update } from 'telegraf/types';
 import { start } from '../src/bot';
 import { apiRoot } from '../src/consts';
 import * as downloadVideo from '../src/download-video';
-import {
-  DOWNLOAD_TIMEOUT_SECS,
-  YTDLP_UPDATE_INTERVAL_MS,
-} from '../src/download-video';
+import { YTDLP_UPDATE_INTERVAL_MS } from '../src/download-video';
 import * as handlers from '../src/handlers';
+import * as jobQueue from '../src/job-queue';
 import { spyMock } from './test-utils';
 
 beforeEach(() => jest.clearAllMocks());
@@ -49,6 +47,9 @@ const setIntervalSpy = spyOn(globalThis, 'setInterval');
 // Mock process.once
 const processOnce = spyMock(process, 'once');
 
+// the queue is covered by its own suite; here just watch the wiring
+const startJobQueue = spyMock(jobQueue, 'startJobQueue');
+
 describe('start', async () => {
   const botToken = 'test-token';
 
@@ -60,6 +61,8 @@ describe('start', async () => {
     updateYtdlp,
     YTDLP_UPDATE_INTERVAL_MS,
   );
+
+  expect(startJobQueue).toHaveBeenCalledWith(expect.any(Function));
 
   expect(processOnce).toHaveBeenCalledWith('SIGINT', expect.any(Function));
   expect(processOnce).toHaveBeenCalledWith('SIGTERM', expect.any(Function));
@@ -191,10 +194,57 @@ describe('start', async () => {
     expect(launched).toBe(true);
   });
 
-  it('sets handlerTimeout above the worst case of two sequential yt-dlp runs', () => {
-    expect((bot as any).options.handlerTimeout).toBeGreaterThan(
-      2 * DOWNLOAD_TIMEOUT_SECS * 1000,
+  it('caps how long one update can block polling at 5 minutes', () => {
+    expect((bot as any).options.handlerTimeout).toBe(5 * 60 * 1000);
+  });
+
+  const timeoutError = () =>
+    Promise.reject(
+      Object.assign(new Error('timed out'), { name: 'TimeoutError' }),
     );
+  const inlineUpdate: Update.InlineQueryUpdate = {
+    update_id: 98,
+    inline_query: {
+      id: 'slow1',
+      from: { id: 456, is_bot: false, first_name: 'Test' },
+      query: 'https://example.com',
+      offset: '',
+    },
+  };
+
+  it('treats an inline-query timeout as benign (work continues detached)', async () => {
+    const consoleWarn = spyOn(console, 'warn').mockImplementation(mock());
+    const consoleError = spyOn(console, 'error').mockImplementation(mock());
+    inlineQueryHandler.mockImplementationOnce(timeoutError);
+    await bot.handleUpdate(inlineUpdate);
+    expect(consoleWarn).toHaveBeenCalledWith(
+      'Slow handler unblocked (still running):',
+      expect.anything(),
+    );
+    expect(consoleError).not.toHaveBeenCalled();
+    expect(process.exitCode).not.toBe(1);
+  });
+
+  it('treats a timeout on an enqueue-only handler as a real error', async () => {
+    const consoleError = spyOn(console, 'error').mockImplementation(mock());
+    textMessageHandler.mockImplementationOnce(timeoutError);
+    await bot.handleUpdate({
+      update_id: 97,
+      message: {
+        message_id: 99,
+        date: Math.floor(Date.now() / 1000),
+        text: 'hung',
+        chat: { id: 123, type: 'private', first_name: 'Test' },
+        from: { id: 456, is_bot: false, first_name: 'Test' },
+      },
+    } as Update.MessageUpdate<Message.TextMessage>);
+    expect(consoleError).toHaveBeenCalledWith(
+      'Unhandled error while processing',
+      expect.anything(),
+      expect.any(Error),
+    );
+    expect(process.exitCode).toBe(1);
+    process.exitCode = 0; // don't fail the test run itself
   });
 
   it('exits the process if polling crashes fatally', async () => {

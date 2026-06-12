@@ -1,5 +1,5 @@
+import type { Telegram } from 'telegraf';
 import type { Message } from 'telegraf/types';
-import type { AnyContext, MessageContext } from './types';
 
 const MAX_LENGTH = 4096;
 const TEXT_MSG_OPTS = {
@@ -9,31 +9,31 @@ const TEXT_MSG_OPTS = {
 };
 const DEBOUNCE_MS = 150;
 
-export const reply = (ctx: MessageContext, text: string) =>
-  ctx.reply(text, {
-    reply_parameters: {
-      message_id: (ctx.message || ctx.editedMessage).message_id,
-    },
-    ...TEXT_MSG_OPTS,
-  });
+export type LogDest = {
+  chatId: number;
+  chatType: string;
+  replyTo: number;
+};
 
 // Writes log output to a private chat by updating a single message.
 export class LogMessage {
   private texts: string[] = [];
   private messages: (Message.TextMessage | undefined)[] = [];
-  private ctx?: MessageContext;
+  private dest?: LogDest;
   private timer?: Timer;
 
-  constructor(ctx: AnyContext, initialText?: string) {
-    if ((ctx.message || ctx.editedMessage) && ctx.chat?.type === 'private') {
-      this.ctx = ctx as MessageContext;
-    }
+  constructor(
+    private telegram?: Telegram,
+    dest?: LogDest,
+    initialText?: string,
+  ) {
+    if (telegram && dest?.chatType === 'private') this.dest = dest;
     if (initialText) this.append(initialText);
   }
 
   append(line: string) {
     console.debug(line);
-    if (!this.ctx) return;
+    if (!this.dest) return;
     if (this.timer) clearTimeout(this.timer);
     if (this.texts.length === 0) {
       this.texts.push(line);
@@ -52,7 +52,7 @@ export class LogMessage {
   }
 
   async flush() {
-    if (!this.ctx) return;
+    if (!this.dest) return;
     if (this.timer) {
       clearTimeout(this.timer);
       this.timer = undefined;
@@ -65,14 +65,17 @@ export class LogMessage {
   private async setMessageText(text: string, message?: Message.TextMessage) {
     if (!message) {
       try {
-        return await reply(this.ctx!, text);
+        return (await this.telegram!.sendMessage(this.dest!.chatId, text, {
+          reply_parameters: { message_id: this.dest!.replyTo },
+          ...TEXT_MSG_OPTS,
+        })) as Message.TextMessage;
       } catch (e) {
         console.error('Failed to send log message', text, e);
         return undefined; // retried on the next flush
       }
     } else if (message.text !== text.replaceAll(/<[^>]+>/g, '')) {
       try {
-        return (await this.ctx!.telegram.editMessageText(
+        return (await this.telegram!.editMessageText(
           message.chat.id,
           message.message_id,
           undefined,
@@ -90,6 +93,9 @@ export class LogMessage {
 }
 
 export class NoLog extends LogMessage {
+  constructor() {
+    super();
+  }
   append(_line: string) {}
   async flush() {}
 }

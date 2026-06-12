@@ -8,7 +8,7 @@ import {
   mock,
   spyOn,
 } from 'bun:test';
-import { isFailedPromise, memoize } from '../src/utils';
+import { isFailedPromise, limit, memoize } from '../src/utils';
 
 beforeEach(() => jest.clearAllMocks());
 afterAll(() => mock.restore());
@@ -73,5 +73,40 @@ describe('memoize', () => {
     const m = memoize(fn);
     m(5);
     expect(m.cache.size).toBe(1);
+  });
+});
+
+describe('limit', () => {
+  it('caps in-flight invocations and runs waiters FIFO', async () => {
+    const finishers: (() => void)[] = [];
+    const started: number[] = [];
+    const f = limit(2, async (i: number) => {
+      started.push(i);
+      await new Promise<void>((r) => finishers.push(r));
+      return i;
+    });
+
+    const results = Promise.all([f(0), f(1), f(2), f(3)]);
+    await Bun.sleep(10);
+    expect(started).toEqual([0, 1]); // third waits
+
+    finishers[0]!();
+    await Bun.sleep(10);
+    expect(started).toEqual([0, 1, 2]);
+
+    finishers[1]!();
+    finishers[2]!();
+    await Bun.sleep(10);
+    finishers[3]!();
+    expect(await results).toEqual([0, 1, 2, 3]);
+  });
+
+  it('releases the slot when the function throws', async () => {
+    const f = limit(1, async (fail: boolean) => {
+      if (fail) throw new Error('boom');
+      return 'ok';
+    });
+    expect(f(true)).rejects.toThrow('boom');
+    expect(await f(false)).toBe('ok'); // slot was released
   });
 });

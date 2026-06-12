@@ -370,5 +370,14 @@ export const withBotApi = async (fn: TestFn) => {
   } finally {
     mockBotApis.delete(api);
     exitSpy.mockRestore();
+    // a job left queued or on disk would double-run against the next
+    // test's bot (and its already-deregistered MockBotApi)
+    const { resetJobQueue } = await import('../src/job-queue');
+    resetJobQueue();
+    await import('fs/promises').then(({ rm, mkdir }) =>
+      rm('/storage/_jobs', { recursive: true, force: true }).then(() =>
+        mkdir('/storage/_jobs', { recursive: true }),
+      ),
+    );
   }
 };

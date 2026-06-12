@@ -14,8 +14,10 @@ import * as downloadVideo from '../src/download-video.ts';
 import {
   callbackQueryHandler,
   inlineQueryHandler,
+  processJob,
   textMessageHandler,
 } from '../src/handlers';
+import * as jobQueue from '../src/job-queue';
 import * as logMessage from '../src/log-message.ts';
 import * as pendingDownloads from '../src/pending-downloads.ts';
 import { memoize } from '../src/utils.ts';
@@ -37,6 +39,23 @@ const mockUnlink = spyOn(fsPromises, 'unlink').mockResolvedValue(undefined);
 
 const mockLog = { append: mock(), flush: mock() };
 spyOn(logMessage, 'LogMessage').mockReturnValue(mockLog as never);
+
+// run enqueued jobs inline against the invoking ctx's telegram client, so
+// the handler tests below exercise the full enqueue→process flow
+let bridgeTg: any;
+const mockEnqueue = spyOn(jobQueue, 'enqueueJob').mockImplementation(
+  async (j) => {
+    await processJob(bridgeTg, 'bot', j);
+  },
+);
+const handle = async (ctx: any) => {
+  bridgeTg = ctx.telegram;
+  await textMessageHandler(ctx);
+};
+const handleCb = async (ctx: any) => {
+  bridgeTg = ctx.telegram;
+  await callbackQueryHandler(ctx);
+};
 
 // Helper to create a mock InlineQueryContext
 const createMockInlineQueryCtx = (overrides: any = {}) => ({
@@ -77,9 +96,42 @@ const mockProbeDuration = spyOn(
 ).mockResolvedValue(undefined);
 
 describe.each([false, true])('textMessageHandler, edit: %p', (isEdit) => {
+  it('enqueues one durable job per URL with the message fields', async () => {
+    const ctx = createMockMessageCtx(isEdit);
+    await handle(ctx as any);
+    expect(mockEnqueue).toHaveBeenCalledTimes(1);
+    expect(mockEnqueue).toHaveBeenCalledWith({
+      kind: 'url',
+      url: 'https://example.com',
+      chatId: 123,
+      chatType: 'private',
+      messageId: 1,
+      fromId: 123,
+      verbose: false,
+    });
+  });
+
+  it('reports enqueue failures to the user', async () => {
+    const consoleError = spyOn(console, 'error').mockImplementation(mock());
+    mockEnqueue.mockImplementationOnce(() =>
+      Promise.reject(new Error('disk full')),
+    );
+    const ctx = createMockMessageCtx(isEdit);
+    await handle(ctx as any); // must not throw
+    expect(consoleError).toHaveBeenCalledWith(
+      'Failed to enqueue download:',
+      expect.any(Error),
+    );
+    expect(ctx.telegram.sendMessage).toHaveBeenCalledWith(
+      123,
+      expect.stringContaining('Download failed'),
+      expect.objectContaining({ reply_parameters: { message_id: 1 } }),
+    );
+  });
+
   it('handles a message with a URL', async () => {
     const ctx = createMockMessageCtx(isEdit);
-    await textMessageHandler(ctx as any);
+    await handle(ctx as any);
     expect(mockGetInfo).toHaveBeenCalled();
     expect(mockSendInfo).toHaveBeenCalled();
     expect(mockDownloadVideo).toHaveBeenCalled();
@@ -90,7 +142,7 @@ describe.each([false, true])('textMessageHandler, edit: %p', (isEdit) => {
     const ctx = createMockMessageCtx(isEdit);
     mockGetInfo.mockRejectedValueOnce(new Error('oh noes!'));
     const mockError = spyOn(console, 'error').mockImplementationOnce(() => {});
-    await textMessageHandler(ctx as any);
+    await handle(ctx as any);
     // Should append error to log and flush, but not throw
     expect(mockGetInfo).toHaveBeenCalled();
     expect(mockError).toHaveBeenCalledTimes(1);
@@ -108,7 +160,7 @@ describe.each([false, true])('textMessageHandler, edit: %p', (isEdit) => {
     mockLog.flush.mockImplementationOnce(() =>
       Promise.reject(new Error('telegram down')),
     );
-    await textMessageHandler(ctx as any); // must not throw
+    await handle(ctx as any); // must not throw
     const logged = mockError.mock.calls.map(([first]) => first);
     expect(logged).toContainEqual(expect.objectContaining({ message: 'oh noes!' }));
   });
@@ -117,7 +169,7 @@ describe.each([false, true])('textMessageHandler, edit: %p', (isEdit) => {
     const ctx = createMockMessageCtx(isEdit);
     mockGetInfo.mockImplementationOnce(() => Promise.reject('string error'));
     spyOn(console, 'error').mockImplementation(() => {});
-    await textMessageHandler(ctx as any);
+    await handle(ctx as any);
     expect(mockLog.append).toHaveBeenCalledWith(
       '\n💥 <b>Download failed</b>: string error',
     );
@@ -126,7 +178,7 @@ describe.each([false, true])('textMessageHandler, edit: %p', (isEdit) => {
   it('does nothing if no url entities', async () => {
     const ctx = createMockMessageCtx(isEdit);
     (ctx.message || ctx.editedMessage).entities = [];
-    await textMessageHandler(ctx);
+    await handle(ctx);
     // Should not call any download functions
     expect(mockGetInfo).not.toHaveBeenCalled();
   });
@@ -207,7 +259,7 @@ describe('confirmation for long videos (>20 min)', () => {
   const triggerConfirmation = async () => {
     mockGetInfoLong();
     const msgCtx = createMockMessageCtx(false, { chat: groupChat });
-    await textMessageHandler(msgCtx as any);
+    await handle(msgCtx as any);
     const buttons = (msgCtx.telegram.sendMessage as any).mock.calls[0][2]
       .reply_markup.inline_keyboard[0];
     return {
@@ -221,7 +273,7 @@ describe('confirmation for long videos (>20 min)', () => {
     it('shows confirmation buttons for video >20 min in group chat', async () => {
       mockGetInfoLong();
       const ctx = createMockMessageCtx(isEdit, { chat: groupChat });
-      await textMessageHandler(ctx as any);
+      await handle(ctx as any);
 
       // Should NOT download
       expect(mockDownloadVideo).not.toHaveBeenCalled();
@@ -256,7 +308,7 @@ describe('confirmation for long videos (>20 min)', () => {
         ),
       );
       const ctx = createMockMessageCtx(isEdit, { chat: groupChat });
-      await textMessageHandler(ctx as any);
+      await handle(ctx as any);
 
       const [, text] = (ctx.telegram.sendMessage as any).mock.calls[0];
       expect(text).toBe('This video is pretty long (25m 30s), do you want me to download it anyway?');
@@ -265,7 +317,7 @@ describe('confirmation for long videos (>20 min)', () => {
     it('downloads immediately for video >20 min in private chat', async () => {
       mockGetInfoLong();
       const ctx = createMockMessageCtx(isEdit);
-      await textMessageHandler(ctx as any);
+      await handle(ctx as any);
 
       // Private chats skip confirmation
       expect(mockDownloadVideo).toHaveBeenCalled();
@@ -275,7 +327,7 @@ describe('confirmation for long videos (>20 min)', () => {
     it('downloads immediately for video <=20 min in group chat', async () => {
       mockGetInfoShort();
       const ctx = createMockMessageCtx(isEdit, { chat: groupChat });
-      await textMessageHandler(ctx as any);
+      await handle(ctx as any);
 
       expect(mockDownloadVideo).toHaveBeenCalled();
       expect(mockSendVideo).toHaveBeenCalled();
@@ -285,7 +337,7 @@ describe('confirmation for long videos (>20 min)', () => {
       mockGetInfoShort(5 * 60); // 5 min known duration
       mockProbeDuration.mockResolvedValueOnce(5 * 60);
       const ctx = createMockMessageCtx(isEdit, { chat: groupChat });
-      await textMessageHandler(ctx as any);
+      await handle(ctx as any);
 
       // Should download and probe
       expect(mockDownloadVideo).toHaveBeenCalled();
@@ -300,7 +352,7 @@ describe('confirmation for long videos (>20 min)', () => {
       const { confirmData } = await triggerConfirmation();
 
       const cbCtx = createMockCallbackCtx(confirmData, 123);
-      await callbackQueryHandler(cbCtx as any);
+      await handleCb(cbCtx as any);
 
       expect(cbCtx.answerCbQuery).toHaveBeenCalledWith('Starting download...');
       expect(cbCtx.deleteMessage).toHaveBeenCalled();
@@ -313,7 +365,7 @@ describe('confirmation for long videos (>20 min)', () => {
 
       // User 999 (not the requester 123) clicks Download — should work
       const cbCtx = createMockCallbackCtx(confirmData, 999);
-      await callbackQueryHandler(cbCtx as any);
+      await handleCb(cbCtx as any);
 
       expect(cbCtx.answerCbQuery).toHaveBeenCalledWith('Starting download...');
       expect(mockDownloadVideo).toHaveBeenCalled();
@@ -324,7 +376,7 @@ describe('confirmation for long videos (>20 min)', () => {
       const { cancelData } = await triggerConfirmation();
 
       const cbCtx = createMockCallbackCtx(cancelData, 123);
-      await callbackQueryHandler(cbCtx as any);
+      await handleCb(cbCtx as any);
 
       expect(cbCtx.answerCbQuery).toHaveBeenCalledWith('Cancelled.');
       expect(cbCtx.deleteMessage).toHaveBeenCalled();
@@ -337,7 +389,7 @@ describe('confirmation for long videos (>20 min)', () => {
 
       // User 999 tries to cancel — only requester (123) should be allowed
       const cbCtx = createMockCallbackCtx(cancelData, 999);
-      await callbackQueryHandler(cbCtx as any);
+      await handleCb(cbCtx as any);
 
       expect(cbCtx.answerCbQuery).toHaveBeenCalledWith(
         "Only the requester can cancel.",
@@ -351,7 +403,7 @@ describe('confirmation for long videos (>20 min)', () => {
         throw new Error('disk on fire');
       });
       const cbCtx = createMockCallbackCtx('dl:aaaa', 123);
-      await callbackQueryHandler(cbCtx as any); // must not throw
+      await handleCb(cbCtx as any); // must not throw
       expect(mockError).toHaveBeenCalledWith(
         'Error handling callback query:',
         expect.any(Error),
@@ -361,7 +413,7 @@ describe('confirmation for long videos (>20 min)', () => {
 
     it('answers silently for malformed callback data', async () => {
       const cbCtx = createMockCallbackCtx('garbage', 123);
-      await callbackQueryHandler(cbCtx as any);
+      await handleCb(cbCtx as any);
       expect(cbCtx.answerCbQuery).toHaveBeenCalledWith('');
       expect(mockDownloadVideo).not.toHaveBeenCalled();
     });
@@ -372,7 +424,7 @@ describe('confirmation for long videos (>20 min)', () => {
       (cbCtx.answerCbQuery as any).mockImplementationOnce(() =>
         Promise.reject(new Error('query is too old')),
       );
-      await callbackQueryHandler(cbCtx as any);
+      await handleCb(cbCtx as any);
       expect(mockError).toHaveBeenCalledWith(
         'answerCbQuery failed:',
         expect.any(Error),
@@ -381,12 +433,29 @@ describe('confirmation for long videos (>20 min)', () => {
 
     it('responds with unavailable for unknown callback data', async () => {
       const cbCtx = createMockCallbackCtx('dl:nonexistent', 123);
-      await callbackQueryHandler(cbCtx as any);
+      await handleCb(cbCtx as any);
 
       expect(cbCtx.answerCbQuery).toHaveBeenCalledWith(
         'This request is no longer available.',
       );
       expect(mockDownloadVideo).not.toHaveBeenCalled();
+    });
+
+    it('restores the pending entry when enqueueing the confirm fails', async () => {
+      const consoleError = spyOn(console, 'error').mockImplementation(mock());
+      const { confirmData } = await triggerConfirmation();
+      mockEnqueue.mockImplementationOnce(() =>
+        Promise.reject(new Error('disk full')),
+      );
+      const cbCtx = createMockCallbackCtx(confirmData);
+      await handleCb(cbCtx as any);
+      expect(cbCtx.answerCbQuery).toHaveBeenCalledWith('Something went wrong.');
+      expect(consoleError).toHaveBeenCalled();
+      // the claim was restored: clicking again works
+      const cbCtx2 = createMockCallbackCtx(confirmData);
+      await handleCb(cbCtx2 as any);
+      expect(mockDownloadVideo).toHaveBeenCalled();
+      expect(mockSendVideo).toHaveBeenCalled();
     });
 
     it('responds with unavailable on duplicate confirm', async () => {
@@ -415,7 +484,7 @@ describe('confirmation for long videos (>20 min)', () => {
       const mockError = spyOn(console, 'error').mockImplementation(() => {});
 
       const cbCtx = createMockCallbackCtx(confirmData, 123);
-      await callbackQueryHandler(cbCtx as any);
+      await handleCb(cbCtx as any);
 
       expect(cbCtx.answerCbQuery).toHaveBeenCalledWith('Starting download...');
       expect(mockError).toHaveBeenCalled();
@@ -484,7 +553,7 @@ describe('post-download duration check', () => {
       mockGetInfoNoDuration();
       mockProbeDuration.mockResolvedValueOnce(LONG_DURATION);
       const ctx = createMockMessageCtx(isEdit, { chat: groupChat });
-      await textMessageHandler(ctx as any);
+      await handle(ctx as any);
 
       // Should download (duration unknown = proceed)
       expect(mockDownloadVideo).toHaveBeenCalled();
@@ -502,7 +571,7 @@ describe('post-download duration check', () => {
       mockGetInfoZeroDuration();
       mockProbeDuration.mockResolvedValueOnce(LONG_DURATION);
       const ctx = createMockMessageCtx(isEdit, { chat: groupChat });
-      await textMessageHandler(ctx as any);
+      await handle(ctx as any);
 
       expect(mockDownloadVideo).toHaveBeenCalled();
       expect(mockSendVideo).not.toHaveBeenCalled();
@@ -513,7 +582,7 @@ describe('post-download duration check', () => {
       mockGetInfoNoDuration();
       mockProbeDuration.mockResolvedValueOnce(5 * 60); // 5 minutes
       const ctx = createMockMessageCtx(isEdit, { chat: groupChat });
-      await textMessageHandler(ctx as any);
+      await handle(ctx as any);
 
       expect(mockDownloadVideo).toHaveBeenCalled();
       expect(mockSendVideo).toHaveBeenCalled();
@@ -523,7 +592,7 @@ describe('post-download duration check', () => {
       mockGetInfoNoDuration();
       mockProbeDuration.mockResolvedValueOnce(undefined);
       const ctx = createMockMessageCtx(isEdit, { chat: groupChat });
-      await textMessageHandler(ctx as any);
+      await handle(ctx as any);
 
       expect(mockDownloadVideo).toHaveBeenCalled();
       expect(mockSendVideo).toHaveBeenCalled();
@@ -532,7 +601,7 @@ describe('post-download duration check', () => {
     it('private chat with unknown duration downloads and uploads without any confirmation', async () => {
       mockGetInfoNoDuration();
       const ctx = createMockMessageCtx(isEdit); // private chat
-      await textMessageHandler(ctx as any);
+      await handle(ctx as any);
 
       expect(mockDownloadVideo).toHaveBeenCalled();
       expect(mockSendVideo).toHaveBeenCalled();
@@ -547,7 +616,7 @@ describe('post-download duration check', () => {
       mockGetInfoNoDuration();
       mockProbeDuration.mockResolvedValueOnce(LONG_DURATION);
       const msgCtx = createMockMessageCtx(false, { chat: groupChat });
-      await textMessageHandler(msgCtx as any);
+      await handle(msgCtx as any);
       const buttons = (msgCtx.telegram.sendMessage as any).mock.calls[0][2]
         .reply_markup.inline_keyboard[0];
       return {
@@ -562,7 +631,7 @@ describe('post-download duration check', () => {
       jest.clearAllMocks(); // clear download mock calls from setup
 
       const cbCtx = createMockCallbackCtx(confirmData, 123);
-      await callbackQueryHandler(cbCtx as any);
+      await handleCb(cbCtx as any);
 
       expect(cbCtx.answerCbQuery).toHaveBeenCalledWith('Starting download...');
       // Should NOT re-download
@@ -579,7 +648,7 @@ describe('post-download duration check', () => {
       );
 
       const cbCtx = createMockCallbackCtx(cancelData, 123);
-      await callbackQueryHandler(cbCtx as any);
+      await handleCb(cbCtx as any);
 
       expect(cbCtx.answerCbQuery).toHaveBeenCalledWith('Cancelled.');
       expect(mockError).toHaveBeenCalledWith(
@@ -593,7 +662,7 @@ describe('post-download duration check', () => {
       jest.clearAllMocks();
 
       const cbCtx = createMockCallbackCtx(cancelData, 123);
-      await callbackQueryHandler(cbCtx as any);
+      await handleCb(cbCtx as any);
 
       expect(cbCtx.answerCbQuery).toHaveBeenCalledWith('Cancelled.');
       expect(mockDownloadVideo).not.toHaveBeenCalled();

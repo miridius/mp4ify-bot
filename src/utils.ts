@@ -25,3 +25,21 @@ export const memoize = <F extends (...args: any[]) => any>(
   memoized.cache = cache;
   return memoized;
 };
+
+export const limit = <F extends (...args: any[]) => Promise<any>>(
+  n: number,
+  f: F,
+): F => {
+  let running = 0;
+  const waiters: (() => void)[] = [];
+  return (async (...args: Parameters<F>) => {
+    if (running >= n) await new Promise<void>((next) => waiters.push(next));
+    running++;
+    try {
+      return await f(...args);
+    } finally {
+      running--;
+      waiters.shift()?.();
+    }
+  }) as F;
+};

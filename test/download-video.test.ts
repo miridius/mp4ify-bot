@@ -68,8 +68,7 @@ const log = { append: mockAppend, flush: mockFlush };
 const mockSendVideo = mock();
 const telegram = {
   sendVideo: mockSendVideo.mockResolvedValue({ video: { file_id: 'id' } }),
-};
-const ctx = { me: 'bot', telegram };
+} as any;
 
 const VideoInfo = {
   filename: `${VIDEO_DIR}file.mp4`,
@@ -320,13 +319,13 @@ describe('downloadVideo', () => {
     if (signal) await stub({ signal });
     if (exit) await stub({ exit });
     await expect(
-      downloadVideo(ctx as any, log as any, VideoInfo),
+      downloadVideo('bot', log as any, VideoInfo),
     ).rejects.toThrow(message);
   });
 
   it("returns 'already downloaded' if id file exists", async () => {
     await Bun.write(`${VideoInfo.filename}.bot.id`, 'file-id');
-    expect(await downloadVideo(ctx as any, log as any, VideoInfo)).toBe(
+    expect(await downloadVideo('bot', log as any, VideoInfo)).toBe(
       'already downloaded',
     );
     expect(await stubArgs()).toBe('');
@@ -334,7 +333,7 @@ describe('downloadVideo', () => {
 
   it("returns 'already downloaded' if video file exists", async () => {
     await Bun.write(VideoInfo.filename, 'video bytes');
-    expect(await downloadVideo(ctx as any, log as any, VideoInfo)).toBe(
+    expect(await downloadVideo('bot', log as any, VideoInfo)).toBe(
       'already downloaded',
     );
     expect(await stubArgs()).toBe('');
@@ -342,7 +341,7 @@ describe('downloadVideo', () => {
 
   it('calls yt-dlp with the cached info file if not downloaded', async () => {
     await stub({ stdout: 'downloaded ok' });
-    expect(await downloadVideo(ctx as any, log as any, VideoInfo)).toBe(
+    expect(await downloadVideo('bot', log as any, VideoInfo)).toBe(
       'downloaded ok',
     );
     expect(await stubArgs()).toEndWith(
@@ -353,7 +352,7 @@ describe('downloadVideo', () => {
 
   it('logs stderr as it streams', async () => {
     await stub({ stderr: 'progress line' });
-    await downloadVideo(ctx as any, log as any, VideoInfo);
+    await downloadVideo('bot', log as any, VideoInfo);
     expect(appendedText()).toContain('<code>progress line</code>');
   });
 });
@@ -364,7 +363,7 @@ describe('sendVideo', () => {
   it('uploads the video, stores the file_id, and deletes the upload', async () => {
     await Bun.write(VideoInfo.filename, 'video bytes');
 
-    const msg = await sendVideo(ctx as any, log as any, VideoInfo, 123);
+    const msg = await sendVideo(telegram, 'bot', log as any, VideoInfo, 123);
 
     expect(mockSendVideo).toHaveBeenCalledWith(
       123,
@@ -379,7 +378,7 @@ describe('sendVideo', () => {
   it('resends by file_id without touching the video file', async () => {
     await Bun.write(idFile, 'cached-file-id');
 
-    await sendVideo(ctx as any, log as any, VideoInfo, 123);
+    await sendVideo(telegram, 'bot', log as any, VideoInfo, 123);
 
     expect(mockSendVideo).toHaveBeenCalledWith(
       123,
@@ -393,7 +392,7 @@ describe('sendVideo', () => {
     await truncate(VideoInfo.filename, 2001 * 1024 * 1024);
 
     expect(
-      await sendVideo(ctx as any, log as any, VideoInfo, 123),
+      await sendVideo(telegram, 'bot', log as any, VideoInfo, 123),
     ).toBeUndefined();
     expect(appendedText()).toContain('😞 Video too large (2001.00 MB)');
     expect(mockSendVideo).not.toHaveBeenCalled();
@@ -401,14 +400,14 @@ describe('sendVideo', () => {
 
   it('throws if video file not found', async () => {
     await expect(
-      sendVideo(ctx as any, log as any, VideoInfo, 123),
+      sendVideo(telegram, 'bot', log as any, VideoInfo, 123),
     ).rejects.toThrow('yt-dlp output file not found');
   });
 
   it('sends the video as a reply message if requested', async () => {
     await Bun.write(VideoInfo.filename, 'video bytes');
 
-    await sendVideo(ctx as any, log as any, VideoInfo, 123, 42);
+    await sendVideo(telegram, 'bot', log as any, VideoInfo, 123, 42);
 
     expect(mockSendVideo).toHaveBeenCalledWith(
       123,

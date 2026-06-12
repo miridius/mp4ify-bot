@@ -2,16 +2,14 @@ import { Telegraf } from 'telegraf';
 import { allOf, editedMessage, message, type Filter } from 'telegraf/filters';
 import type { Update } from 'telegraf/types';
 import { apiRoot } from './consts';
-import {
-  DOWNLOAD_TIMEOUT_SECS,
-  updateYtdlp,
-  YTDLP_UPDATE_INTERVAL_MS,
-} from './download-video';
+import { updateYtdlp, YTDLP_UPDATE_INTERVAL_MS } from './download-video';
 import {
   callbackQueryHandler,
   inlineQueryHandler,
+  processJob,
   textMessageHandler,
 } from './handlers';
+import { startJobQueue, stopJobQueue } from './job-queue';
 
 export const start = async (botToken: string) => {
   // keep yt-dlp fresh: extractors break as sites change out from under us
@@ -20,13 +18,25 @@ export const start = async (botToken: string) => {
 
   const bot = new Telegraf(botToken, {
     telegram: { apiRoot },
-    // scrape + download (two yt-dlp runs) plus a multi-GB upload must fit:
-    // telegraf rejects handleUpdate at this timeout (default: 90s)
-    handlerTimeout: (2 * DOWNLOAD_TIMEOUT_SECS + 20 * 60) * 1000,
+    // downloads run via the job queue, so handlers are quick; this only
+    // bounds stragglers (e.g. inline queries, which download in-handler)
+    handlerTimeout: 5 * 60 * 1000,
   });
   console.debug(bot.telegram.options);
 
   bot.catch((err, ctx) => {
+    // only inline queries legitimately run long (they download in-handler);
+    // a timeout on the enqueue-only handlers means something is hung
+    if (
+      err instanceof Error &&
+      err.name === 'TimeoutError' &&
+      'inline_query' in ctx.update
+    ) {
+      // p-timeout rejection: the handler keeps running detached and its
+      // work still completes; polling has already moved on
+      console.warn('Slow handler unblocked (still running):', ctx.update);
+      return;
+    }
     console.error('Unhandled error while processing', ctx.update, err);
     process.exitCode = 1; // keep telegraf's exit-code-on-error behavior
   });
@@ -63,9 +73,19 @@ export const start = async (botToken: string) => {
   const deadline = Date.now() + 30_000;
   while (!(bot as any).polling && Date.now() < deadline) await Bun.sleep(5);
 
-  // Enable graceful stop
-  process.once('SIGINT', () => bot.stop('SIGINT'));
-  process.once('SIGTERM', () => bot.stop('SIGTERM'));
+  // start workers only now: recovered jobs need botInfo for file naming
+  await startJobQueue((job) => processJob(bot.telegram, bot.botInfo!.username, job));
+
+  // queued-but-unstarted jobs stay on disk for the next boot instead of
+  // racing docker's kill grace period
+  process.once('SIGINT', () => {
+    stopJobQueue();
+    bot.stop('SIGINT');
+  });
+  process.once('SIGTERM', () => {
+    stopJobQueue();
+    bot.stop('SIGTERM');
+  });
 
   return bot;
 };

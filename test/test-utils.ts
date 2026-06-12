@@ -32,22 +32,12 @@ export const createMockMessageCtx = (
       chat,
     },
     chat,
-    reply: mock(async (text: string) => ({
-      text,
-      chat,
-      message_id: nextMsgId++,
-    })),
     telegram: {
       sendVideo: mock(),
       sendMessage: mock(async (_chatId: number, text: string) => ({
         text,
         chat,
         message_id: nextMsgId++,
-      })),
-      editMessageText: mock(async (_chatId: any, _msgId: any, _unused: any, text: string) => ({
-        text,
-        chat,
-        message_id: _msgId,
       })),
     },
   } as any;

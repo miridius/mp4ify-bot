@@ -1,9 +1,9 @@
 import { mkdir, realpath, stat, symlink, unlink } from 'fs/promises';
 import { basename } from 'path';
+import type { Telegram } from 'telegraf';
 import type { Message } from 'telegraf/types';
 import { LogMessage } from './log-message';
-import type { AnyContext } from './types';
-import { memoize } from './utils';
+import { limit, memoize } from './utils';
 
 const MAX_FILE_SIZE_BYTES = 2000 * 1024 * 1024; // 2000 MB
 export const DOWNLOAD_TIMEOUT_SECS = 300;
@@ -71,7 +71,14 @@ export const updateYtdlp = async () => {
   }
 };
 
-const execYtdlp = async (
+// yt-dlp processes are the scarce resource (CPU/bandwidth/disk), so the
+// cap lives here where every caller passes through — queue jobs and
+// in-handler inline queries alike
+const YTDLP_CONCURRENCY = 3;
+
+const execYtdlp = limit(
+  YTDLP_CONCURRENCY,
+  async (
   logMsg: LogMessage,
   url: string,
   verbose: boolean,
@@ -107,7 +114,7 @@ const execYtdlp = async (
 
   // return stdout as a string
   return await Bun.readableStreamToText(proc.stdout);
-};
+});
 
 const filenamify = (s: string) =>
   new Bun.CryptoHasher('sha256')
@@ -284,18 +291,18 @@ export const sendInfo = async (
   logInfo('audio codec', acodec && `${acodec} ${abr ? `@ ${abr} kbps` : ''}`);
 };
 
-const isDownloaded = async (ctx: AnyContext, { filename }: VideoInfo) =>
-  (await exists(`${filename}.${ctx.me}.id`)) || (await exists(filename));
+const isDownloaded = async (me: string, { filename }: VideoInfo) =>
+  (await exists(`${filename}.${me}.id`)) || (await exists(filename));
 
 // cached based on url
 export const downloadVideo = memoize(
   async (
-    ctx: AnyContext,
+    me: string,
     log: LogMessage,
     info: VideoInfo,
     verbose: boolean = false,
   ) => {
-    if (await isDownloaded(ctx, info)) {
+    if (await isDownloaded(me, info)) {
       return 'already downloaded';
     } else {
       log.append(`\n⬇️ <b>Downloading...</b>`);
@@ -308,13 +315,14 @@ export const downloadVideo = memoize(
       );
     }
   },
-  (_ctx, _log, { filename }, verbose) => !verbose && filename,
+  (_me, _log, { filename }, verbose) => !verbose && filename,
 );
 
 // cached based on filename + chatId + replyToMessageId
 export const sendVideo = memoize(
   async (
-    ctx: AnyContext,
+    telegram: Telegram,
+    me: string,
     log: LogMessage,
     info: VideoInfo,
     chatId: number,
@@ -322,7 +330,7 @@ export const sendVideo = memoize(
   ): Promise<Message.VideoMessage | undefined> => {
     const { filename, width, height } = info;
     const duration = calcDuration(info);
-    const idFile = Bun.file(`${filename}.${ctx.me}.id`);
+    const idFile = Bun.file(`${filename}.${me}.id`);
     const fileId = (await idFile.exists()) && (await idFile.text());
 
     if (!fileId) {
@@ -341,7 +349,7 @@ export const sendVideo = memoize(
     }
     await log.flush();
 
-    const res = await ctx.telegram.sendVideo(
+    const res = await telegram.sendVideo(
       chatId,
       fileId || Bun.pathToFileURL(filename).href,
       {
@@ -365,6 +373,6 @@ export const sendVideo = memoize(
     }
     return res;
   },
-  (_ctx, _log, info, chatId, replyToMessageId) =>
+  (_telegram, _me, _log, info, chatId, replyToMessageId) =>
     JSON.stringify([info.filename, chatId, replyToMessageId]),
 );
