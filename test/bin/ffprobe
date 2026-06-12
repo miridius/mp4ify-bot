@@ -1,0 +1,11 @@
+#!/bin/sh
+# test stub: delegates to the real binary unless the control dir exists
+# (control files are written by test/download-video.test.ts)
+d=/tmp/stub
+[ -d "$d" ] || exec /usr/bin/ffprobe "$@"
+echo "$0 $*" >> "$d/args"
+[ -f "$d/stderr" ] && cat "$d/stderr" >&2
+[ -f "$d/signal" ] && kill "-$(cat "$d/signal")" $$
+[ -f "$d/stdout" ] && cat "$d/stdout"
+[ -f "$d/exit" ] && exit "$(cat "$d/exit")"
+exit 0
