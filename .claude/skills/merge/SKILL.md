@@ -7,7 +7,16 @@ Run only when the user has reviewed the PR and asked for the merge.
 
 ## 1. Final review gate
 
-Run `/code-review` on the PR. For every finding:
+Run `/code-review` (the built-in; the official plugin, which posted PR
+comments and lacked `--fix`, is uninstalled). In parallel, spawn two
+agents covering the lenses the built-in lacks:
+
+- **History**: read the git blame and prior PRs touching the modified
+  files; flag changes that conflict with that context.
+- **Guidance compliance**: check the diff against CLAUDE.md and against
+  guidance in code comments of the modified files.
+
+For every finding from any of the three:
 
 - **Fix it** if you agree or are unsure. Fixes go through /commit and /pr
   (QA scoped to what the fix touches); wait for CI.
@@ -16,7 +25,7 @@ Run `/code-review` on the PR. For every finding:
   approval. There are no self-service dismissals at this gate — this is the
   one place a human signs off on every dropped finding.
 
-Repeat until the review comes back clean or every finding is dispositioned.
+Repeat until all three come back clean or every finding is dispositioned.
 
 ## 2. Full e2e gate
 

@@ -9,17 +9,17 @@ change seems trivial — that judgment is what this skill exists to remove.
 1. Stage the changes (`git add`).
 2. Run `./check.sh` (lint with warnings fatal, gitleaks, unit tests). Fix
    until green — review effort is wasted on code that fails mechanical gates.
-3. Run `/simplify` (built-in shorthand for `/code-review --fix`). Apply the
-   simplifications you agree with; if code changed, re-stage and re-run
-   `./check.sh`.
+3. Run `/simplify` (built-in; quality-only review that applies its fixes —
+   bug-hunting is /merge's `/code-review`). Keep the fixes you agree with;
+   if code changed, re-stage and re-run `./check.sh`.
 4. Review the pending diff — just this commit, not the whole branch. Spawn
    in parallel:
    - the pr-review-toolkit `code-reviewer` agent on `git diff HEAD`, and
    - a general-purpose agent with `git diff HEAD` plus the comment standards
      below, verbatim.
    Fix the findings you agree with. Findings you dismiss here are dropped
-   — they only reach the human gate if /code-review re-finds them at
-   /merge — so when in doubt, fix or surface it in the PR's open decisions.
+   — they only reach the human gate if the /merge review gate re-finds
+   them — so when in doubt, fix or surface it in the PR's open decisions.
 5. Re-stage everything (`git add`) so the commit contains exactly what was
    tested and reviewed, then `git commit`. The pre-commit hook re-runs the
    mechanical gates as a backstop; the reduced e2e suite runs on push. If a
