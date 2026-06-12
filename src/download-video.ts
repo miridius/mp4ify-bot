@@ -123,7 +123,7 @@ export const getInfo = memoize(
     url: string,
     verbose: boolean = false,
   ): Promise<VideoInfo> => {
-    const infoFile = urlInfoFile(url);
+    let infoFile = urlInfoFile(url);
     if (await infoFile.exists()) {
       try {
         return await infoFile.json();
@@ -140,6 +140,9 @@ export const getInfo = memoize(
         } catch (e2) {
           console.error('Failed to delete corrupt cache file:', e2);
         }
+        // a BunFile that has read caches its stat: exists() would still
+        // report the unlinked file as present, skipping the rewrite below
+        infoFile = urlInfoFile(url);
       }
     }
 
