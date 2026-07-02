@@ -6,7 +6,7 @@ RUN apt-get update && \
   # Install yt-dlp in its own world-writable dir so it can self-update at
   # runtime (the container runs as a non-root user)
   mkdir /opt/yt-dlp && \
-  curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /opt/yt-dlp/yt-dlp && \
+  curl -L https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp -o /opt/yt-dlp/yt-dlp && \
   chmod -R 777 /opt/yt-dlp && \
   # Clean up unnecessary files
   apt-get remove -y curl && \

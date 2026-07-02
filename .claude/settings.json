@@ -1,6 +1,11 @@
 {
   "permissions": {
-    "ask": ["Bash(./prod.sh*)"]
+    "ask": [
+      "Bash(./prod.sh*)"
+    ],
+    "deny": [
+      "Bash(git reset:*)"
+    ]
   },
   "hooks": {
     "Stop": [
@@ -13,5 +18,6 @@
         ]
       }
     ]
-  }
+  },
+  "enabledPlugins": {}
 }

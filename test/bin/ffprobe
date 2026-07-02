@@ -1,0 +1,14 @@
+#!/bin/sh
+# test stub: delegates to the real binary unless armed. Arming needs BOTH the
+# STUB_BIN env (set only on the compose test service) and the /tmp/stub
+# control dir (created per-test by test/download-video.test.ts), so a bun
+# test run inside the dev container can never stub the live dev bot's spawns.
+d=/tmp/stub
+[ "$STUB_BIN" = "1" ] && [ -d "$d" ] || exec /usr/bin/ffprobe "$@"
+echo "$0 $*" >> "$d/args"
+while [ -f "$d/block" ]; do sleep 0.05; done
+[ -f "$d/stderr" ] && cat "$d/stderr" >&2
+[ -f "$d/signal" ] && kill "-$(cat "$d/signal")" $$
+[ -f "$d/stdout" ] && cat "$d/stdout"
+[ -f "$d/exit" ] && exit "$(cat "$d/exit")"
+exit 0

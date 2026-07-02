@@ -6,7 +6,7 @@ RUN apt-get update && \
   # Install yt-dlp in its own world-writable dir so it can self-update at
   # runtime (the container runs as a non-root user)
   mkdir /opt/yt-dlp && \
-  curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /opt/yt-dlp/yt-dlp && \
+  curl -L https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp -o /opt/yt-dlp/yt-dlp && \
   chmod -R 777 /opt/yt-dlp && \
   # Clean up unnecessary files
   apt-get remove -y curl && \
@@ -14,6 +14,9 @@ RUN apt-get update && \
   rm -rf /var/lib/apt/lists/*
 
 ENV PATH="/opt/yt-dlp:$PATH"
+
+# Test stubs shadow the real binaries; they delegate unless /tmp/stub exists
+ENV PATH="/app/test/bin:$PATH"
 
 RUN mkdir /storage && chmod 777 /storage
 
@@ -23,4 +26,6 @@ ENV NODE_ENV=development
 WORKDIR /app
 
 # Make sure deps are installed & start the app in watch mode
-CMD ["sh", "-c", "bun install && bun dev"]
+# exec-form chain: `exec` hands PID 1 to bun so SIGTERM actually reaches the
+# bot (sh would swallow it and the container would hang out the stop grace)
+CMD ["sh", "-c", "bun install && exec bun dev"]

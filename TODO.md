@@ -1,5 +1,0 @@
-- [ ] add tests
-- [ ] more efficient caching / delete files after upload
-- [ ] docker registry for prod image - so that it can be pulled without cloning the repo
-- [ ] Sqlite DB and UI to view jobs and change API keys?
-- [ ] complain to telegram team about lack of vp9 support on macos

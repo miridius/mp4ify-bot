@@ -9,7 +9,7 @@ import {
   spyOn,
 } from 'bun:test';
 import { apiRoot } from '../src/consts';
-import { MockBotApi, withBotApi } from './simulate-bot-api';
+import { GONE_REPLY_ID, MOCK_USER_ID, MockBotApi, withBotApi } from './simulate-bot-api';
 
 beforeEach(() => jest.clearAllMocks());
 afterAll(() => mock.restore());
@@ -140,7 +140,7 @@ describe('MockBotApi', () => {
     const resp = api.handle(url, { method: 'POST', body }) as Response;
     return resp.json().then((json) => {
       expect(json.ok).toBe(false);
-      expect(json.description).toMatch(/same/);
+      expect(json.description).toMatch(/not modified/);
     });
   });
 
@@ -211,6 +211,70 @@ describe('MockBotApi', () => {
     const json = await resp.json();
     expect(json.ok).toBe(false);
     expect(json.description).toMatch(/file is empty/);
+  });
+
+  it('rejects an unknown file_id with the real server wording', async () => {
+    const url = new URL(`${apiRoot}/bot${api.botToken}/sendVideo`);
+    const body = JSON.stringify({
+      chat_id: MOCK_USER_ID,
+      video: 'AgACnever-issued',
+    });
+    const resp = (await api.handle(url, { method: 'POST', body })) as Response;
+    const json = await resp.json();
+    expect(json.ok).toBe(false);
+    expect(json.description).toMatch(/wrong remote file identifier/);
+  });
+
+  it('rejects a reply to the deleted-target sentinel with the real wording', async () => {
+    const url = new URL(`${apiRoot}/bot${api.botToken}/sendMessage`);
+    const body = JSON.stringify({
+      chat_id: MOCK_USER_ID,
+      text: 'x',
+      reply_parameters: { message_id: GONE_REPLY_ID },
+    });
+    const resp = (await api.handle(url, { method: 'POST', body })) as Response;
+    const json = await resp.json();
+    expect(json.ok).toBe(false);
+    expect(json.description).toBe(
+      'Bad Request: message to be replied not found',
+    );
+  });
+
+  it('rejects unclosed HTML with the real parse-entities wording', async () => {
+    const url = new URL(`${apiRoot}/bot${api.botToken}/sendMessage`);
+    const body = JSON.stringify({
+      chat_id: MOCK_USER_ID,
+      text: '<code>unclosed',
+      parse_mode: 'HTML',
+    });
+    const resp = (await api.handle(url, { method: 'POST', body })) as Response;
+    const json = await resp.json();
+    expect(json.ok).toBe(false);
+    expect(json.description).toMatch(
+      /can't parse entities: Can't find end tag corresponding to start tag "code"/,
+    );
+  });
+
+  it('rejects an early unclosed tag even when a later pair balances', async () => {
+    // tally opens vs closes: a last-occurrence lookahead would let the later
+    // <b>ok</b> pair mask the first, still-open <b> (which the real parser
+    // rejects). Log chunks are cumulative appended lines, exactly this shape.
+    const url = new URL(`${apiRoot}/bot${api.botToken}/sendMessage`);
+    const body = JSON.stringify({
+      chat_id: MOCK_USER_ID,
+      text: '<b>broken\n<b>ok</b>',
+      parse_mode: 'HTML',
+    });
+    const resp = (await api.handle(url, { method: 'POST', body })) as Response;
+    const json = await resp.json();
+    expect(json.ok).toBe(false);
+    expect(json.description).toMatch(/Can't find end tag/);
+  });
+
+  it('fails an unmocked fetch loudly instead of hitting the network', async () => {
+    await expect(fetch('https://nope.example/x')).rejects.toThrow(
+      'unmocked fetch in test',
+    );
   });
 
   it('handle unknown command throws', () => {

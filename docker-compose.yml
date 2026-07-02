@@ -33,8 +33,19 @@ services:
       dockerfile: Dockerfile.dev
     env_file:
       - .env.dev
+    environment:
+      # dev and prod share the /storage volume but must NOT share state:
+      # telegram file_ids are per-bot (one bot's cached id is a 400 for the
+      # other), and a shared jobs table would let each bot run the other's jobs
+      - DB_PATH=/storage/mp4ify-dev.db
+      - BLOB_DIR=/storage/blobs-dev
+      - STAGING_DIR=/storage/staging-dev
     stdin_open: true
     tty: true
+    # tini as PID 1: during `bun install` (before the exec hands PID 1 to bun)
+    # sh would otherwise ignore SIGTERM as PID 1 and a stop would burn the
+    # full 5m grace
+    init: true
     volumes:
       - .:/app
       - storage:/storage:rw
@@ -44,6 +55,7 @@ services:
       - /dev/dri:/dev/dri
     user: '${UID:-1000}:${GID:-1000}'
     restart: unless-stopped
+    stop_grace_period: 5m
     depends_on:
       - bot-api
 
@@ -56,6 +68,15 @@ services:
       dockerfile: Dockerfile.prod
     env_file:
       - .env.prod
+    environment:
+      # explicit fresh paths (not the code defaults): the volume's old
+      # /storage/mp4ify.db was written by the DEV bot before the per-bot
+      # split, and its cached telegram file_ids are dev-scoped: adopting it
+      # would 400 every cached send. See the dev service's env for why the
+      # bots must not share state.
+      - DB_PATH=/storage/mp4ify-prod.db
+      - BLOB_DIR=/storage/blobs-prod
+      - STAGING_DIR=/storage/staging-prod
     volumes:
       - ./.prod-video-cache:/app/.video-cache
       - storage:/storage:rw
@@ -65,6 +86,12 @@ services:
       - /dev/dri:/dev/dri
     user: '${UID:-1000}:${GID:-1000}'
     restart: always
+    # On SIGTERM the bot kills its own downloads (they re-run next boot, no
+    # duplicate) and stays alive only to drain in-flight SENDS: the bot-api
+    # server completes a started send even if the bot dies (verified live), so
+    # dying mid-send re-sends on the next boot. The grace must outlast a
+    # worst-case push of a 2GB file to Telegram, not any download.
+    stop_grace_period: 5m
     depends_on:
       - bot-api
 
@@ -76,8 +103,17 @@ services:
       dockerfile: Dockerfile.dev
     env_file:
       - .env.dev
+    environment:
+      # arms the test/bin stubs (they delegate to the real binaries without
+      # it), so a bun test run inside the DEV container can't stub the live
+      # dev bot's own yt-dlp/ffprobe spawns via the shared /tmp/stub toggle
+      - STUB_BIN=1
     stdin_open: true
     tty: true
+    # deliberately NO storage volume: /storage stays image-local (created in
+    # Dockerfile.dev), so test runs on the bare default paths can never touch
+    # the dev/prod bots' shared volume, and their boot sweeps can never
+    # touch a live test run
     volumes:
       - .:/app
     tmpfs:

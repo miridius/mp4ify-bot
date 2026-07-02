@@ -138,3 +138,9 @@ dist
 .beads/
 .runtime/
 .claude/commands/
+
+# SQLite store (lives in the /storage volume in containers; this guards a
+# dev who runs outside one and lands the DB in a repo-relative ./storage)
+mp4ify.db
+mp4ify.db-wal
+mp4ify.db-shm
