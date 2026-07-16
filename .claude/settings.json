@@ -19,5 +19,15 @@
       }
     ]
   },
-  "enabledPlugins": {}
+  "extraKnownMarketplaces": {
+    "miridius-plugins": {
+      "source": {
+        "source": "github",
+        "repo": "miridius/claude-plugins"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "gated-workflow@miridius-plugins": true
+  }
 }

@@ -1,4 +1,4 @@
 {
-  "pre-commit": "./.claude/hooks/commit-gate.sh",
+  "pre-commit": "\"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/marketplaces/miridius-plugins/plugins/gated-workflow/scripts/commit-gate.sh\"",
   "pre-push": "./e2e.sh"
 }
