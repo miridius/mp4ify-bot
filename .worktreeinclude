@@ -1,0 +1,5 @@
+# Gitignored files copied into each worktree Claude Code creates. Every
+# compose service names one of these in env_file.
+.env.dev
+.env.prod
+.env.telegram

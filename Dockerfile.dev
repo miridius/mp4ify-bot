@@ -30,4 +30,4 @@ WORKDIR /app
 # Make sure deps are installed & start the app in watch mode
 # exec-form chain: `exec` hands PID 1 to bun so SIGTERM actually reaches the
 # bot (sh would swallow it and the container would hang out the stop grace)
-CMD ["sh", "-c", "bun install && exec bun dev"]
+CMD ["sh", "-c", "bun install --ignore-scripts && exec bun dev"]
