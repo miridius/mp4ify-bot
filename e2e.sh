@@ -15,4 +15,12 @@ for arg in "$@"; do
     *) echo "unknown argument: $arg" >&2 && exit 64 ;;
   esac
 done
-docker compose run --remove-orphans --rm -T -e TEST_E2E=true -e TEST_E2E_FULL="$FULL" test bun --config=bunfig.e2e.toml test e2e $UPDATE
+# Self-update yt-dlp first (directly: the bot's own updater skips test-stub
+# resolution, and prod self-updates every 5 minutes, so e2e against the
+# image's build-time binary would validate a yt-dlp prod no longer runs).
+# In-place rewrite is safe here: nothing else runs in this container.
+# Then the in-container timeout, like check.sh: a hung run self-kills so
+# --rm can clean up instead of orphaning a 100%-CPU container.
+docker compose run --remove-orphans --rm -T -e TEST_E2E=true -e TEST_E2E_FULL="$FULL" test sh -c "
+  /opt/yt-dlp/yt-dlp --update-to nightly || echo 'yt-dlp self-update failed; testing the image binary' >&2
+  exec timeout -k 30 600 bun --config=bunfig.e2e.toml test e2e $UPDATE"

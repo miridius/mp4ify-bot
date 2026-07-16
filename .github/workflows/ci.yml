@@ -13,12 +13,20 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
       - run: bunx oxlint --deny-warnings
-      # download-video.ts writes its info cache under /storage at import time
+      # db.ts opens /storage/mp4ify.db and blob-store.ts creates /storage/blobs
+      # at import time, so /storage must exist and be writable
       - run: sudo mkdir -p -m 777 /storage
+      # the tests spawn the stub yt-dlp/ffprobe from test/bin (in the dev
+      # image this is baked into PATH by Dockerfile.dev). The stubs' no-control
+      # fallback (exec the real binary) has no target on this runner, so the
+      # one unstubbed spawn fails as exec-127 instead of a real yt-dlp error;
+      # the container suite is the authoritative environment
+      - run: echo "$GITHUB_WORKSPACE/test/bin" >> "$GITHUB_PATH"
       - run: bun test
         env:
           BOT_TOKEN: dummy
           OWNER_ID: '0'
+          STUB_BIN: '1' # arm the test/bin stubs (see test/bin/yt-dlp)
 
   # NOTE: no e2e job. Tried in 9dce83d: reddit/youtube hard-block GitHub's
   # datacenter IPs (403 / auth walls), so e2e only works from residential

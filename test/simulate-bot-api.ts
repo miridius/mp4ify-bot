@@ -29,9 +29,13 @@ const errResp = (description: string) =>
     status: 400,
   });
 
+// the id of the simulated private chat / user, so a test that pre-seeds a job
+// (before the api exists) can address messages to the right chat
+export const MOCK_USER_ID = 1337;
+
 export class MockBotApi {
   private user = {
-    id: 1337,
+    id: MOCK_USER_ID,
     first_name: faker.person.firstName(),
     last_name: faker.person.lastName(),
     username: faker.internet.username(),
@@ -205,10 +209,14 @@ export class MockBotApi {
     chat_id: number;
     text: string;
     reply_markup?: any;
+    reply_parameters?: { message_id: number };
+    parse_mode?: string;
   }) {
     if (data.chat_id !== this.user.id) {
       return errResp('Bad Request: chat not found');
     }
+    const err = this.replyOrParseError(data);
+    if (err) return err;
     if (!data.text) {
       throw new Error('Not yet implemented');
     }
@@ -220,23 +228,67 @@ export class MockBotApi {
     chat_id,
     message_id,
     text,
+    parse_mode,
   }: {
     chat_id: number;
     message_id: number;
     text: string;
+    parse_mode?: string;
   }) {
+    const parseErr = this.replyOrParseError({ text, parse_mode });
+    if (parseErr) return parseErr;
     const message = this.sentMessages[message_id];
     if (!message?.text || message.chat_id !== chat_id) {
       return errResp("Bad Request: message can't be edited");
     }
     if (message.text === text) {
-      return errResp('Bad Request: message text is the same');
+      // real Telegram's wording: LogMessage's not-modified tolerance keys on it
+      return errResp('Bad Request: message is not modified');
     }
     message.text = text;
     return this.messageResponse(
       { ...message, edit_date: this.date++ } as any,
       message_id,
     );
+  }
+
+  // Error wordings the handlers key on, verified against the real bot-api
+  // server (2026-07-05): a reply to GONE_REPLY_ID simulates the target having
+  // been deleted, and an unclosed <tag> in HTML parse_mode is rejected the way
+  // the real parser rejects it.
+  private replyOrParseError(data: {
+    text?: string;
+    parse_mode?: string;
+    reply_parameters?: { message_id: number };
+  }) {
+    if (data.reply_parameters?.message_id === GONE_REPLY_ID) {
+      return errResp('Bad Request: message to be replied not found');
+    }
+    if (data.parse_mode !== 'HTML' || !data.text) return undefined;
+    // One ordered pass, per-tag depth counts: a close that outnumbers its
+    // opens SO FAR is an unexpected end tag; anything left open at the end is
+    // an unclosed start tag. (A count-only tally would pass '</b>x<b>', and a
+    // lookahead would let two opens share one close; the real parser rejects
+    // both, wordings verified live 2026-07-05.)
+    const depth = new Map<string, number>();
+    for (const m of data.text.matchAll(/<(\/?)(\w+)>/g)) {
+      const [, slash, tag] = m as unknown as [string, string, string];
+      const d = (depth.get(tag) ?? 0) + (slash ? -1 : 1);
+      if (d < 0) {
+        const offset = Buffer.byteLength(data.text.slice(0, m.index));
+        return errResp(
+          `Bad Request: can't parse entities: Unexpected end tag at byte offset ${offset}`,
+        );
+      }
+      depth.set(tag, d);
+    }
+    const unclosed = [...depth.entries()].find(([, d]) => d > 0)?.[0];
+    if (unclosed) {
+      return errResp(
+        `Bad Request: can't parse entities: Can't find end tag corresponding to start tag "${unclosed}"`,
+      );
+    }
+    return undefined;
   }
 
   private answerCallbackQuery(data: {
@@ -286,11 +338,19 @@ export class MockBotApi {
     if (chat_id !== this.user.id) {
       return errResp('Bad Request: chat not found');
     }
+    const err = this.replyOrParseError(data);
+    if (err) return err;
     let file_name: string;
     let file_id: string;
     if (this.fileIds.has(video)) {
       file_name = this.fileIds.get(video)!;
       file_id = video;
+    } else if (!video.startsWith('file:')) {
+      // a file_id we never issued (e.g. cached before the server data reset);
+      // wording captured from the real server
+      return errResp(
+        "Bad Request: wrong remote file identifier specified: can't unserialize it. Wrong last symbol",
+      );
     } else {
       file_name = Bun.fileURLToPath(video);
       const file = Bun.file(file_name);
@@ -339,11 +399,45 @@ const mockedFetch = async (url: URL, opts: RequestInit = {}) => {
 
 mock.module('node-fetch', () => ({ default: mockedFetch }));
 
+// The GitHub latest-release pre-check in updateYtdlp is the bot's one direct
+// globalThis.fetch (telegraf goes through node-fetch above); tests must never
+// hit the real API. Suites steer the response via githubMock.
+// reply target that the mock treats as deleted (see replyOrParseError)
+export const GONE_REPLY_ID = 999999;
+
+export const githubMock = {
+  // the tag_name the mocked API reports; null → the call fails (HTTP 500)
+  latestTag: 'TEST-LATEST' as string | null,
+};
+globalThis.fetch = (async (input: any) => {
+  const href =
+    typeof input === 'string' ? input : (input?.url ?? String(input));
+  if (href.startsWith('https://api.github.com/')) {
+    return githubMock.latestTag == null
+      ? new Response('rate limited', { status: 500 })
+      : Response.json({ tag_name: githubMock.latestTag });
+  }
+  // no silent passthrough: any other URL is an unmocked network call that
+  // would flake tests (or leak requests), so fail it loudly instead
+  throw new Error(`unmocked fetch in test: ${href}`);
+}) as typeof fetch;
+
 export type TestFn = (api: MockBotApi) => void | Promise<void>;
 
 export const withBotApi = async (fn: TestFn) => {
   const api = new MockBotApi();
   mockBotApis.add(api);
+  // the bot exits the process on a fatal polling crash (so docker restarts
+  // it in production); under bun test that would kill the whole test runner,
+  // e.g. when a poll in flight during teardown hits "unexpected request"
+  const exitSpy = spyOn(process, 'exit').mockImplementation(((
+    code?: number,
+  ) => {
+    console.error(`suppressed process.exit(${code}) during tests`);
+  }) as any);
+  let testError: unknown;
+  let threw = false;
+  let drained = true;
   try {
     // NOTE: it's very important that the tests do not import the bot until
     // after the mocks are set up, else it doesn't use the mocked fetch.
@@ -359,7 +453,34 @@ export const withBotApi = async (fn: TestFn) => {
       api.flush();
       await Bun.sleep(100);
     }
+  } catch (e) {
+    testError = e;
+    threw = true;
   } finally {
+    // Let any jobs the test left in flight or mid-retry finish against this
+    // test's still-registered mock: otherwise they'd bleed into the next test.
+    // Drain BEFORE stopping: a stopped queue won't run pending or backed-off
+    // jobs, so waiting for idle after stopJobQueue could hang on work that was
+    // progressing fine. A job that genuinely never drains is a hang / missing
+    // await: caught by the timeout reported below.
+    const { resetJobQueue, jobsIdle, stopJobQueue } = await import(
+      '../src/job-queue'
+    );
+    const { waitUntil } = await import('./test-utils');
+    drained = await waitUntil(jobsIdle, 10_000);
+    stopJobQueue();
     mockBotApis.delete(api);
+    exitSpy.mockRestore();
+    resetJobQueue();
+    // wipe the durable store so the next test starts from an empty DB
+    (await import('../src/db')).resetDb();
+  }
+  if (threw) throw testError;
+  // a job still running after the test is a hang or a missing await: fail
+  // loudly instead of silently abandoning it (but never mask fn's own error)
+  if (!drained) {
+    throw new Error(
+      'jobs did not drain within 10s after the test: a job hung or never completed',
+    );
   }
 };
