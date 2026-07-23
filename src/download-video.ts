@@ -68,43 +68,51 @@ export class YtdlpError extends Error {
   }
 }
 
-// Failures a retry can't fix: the URL/extractor genuinely can't be handled. We
-// assume the background updater keeps yt-dlp current (see updateYtdlp), so a
-// fresh yt-dlp that still can't extract a URL means it's unsupported, not stale.
-// Anything not listed (network blips, 5xx, 408/429, a transient fragment
-// 404/403, unknown errors) is retryable: better to retry a lost cause a few
-// times than drop a video a retry would have delivered. The one HTTP
-// exception is a 403/404/410 on the *webpage* fetch: the URL is gone or the
-// site refuses us outright, and neither changes within the retry window
-// (a mid-download segment error isn't; that's why this is scoped to the webpage).
-const PERMANENT_PATTERNS = [
+export type FailureKind = 'not-a-video' | 'unavailable' | 'transient';
+
+const NOT_A_VIDEO_PATTERNS = [
   /unsupported url/i,
+  // the extractor tag is required by each pattern: yt-dlp's f4m downloader emits an
+  // untagged "No media found" for a transient condition that must stay retryable
+  /\[reddit\] .+: no media found/i,
+  /\[instagram\] .+: there is no video in this post/i,
+];
+const PERMANENT_PATTERNS = [
   /unable to extract/i,
   /no video formats found/i,
   /is not a valid url/i,
   /private video/i,
   /video unavailable/i,
+  /empty media response/i,
   /no longer available/i,
   /has been removed/i,
   /members[- ]only/i,
   /sign in to confirm your age/i,
+  // scoped to the *webpage* fetch: a webpage 403/404/410 means the URL is gone
+  // or the site refuses us, but a mid-download segment 403 stays transient
   /unable to download webpage: http error (403|404|410)\b/i,
 ];
-// A signal kill (timeout/OOM) is always transient. For yt-dlp, match only its
-// own `ERROR:` lines, not WARNINGs or echoed page text, which can contain the
-// same phrases and would false-positive a retryable failure.
-export const isPermanentError = (e: unknown): boolean => {
+
+export const classifyFailure = (e: unknown): FailureKind => {
+  if (!(e instanceof YtdlpError) || e.signalled) return 'transient';
+  const errorLines = e.stderr
+    .split('\n')
+    .filter((line) => line.startsWith('ERROR:'));
+  if (errorLines.some((l) => NOT_A_VIDEO_PATTERNS.some((re) => re.test(l))))
+    return 'not-a-video';
+  if (errorLines.some((l) => PERMANENT_PATTERNS.some((re) => re.test(l))))
+    return 'unavailable';
+  return 'transient';
+};
+
+// classifyFailure judges the video; Telegram errors are chat-level (blocked or
+// gone), so they are handled here rather than there.
+export const isPermanentError = (
+  e: unknown,
+  kind: FailureKind = classifyFailure(e),
+): boolean => {
   if (e instanceof YtdlpError) {
-    return (
-      !e.signalled &&
-      e.stderr
-        .split('\n')
-        .some(
-          (line) =>
-            line.startsWith('ERROR:') &&
-            PERMANENT_PATTERNS.some((re) => re.test(line)),
-        )
-    );
+    return kind !== 'transient';
   }
   // Telegram 403 = the user blocked the bot, or it was kicked/deactivated; a
   // few 400s name a gone chat/peer/reply-target. All are permanent-by-policy:
@@ -389,7 +397,7 @@ const execYtdlp = limit(
         stderr += text;
         if (stderr.length > 2 * STDERR_TAIL) {
           // trim on a line boundary so the cut never decapitates the `ERROR:`
-          // prefix that isPermanentError keys on
+          // prefix that classifyFailure keys on
           const nl = stderr.indexOf('\n', stderr.length - STDERR_TAIL);
           stderr = nl === -1 ? stderr.slice(-STDERR_TAIL) : stderr.slice(nl + 1);
         }

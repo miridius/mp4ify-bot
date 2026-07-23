@@ -55,6 +55,12 @@ export class MockBotApi {
   }[] = [];
   public answeredCallbacks: { callback_query_id: string; text?: string }[] = [];
   private date = 0;
+  // chats the bot may send to, mapped to the chat object the real server echoes
+  // back on a send; an unknown chat_id gets its "chat not found"
+  private knownChats = new Map<
+    number,
+    { id: number; type: string; [k: string]: any }
+  >([[MOCK_USER_ID, { ...this.user, type: 'private' }]]);
   private pathPrefix: string;
   private updates: Update[] = [];
   private watchers: Array<() => void> = [];
@@ -88,6 +94,7 @@ export class MockBotApi {
     chatOverride?: { id: number; title?: string; type: string },
   ) {
     const chat = chatOverride ?? { ...this.user, type: 'private' };
+    if (chatOverride) this.knownChats.set(chatOverride.id, chatOverride);
     const message = {
       message_id: this.updates.length,
       from: { ...this.user, is_bot: false, language_code: 'en' },
@@ -190,15 +197,19 @@ export class MockBotApi {
     }
   }
 
+  private chatFor(id: number) {
+    return this.knownChats.get(id);
+  }
+
   private messageResponse(
-    message: { text: string; [key: string]: any },
+    message: { text: string; chat_id: number; [key: string]: any },
     message_id: number,
   ) {
     return okResp({
       ...message,
       message_id,
       from: this.bot,
-      chat: { ...this.user, type: 'private' },
+      chat: this.chatFor(message.chat_id),
       date: this.date++,
       text: message.text.replaceAll(/<[^>]+>/g, ''), // strip html tags
       entities: [], // not needed for mocking
@@ -212,7 +223,7 @@ export class MockBotApi {
     reply_parameters?: { message_id: number };
     parse_mode?: string;
   }) {
-    if (data.chat_id !== this.user.id) {
+    if (!this.knownChats.has(data.chat_id)) {
       return errResp('Bad Request: chat not found');
     }
     const err = this.replyOrParseError(data);
@@ -335,7 +346,7 @@ export class MockBotApi {
     reply_parameters?: any;
   }) {
     const { chat_id, caption, video, reply_parameters, ...extra } = data;
-    if (chat_id !== this.user.id) {
+    if (!this.knownChats.has(chat_id)) {
       return errResp('Bad Request: chat not found');
     }
     const err = this.replyOrParseError(data);
@@ -375,7 +386,7 @@ export class MockBotApi {
       },
       message_id: this.sentMessages.length,
       from: this.bot,
-      chat: { ...this.user, type: 'private' },
+      chat: this.chatFor(chat_id),
       date: this.date++,
       reply_parameters,
       caption,

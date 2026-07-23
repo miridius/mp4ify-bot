@@ -10,6 +10,7 @@ import {
 import { db } from './db';
 import {
   calcDuration,
+  classifyFailure,
   downloadVideo,
   getInfo,
   isDownloaded,
@@ -21,6 +22,7 @@ import {
   tooLargeMessage,
   tooLargeToSend,
   YtdlpError,
+  type FailureKind,
   type VideoInfo,
 } from './download-video';
 import {
@@ -192,6 +194,23 @@ export const processJob = async (
     ? processUrlJob(telegram, job, attempt)
     : processConfirmedJob(telegram, job, attempt);
 
+// a link to one of these is always an explicit ask, so a terminal failure earns
+// its reason even in a group
+const ALWAYS_RESPOND_HOSTS = ['instagram.com', 'reddit.com', 'redd.it'];
+const isAlwaysRespondHost = (url: string): boolean => {
+  let host: string;
+  try {
+    // strip one trailing dot: a root-dot FQDN (reddit.com.) is the same host
+    host = new URL(url).hostname.replace(/\.$/, '');
+  } catch {
+    return false; // an unparseable URL is simply not whitelisted
+  }
+  return ALWAYS_RESPOND_HOSTS.some((h) => host === h || host.endsWith('.' + h));
+};
+
+const isTerminal = (e: unknown, attempt: number, kind?: FailureKind) =>
+  isPermanentError(e, kind) || attempt >= MAX_ATTEMPTS;
+
 const processUrlJob = async (
   telegram: Telegram,
   job: UrlJob,
@@ -301,7 +320,26 @@ const processUrlJob = async (
     // yt-dlp failures: after a send failure the info is fine, and keeping it
     // guarantees the retry maps to the same blob key and reuses the bytes.
     if (info && e instanceof YtdlpError) removeCachedInfo(info);
-    await reportJobFailure(job, log, e, attempt, '\n');
+    const kind = classifyFailure(e);
+    const terminal = isTerminal(e, attempt, kind);
+    // product policy: a not-a-video post (photo/article) never draws a group
+    // reply, whatever the host
+    const tellGroup =
+      chatType !== 'private' &&
+      terminal &&
+      kind !== 'not-a-video' &&
+      (info != null || isAlwaysRespondHost(url));
+    const reportLog = tellGroup
+      ? new LogMessage(telegram, logDestFor(job))
+      : log;
+    await reportJobFailure(
+      job,
+      reportLog,
+      e,
+      attempt,
+      terminal,
+      tellGroup ? '' : '\n',
+    );
     // reached only on a terminal failure (reportJobFailure rethrows retryable
     // ones, whose retry reuses the blob; a parked confirmation returned above).
     // Release the bytes this dead job downloaded.
@@ -369,7 +407,8 @@ const processConfirmedJob = async (
     // evict likely-expired cached info so the NEXT request re-scrapes; this
     // job's own retries can't benefit (the payload pins its info snapshot)
     if (e instanceof YtdlpError) removeCachedInfo(info);
-    await reportJobFailure(job, report(), e, attempt);
+    const terminal = isTerminal(e, attempt);
+    await reportJobFailure(job, report(), e, attempt, terminal);
     // terminal failure (retryable ones rethrew above and will reuse the blob):
     // release what this dead job owns
     await releaseAbandoned(info);
@@ -390,10 +429,11 @@ const reportJobFailure = async (
   log: LogMessage,
   e: any,
   attempt: number,
+  terminal: boolean,
   prefix = '',
 ) => {
   console.error(e); // log first: reporting to the user can itself fail
-  const retry = !isPermanentError(e) && attempt < MAX_ATTEMPTS;
+  const retry = !terminal;
   // The retry notice skips the reason (the streamed stderr above already shows
   // it, and the run isn't over) and trails a blank line to set off the next
   // attempt; the terminal report carries the reason. Groups see only that
