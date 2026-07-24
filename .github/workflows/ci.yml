@@ -13,6 +13,8 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
       - run: bunx oxlint --deny-warnings
+      # same dash gate as the local hook, for pushes that bypassed it
+      - run: ./scripts/check-dashes.sh
       # db.ts opens /storage/mp4ify.db and blob-store.ts creates /storage/blobs
       # at import time, so /storage must exist and be writable
       - run: sudo mkdir -p -m 777 /storage

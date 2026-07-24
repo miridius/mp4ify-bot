@@ -13,6 +13,8 @@ else
   exit 1
 fi
 
+./scripts/check-dashes.sh
+
 # `timeout` runs inside the container, so a hung/non-exiting `bun test` (a leaked
 # handle, a runaway loop) self-kills and `--rm` cleans up, instead of leaving an
 # orphaned container pinning a CPU. -k force-kills if SIGTERM is ignored.
