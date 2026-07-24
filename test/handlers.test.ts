@@ -57,6 +57,35 @@ spyOn(logMessage, 'LogMessage').mockReturnValue(mockLog as never);
 spyOn(logMessage, 'logFor').mockImplementation((_tg, chatType) =>
   chatType === 'private' ? (mockLog as never) : new logMessage.NoLog(),
 );
+const lastAppend = () => mockLog.append.mock.calls.map(([s]) => s).at(-1);
+
+const expectNoGroupReport = () => {
+  expect(logMessage.LogMessage).not.toHaveBeenCalled();
+  expect(mockLog.append).not.toHaveBeenCalled();
+};
+
+const expectGroupSilent = (ctx: any) => {
+  expectNoGroupReport();
+  expect(ctx.telegram.sendMessage).not.toHaveBeenCalled();
+};
+
+const expectGroupReport = (replyTo: number) => {
+  expect(logMessage.LogMessage).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.objectContaining({ replyTo }),
+  );
+  expect(lastAppend()).toMatch(/^💥 <b>Download failed<\/b>:/);
+};
+
+const urlJob = {
+  kind: 'url' as const,
+  url: 'https://example.com',
+  chatId: 1,
+  chatType: 'private',
+  messageId: 2,
+  fromId: 3,
+  verbose: false,
+};
 
 // run enqueued jobs inline against the invoking ctx's telegram client, so
 // the handler tests below exercise the full enqueue→process flow
@@ -1207,16 +1236,6 @@ describe('confirmed job oversize report', () => {
 });
 
 describe('job retry classification', () => {
-  const urlJob = {
-    kind: 'url',
-    url: 'https://example.com',
-    chatId: 1,
-    chatType: 'private',
-    messageId: 2,
-    fromId: 3,
-    verbose: false,
-  };
-  const lastAppend = () => mockLog.append.mock.calls.map(([s]) => s).at(-1);
   beforeEach(() => spyMock(console, 'error'));
 
   it('a shutdown abort rethrows silently, stashing the log pointer for the re-run', async () => {
@@ -1455,5 +1474,166 @@ describe('job retry classification', () => {
       '💥 <b>Download failed</b>: network fail', // the terminal line still lands
     );
     mockDownloadVideo.mockResolvedValue('downloaded');
+  });
+});
+
+describe('group terminal-failure feedback (issues #14/#17)', () => {
+  beforeEach(() => {
+    spyMock(console, 'error');
+    // no duration field: these must not route through the long-video gate
+    mockGetInfo.mockImplementation(
+      memoize(
+        mock(async (_log: any, url: string) => ({
+          webpage_url: url,
+          title: 'Test Video',
+          filename: 'video.mp4',
+        })),
+      ),
+    );
+  });
+  const ytdlp = (stderr: string) =>
+    new downloadVideo.YtdlpError('yt-dlp exited with code 1', stderr);
+
+  const groupUrlJob = (url: string) => ({
+    ...urlJob,
+    url,
+    chatId: -100,
+    chatType: 'group',
+  });
+
+  const groupCtx = (url: string) => {
+    const ctx = createMockMessageCtx(false, { chat: groupChat });
+    const msg = (ctx as any).message;
+    msg.text = url;
+    msg.entities = [{ type: 'url', offset: 0, length: url.length }];
+    return ctx;
+  };
+
+  it('gives a not-a-video error exactly one attempt (no retry) in private chat', async () => {
+    const privateJob = { ...urlJob, url: 'https://reddit.com/r/x/comments/y' };
+    mockGetInfo.mockRejectedValueOnce(ytdlp('ERROR: [Reddit] 92dd8: No media found'));
+    await expect(
+      processJob({} as any, privateJob as any, 1),
+    ).resolves.toBeUndefined();
+    expect(lastAppend()).toMatch(/^\n💥 <b>Download failed<\/b>:/);
+    expect(mockLog.append).not.toHaveBeenCalledWith(
+      expect.stringContaining('retrying'),
+    );
+  });
+
+  it('stays silent on a getInfo failure for a non-whitelisted host', async () => {
+    const ctx = groupCtx('https://news.example.com/article');
+    mockGetInfo.mockRejectedValueOnce(ytdlp('ERROR: Video unavailable'));
+    await handle(ctx as any);
+    expectGroupSilent(ctx);
+  });
+
+  it('reports one 💥 for a terminal non-not-a-video Instagram scrape failure', async () => {
+    mockGetInfo.mockRejectedValueOnce(
+      ytdlp(
+        'ERROR: [Instagram] xyz: Requested content is not available, rate-limit reached or login required',
+      ),
+    );
+    await expect(
+      processJob({} as any, groupUrlJob('https://www.instagram.com/p/xyz'), 3),
+    ).resolves.toBeUndefined();
+    expectGroupReport(2);
+  });
+
+  it('whitelists a trailing-dot host (reddit.com.) for the terminal report', async () => {
+    mockGetInfo.mockRejectedValueOnce(ytdlp('ERROR: Video unavailable'));
+    await expect(
+      processJob(
+        {} as any,
+        groupUrlJob('https://reddit.com./r/x/comments/y'),
+        1,
+      ),
+    ).resolves.toBeUndefined();
+    expectGroupReport(2);
+  });
+
+  it.each([
+    [
+      'https://www.instagram.com/p/DbHhjdBJT9O',
+      'ERROR: [Instagram] DbHhjdBJT9O: There is no video in this post',
+    ],
+    ['https://www.reddit.com/r/x/comments/y', 'ERROR: [Reddit] 92dd8: No media found'],
+  ])('stays silent for a whitelisted not-a-video (%j)', async (url, stderr) => {
+    const ctx = groupCtx(url);
+    mockGetInfo.mockRejectedValueOnce(ytdlp(stderr));
+    await handle(ctx as any);
+    expectGroupSilent(ctx);
+  });
+
+  it('treats an unparseable URL as not whitelisted (stays silent)', async () => {
+    mockGetInfo.mockRejectedValueOnce(ytdlp('ERROR: Video unavailable'));
+    const job = { ...groupUrlJob('https://') };
+    await expect(processJob({} as any, job as any, 1)).resolves.toBeUndefined();
+    expectNoGroupReport();
+  });
+
+  it('reports one 💥 when info resolved then the download fails permanently', async () => {
+    const ctx = groupCtx('https://example.com/video');
+    mockDownloadVideo.mockRejectedValueOnce(ytdlp('ERROR: Video unavailable'));
+    await handle(ctx as any);
+    expectGroupReport(1);
+  });
+
+  it('stays silent when info resolved but the download fails not-a-video', async () => {
+    const ctx = groupCtx('https://example.com/video');
+    mockDownloadVideo.mockRejectedValueOnce(
+      ytdlp('ERROR: Unsupported URL: https://example.com/video/sub'),
+    );
+    await handle(ctx as any);
+    expectGroupSilent(ctx);
+  });
+
+  it('stays silent through transient retries, then reports one terminal 💥', async () => {
+    const job = groupUrlJob('https://example.com/video');
+    // one reject per processJob call this test drives (attempts 1 and 3), then
+    // the once-queue empties back to the base resolved value: no tail reset, so
+    // no rejecting mock leaks into a later test even if an assertion fails.
+    // Lazy throw, not mockRejectedValueOnce: bun test's runner flags the
+    // eagerly-built queued rejection as an unhandled error across the await
+    // gap between the two processJob calls (observed; plain bun scripts don't)
+    const fail = async () => {
+      throw ytdlp('ERROR: Unable to download webpage: HTTP Error 503');
+    };
+    mockDownloadVideo.mockImplementationOnce(fail).mockImplementationOnce(fail);
+    await expect(processJob({} as any, { ...job }, 1)).rejects.toThrow();
+    expectNoGroupReport();
+    await expect(processJob({} as any, { ...job }, 3)).resolves.toBeUndefined();
+    expect(lastAppend()).toMatch(/^💥 <b>Download failed<\/b>:/);
+  });
+
+  it('reports one 💥 when the send itself fails terminally (issue #17)', async () => {
+    const job = groupUrlJob('https://example.com/video');
+    // one reject per processJob call this test drives (attempts 1 and 3), then
+    // the once-queue empties back to the base resolved value: no tail reset, and
+    // no rejecting mock leaks into a later test even if an assertion fails
+    // (lazy throw: see the transient-retries test above)
+    const fail = async () => {
+      throw new Error('fetch failed');
+    };
+    mockSendVideo.mockImplementationOnce(fail).mockImplementationOnce(fail);
+    await expect(processJob({} as any, { ...job }, 1)).rejects.toThrow(
+      'fetch failed',
+    );
+    expectNoGroupReport();
+    await expect(processJob({} as any, { ...job }, 3)).resolves.toBeUndefined();
+    expectGroupReport(2);
+    expect(mockLog.append).toHaveBeenCalledTimes(1);
+  });
+
+  it('stays silent on a too-large estimate in a group (no report leaks in)', async () => {
+    const ctx = groupCtx('https://www.instagram.com/p/huge');
+    mockGetInfo.mockResolvedValueOnce({
+      webpage_url: 'https://www.instagram.com/p/huge',
+      title: 'Huge',
+      filename: 'huge.mp4',
+      filesize: 3000 * 1024 * 1024,
+    } as any);
+    await handle(ctx as any);
+    expectGroupSilent(ctx);
   });
 });

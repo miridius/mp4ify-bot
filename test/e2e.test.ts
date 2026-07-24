@@ -28,6 +28,9 @@ spyMock(console, 'table');
 
 const hiMessage = { text: 'hi' };
 
+const isFailureReport = (m: { text?: string }) =>
+  !!m.text && m.text.includes('💥 <b>Download failed</b>:');
+
 const urlMessage = (url: string, verbose?: boolean) => ({
   text: verbose ? `/verbose ${url}` : url,
   entities: [
@@ -100,9 +103,7 @@ describe.if(!!Bun.env.TEST_E2E)('message handler', async () => {
           waitUntil(
             () =>
               api.sentMessages.length > 1 ||
-              api.sentMessages.some(({ text }) =>
-                text?.includes('💥 <b>Download failed</b>:'),
-              ),
+              api.sentMessages.some(isFailureReport),
             ms,
           );
 
@@ -126,6 +127,58 @@ describe.if(!!Bun.env.TEST_E2E)('message handler', async () => {
         expect(scrub(api.sentMessages)).toMatchSnapshot('disk cache');
       }),
     40_000,
+  );
+
+  const groupChat = { id: -1000000000001, title: 'Test Group', type: 'supergroup' };
+
+  it(
+    'stays silent for a not-a-video link in a group',
+    () =>
+      withBotApi(async (api) => {
+        clearInMemoryCache();
+        api.sendTextMessageToBot(
+          urlMessage('https://www.instagram.com/p/DbHhjdBJT9O/'),
+          groupChat,
+        );
+        // gate on the job actually starting, else a never-started job passes this
+        // silence test vacuously
+        expect(await waitUntil(() => !jobsIdle(), 15_000)).toBe(true);
+        await waitUntil(jobsIdle, 25_000);
+        // a rate-limited scrape classifies 'unavailable' (whitelisted host =>
+        // one terminal report), so tolerate that live-scrape degradation the
+        // same way the download tests tolerate a 💥
+        if (api.sentMessages.length) {
+          const reports = api.sentMessages.filter(isFailureReport);
+          expect(reports).toHaveLength(1);
+          // pin the tolerated report to rate-limit/login wording: a broken
+          // not-a-video gate would instead report "There is no video in this
+          // post" and must still fail this test
+          expect(reports[0]!.text).toMatch(/rate.?limit|login required|empty media response/i);
+        } else {
+          expect(api.sentMessages).toEqual([]);
+        }
+      }),
+    45_000,
+  );
+
+  it(
+    'reports one 💥 for a whitelisted failing link in a group',
+    () =>
+      withBotApi(async (api) => {
+        setRetryBaseMs(1); // don't sleep the real backoff between attempts
+        clearInMemoryCache();
+        api.sendTextMessageToBot(
+          urlMessage('https://www.instagram.com/reel/C0aaaaaaaaa/'),
+          groupChat,
+        );
+        await waitUntil(() => api.sentMessages.some(isFailureReport), 60_000);
+        const reports = api.sentMessages.filter(isFailureReport);
+        expect(reports).toHaveLength(1);
+        expect(reports[0]!.chat_id).toBe(groupChat.id);
+        // id 0 is the link message: the first update in this fresh api
+        expect((reports[0] as any).reply_parameters?.message_id).toBe(0);
+      }),
+    90_000,
   );
 });
 

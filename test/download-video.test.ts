@@ -42,6 +42,7 @@ import {
 } from './test-utils';
 import {
   abortDownloads,
+  classifyFailure,
   downloadVideo,
   getInfo,
   isPermanentError,
@@ -838,6 +839,67 @@ describe('isPermanentError', () => {
         },
       }),
     ).toBe(false);
+  });
+});
+
+describe('classifyFailure', () => {
+  it('classifies an Instagram empty-media response as unavailable', () => {
+    expect(
+      classifyFailure(
+        new YtdlpError(
+          'failed',
+          'ERROR: [Instagram] Da4FbMds5BU: Instagram sent an empty media response. Check if this post is accessible in your browser without being logged-in.',
+        ),
+      ),
+    ).toBe('unavailable');
+  });
+
+  it.each([
+    'ERROR: Unsupported URL: https://example.com/article',
+    'ERROR: [Reddit] 92dd8: No media found',
+    'ERROR: [Instagram] DbHhjdBJT9O: There is no video in this post',
+  ])('classifies %j as not-a-video', (stderr) => {
+    expect(classifyFailure(new YtdlpError('failed', stderr))).toBe(
+      'not-a-video',
+    );
+  });
+
+  it('keeps the f4m downloader\'s untagged "No media found" retryable', () => {
+    expect(
+      classifyFailure(new YtdlpError('failed', 'ERROR: No media found')),
+    ).toBe('transient');
+  });
+
+  it.each([
+    'ERROR: Private video. Sign in if you have access',
+    'ERROR: Unable to download webpage: HTTP Error 410: Gone',
+  ])('classifies %j as unavailable', (stderr) => {
+    expect(classifyFailure(new YtdlpError('failed', stderr))).toBe('unavailable');
+  });
+
+  it('not-a-video wins over unavailable when both patterns are present', () => {
+    const stderr =
+      'ERROR: Video unavailable\nERROR: Unsupported URL: https://x';
+    expect(classifyFailure(new YtdlpError('failed', stderr))).toBe(
+      'not-a-video',
+    );
+  });
+
+  it('classifies an Instagram rate-limit as transient (not unavailable)', () => {
+    expect(
+      classifyFailure(
+        new YtdlpError(
+          'failed',
+          'ERROR: [Instagram] xyz: Requested content is not available, rate-limit reached or login required',
+        ),
+      ),
+    ).toBe('transient');
+  });
+
+  it('diverges from isPermanentError on a Telegram permanent error', () => {
+    const e = telegramError(403, 'Forbidden: bot was blocked by the user');
+    expect(classifyFailure(e)).toBe('transient');
+    expect(isPermanentError(e)).toBe(true);
   });
 });
 

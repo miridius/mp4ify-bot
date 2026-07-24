@@ -305,11 +305,8 @@ export class NoLog extends LogMessage {
   async flush() {}
 }
 
-// The group-silence policy, in one place: url jobs log progress and failures to
-// private chats only; a group would be spammed for every link anyone posts,
-// so group destinations get a NoLog. (Confirmed jobs are the deliberate
-// exception: an explicit confirm earns a group reply, so processConfirmedJob
-// constructs its report LogMessage directly.)
+// url-job progress logs to private chats only: a group would be spammed for
+// every link posted. Terminal failure reports come from their own call sites.
 export const logFor = (
   telegram: Telegram,
   chatType: string,
