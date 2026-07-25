@@ -21,7 +21,8 @@
     "dev": "bun --watch .",
     "start": "bun .",
     "lint": "oxlint --deny-warnings --fix",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "prepare": "test ! -d .git || simple-git-hooks"
   },
   "prettier": {
     "singleQuote": true

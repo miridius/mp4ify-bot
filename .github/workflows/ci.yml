@@ -11,7 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
-      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile --ignore-scripts
       - run: bunx oxlint --deny-warnings
       # same dash gate as the local hook, for pushes that bypassed it
       - run: ./scripts/check-dashes.sh
