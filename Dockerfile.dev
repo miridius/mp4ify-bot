@@ -2,14 +2,16 @@ FROM oven/bun
 
 # Install yt-dlp dependencies
 RUN apt-get update && \
-  apt-get install -y python3 ffmpeg curl && \
+  apt-get install -y python3 python3-pip ffmpeg curl && \
+  # no venv: yt-dlp runs on the system python, so its deps must live there
+  pip install --no-cache-dir --break-system-packages curl-cffi && \
   # Install yt-dlp in its own world-writable dir so it can self-update at
   # runtime (the container runs as a non-root user)
   mkdir /opt/yt-dlp && \
   curl -L https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp -o /opt/yt-dlp/yt-dlp && \
   chmod -R 777 /opt/yt-dlp && \
   # Clean up unnecessary files
-  apt-get remove -y curl && \
+  apt-get remove -y curl python3-pip && \
   apt-get clean && \
   rm -rf /var/lib/apt/lists/*
 
