@@ -7,7 +7,21 @@ d=/tmp/stub
 [ "$STUB_BIN" = "1" ] && [ -d "$d" ] || exec /opt/yt-dlp/yt-dlp "$@"
 echo "$0 $*" >> "$d/args"
 while [ -f "$d/block" ]; do sleep 0.05; done
-[ -f "$d/stderr" ] && cat "$d/stderr" >&2
+# stderr_split holds comma-separated byte offsets: deliver stderr as one write
+# per segment, far enough apart that the reader gets each as its own chunk
+if [ -f "$d/stderr" ]; then
+  if [ -f "$d/stderr_split" ]; then
+    prev=0
+    for n in $(tr ',' ' ' < "$d/stderr_split"); do
+      tail -c "+$((prev + 1))" "$d/stderr" | head -c "$((n - prev))" >&2
+      sleep 0.2
+      prev=$n
+    done
+    tail -c "+$((prev + 1))" "$d/stderr" >&2
+  else
+    cat "$d/stderr" >&2
+  fi
+fi
 # the real binary streams entries as it resolves them, so a kill lands on a
 # run that has already emitted some
 [ -f "$d/stdout" ] && cat "$d/stdout"
