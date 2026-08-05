@@ -12,6 +12,11 @@ const envDir = Bun.env.BLOB_DIR || '/storage/blobs/';
 const BLOB_DIR = envDir.endsWith('/') ? envDir : `${envDir}/`;
 await mkdir(BLOB_DIR, { recursive: true });
 
+// the generic extractor's id is just the URL basename: two hosts' /video.mp4
+// both yield id 'video'
+const hasVideoIdentity = (info: VideoInfo): boolean =>
+  !!(info.extractor && info.id && info.extractor !== 'generic');
+
 // A blob's key is yt-dlp's stable per-video identity, extractor:id:format
 // (known from --dump-json before the download), so a blob we already have is found
 // without re-downloading, and two URLs for one video resolve to the same key.
@@ -21,15 +26,20 @@ await mkdir(BLOB_DIR, { recursive: true });
 // with colliding titles would otherwise share a key (and, worse, the first one's
 // cached file_id). This is the raw DB key; blobName turns it into the on-disk
 // filename.
-// the generic extractor's id is just the URL basename (verified against the
-// real yt-dlp: two hosts' /video.mp4 both yield id 'video'), so it is NOT an
-// identity; those go through the URL-salted fallback like identity-less infos
 export const blobKey = (info: VideoInfo): string =>
-  info.extractor && info.id && info.extractor !== 'generic'
+  hasVideoIdentity(info)
     ? `${info.extractor}:${info.id}:${info.format_id ?? ''}`
     : info.webpage_url
       ? `${info.filename}:${info.webpage_url}`
       : info.filename;
+
+// The fallback cannot reuse blobKey's filename, which carries the format id (see
+// yt-dlp.conf's --output); yt-dlp suffixes " (N)" to the titles of one page's
+// entries, so title still separates them.
+export const videoKey = (info: VideoInfo): string =>
+  hasVideoIdentity(info)
+    ? `${info.extractor}:${info.id}`
+    : `${info.title}:${info.id ?? ''}:${info.webpage_url ?? ''}`;
 
 const extOf = (info: VideoInfo) => {
   const e =

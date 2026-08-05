@@ -8,8 +8,10 @@ d=/tmp/stub
 echo "$0 $*" >> "$d/args"
 while [ -f "$d/block" ]; do sleep 0.05; done
 [ -f "$d/stderr" ] && cat "$d/stderr" >&2
-[ -f "$d/signal" ] && kill "-$(cat "$d/signal")" $$
+# the real binary streams entries as it resolves them, so a kill lands on a
+# run that has already emitted some
 [ -f "$d/stdout" ] && cat "$d/stdout"
+[ -f "$d/signal" ] && kill "-$(cat "$d/signal")" $$
 # simulate producing the downloaded file at the path named in the outfile
 # control, honoring a `--paths home:<dir>` arg the way the real binary does
 # (the output lands under that dir)

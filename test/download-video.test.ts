@@ -45,10 +45,12 @@ import {
   classifyFailure,
   downloadVideo,
   getInfo,
+  getInfos,
   isPermanentError,
   liveYtdlpSize,
   probeDuration,
   removeCachedInfo,
+  removeCachedUrl,
   resetShutdown,
   sendInfo,
   sendVideo,
@@ -79,7 +81,7 @@ afterAll(async () => {
 beforeEach(async () => {
   jest.clearAllMocks();
   resetDb();
-  getInfo.cache.clear();
+  getInfos.cache.clear();
   downloadVideo.cache.clear();
   await rm(STUB_DIR, { recursive: true, force: true });
   await mkdir(STUB_DIR, { recursive: true });
@@ -374,7 +376,7 @@ describe('getInfo', () => {
     const info = await getInfo(log as any, url, true); // verbose
 
     expect(info).toEqual(urlInfo); // freshly scraped, not the cached row
-    expect(await stubArgs()).toEndWith(`yt-dlp ${url} --verbose --dump-json`);
+    expect(await stubArgs()).toEndWith(`yt-dlp ${url} --verbose --dump-json --no-playlist --playlist-end 50`);
   });
 
   it('scrapes and caches when not in the DB', async () => {
@@ -383,9 +385,9 @@ describe('getInfo', () => {
     expect(info).toEqual(urlInfo);
     expect(appendedText()).toBe(`\u{1f9d0} <b>Scraping</b> ${url}...`);
     expect(await stubArgs()).toEndWith(
-      `yt-dlp ${url} --no-warnings --dump-json`,
+      `yt-dlp ${url} --no-warnings --dump-json --no-playlist --playlist-end 50`,
     );
-    expect(JSON.parse(infoRow(url)!.info)).toEqual(urlInfo);
+    expect(JSON.parse(infoRow(url)!.info)).toEqual([urlInfo]);
   });
 
   it('caches the canonical url too, so an alias request skips the scrape', async () => {
@@ -398,7 +400,7 @@ describe('getInfo', () => {
     expect(infoCount()).toBe(2); // alias + canonical, no duplicate
 
     // a later request for the canonical hits the DB, not the scraper
-    getInfo.cache.clear(); // drop the in-memory memo to force a DB read
+    getInfos.cache.clear(); // drop the in-memory memo to force a DB read
     await stub({ stdout: 'not valid json: must not be scraped' });
     const again = await getInfo(log as any, canon);
     expect(again.webpage_url).toBe(canon);
@@ -413,14 +415,286 @@ describe('getInfo', () => {
     const info = await getInfo(log as any, url);
 
     expect(info.filename).toBe(VideoInfo.filename); // the fresh scrape
-    expect(infoRow(url)!.info).toBe(JSON.stringify(urlInfo)); // row refreshed
+    expect(infoRow(url)!.info).toBe(JSON.stringify([urlInfo])); // row refreshed
+  });
+
+  it('returns every entry of a multi-video post', async () => {
+    const entries = [
+      { ...VideoInfo, id: 'a', webpage_url: url },
+      { ...VideoInfo, id: 'b', webpage_url: url },
+      { ...VideoInfo, id: 'c', webpage_url: url },
+    ];
+    await stub({
+      stdout: entries.map((e) => `${JSON.stringify(e)}\n`).join(''),
+    });
+
+    expect(await getInfos(log as any, url)).toEqual(entries);
+    expect(infoCount()).toBe(1);
+    expect(JSON.parse(infoRow(url)!.info)).toEqual(entries);
+  });
+
+  it('serves every entry back out of the DB cache', async () => {
+    const entries = ['a', 'b', 'c'].map((id) => ({
+      ...VideoInfo,
+      id,
+      webpage_url: url,
+    }));
+    await stub({ stdout: entries.map((e) => JSON.stringify(e)).join('\n') });
+    await getInfos(log as any, url);
+
+    getInfos.cache.clear();
+    await stub({ stdout: 'not valid json: must not be scraped' });
+
+    expect(await getInfos(log as any, url)).toEqual(entries);
+  });
+
+  it('returns the FIRST entry from getInfo', async () => {
+    await stub({
+      stdout: [
+        JSON.stringify({ ...VideoInfo, id: 'first', webpage_url: url }),
+        JSON.stringify({ ...VideoInfo, id: 'second', webpage_url: url }),
+      ].join('\n'),
+    });
+
+    expect((await getInfo(log as any, url)).id).toBe('first');
+  });
+
+  it('aliases a multi-entry post to the URL all its entries share', async () => {
+    const canon = 'https://test.invalid/post';
+    const entries = ['a', 'b'].map((id) => ({
+      ...VideoInfo,
+      id,
+      webpage_url: canon,
+    }));
+    await stub({ stdout: entries.map((e) => JSON.stringify(e)).join('\n') });
+
+    await getInfos(log as any, url);
+
+    expect(JSON.parse(infoRow(canon)!.info)).toEqual(entries);
+  });
+
+  it('caches a salvaged scrape like any other', async () => {
+    const video = { ...VideoInfo, id: 'v1', webpage_url: url };
+    await stub({
+      exit: '1',
+      stdout: JSON.stringify(video),
+      stderr: 'ERROR: [Instagram] photo1: No video formats found!\n',
+    });
+    await getInfos(log as any, url);
+
+    getInfos.cache.clear();
+    await stub({ exit: '0', stdout: 'not valid json: must not be scraped' });
+
+    expect(await getInfos(log as any, url)).toEqual([video]);
+  });
+
+  it('removeCachedUrl drops a row an entry could not name itself', async () => {
+    await stub({
+      stdout: [
+        JSON.stringify({ ...VideoInfo, id: '1', webpage_url: 'https://a' }),
+        JSON.stringify({ ...VideoInfo, id: '2', webpage_url: 'https://b' }),
+      ].join('\n'),
+    });
+    await getInfos(log as any, url);
+    expect(infoCount()).toBe(1);
+
+    removeCachedUrl(url);
+
+    expect(infoCount()).toBe(0);
+  });
+
+  it('removeCachedInfo evicts a playlist row by the requested url', async () => {
+    const entry = { ...VideoInfo, id: '2', webpage_url: 'https://b' };
+    await stub({
+      stdout: [
+        JSON.stringify({ ...VideoInfo, id: '1', webpage_url: 'https://a' }),
+        JSON.stringify(entry),
+      ].join('\n'),
+    });
+    await getInfos(log as any, url);
+
+    removeCachedInfo(entry, url);
+
+    expect(infoCount()).toBe(0);
+  });
+
+  it('does not salvage a run whose items failed for any other reason', async () => {
+    await stub({
+      exit: '1',
+      stdout: JSON.stringify({ ...VideoInfo, id: 'v1', webpage_url: url }),
+      stderr:
+        'ERROR: [Instagram] photo1: No video formats found!\n' +
+        'ERROR: [Instagram] v2: Requested content is not available, rate-limit reached or login required\n',
+    });
+
+    await expect(getInfos(log as any, url)).rejects.toBeInstanceOf(YtdlpError);
+    expect(infoCount()).toBe(0);
+  });
+
+  it('does not salvage a failure whose reason is not in the retained stderr', async () => {
+    await stub({
+      exit: '1',
+      stdout: JSON.stringify({ ...VideoInfo, id: 'v1', webpage_url: url }),
+      stderr: 'a progress line that crowded the errors out\n',
+    });
+
+    await expect(getInfos(log as any, url)).rejects.toBeInstanceOf(YtdlpError);
+    expect(infoCount()).toBe(0);
+  });
+
+  it('keeps the salvage payload out of the logged error', async () => {
+    const e = new YtdlpError('failed', 'stderr', false, 'x'.repeat(1000));
+    expect(Object.keys(e)).not.toContain('stdout');
+    expect(e.stdout).toHaveLength(1000);
+  });
+
+  it('does not salvage the output of a timed-out run', async () => {
+    await stub({
+      signal: 'TERM',
+      stdout: JSON.stringify({ ...VideoInfo, id: 'v1', webpage_url: url }),
+      // photo-item errors too, so only the signal itself can refuse the salvage
+      stderr: 'ERROR: [Instagram] photo1: No video formats found!\n',
+    });
+
+    const err = await getInfos(log as any, url).catch((e) => e);
+    expect(err).toBeInstanceOf(YtdlpError);
+    // else this passes on the empty-stdout guard instead of the signalled one
+    expect(err.stdout).not.toBe('');
+  });
+
+  it('fills in the requested URL for an entry that carries none', async () => {
+    await stub({
+      stdout: ['a', 'b']
+        .map((id) => JSON.stringify({ ...VideoInfo, id, webpage_url: undefined }))
+        .join('\n'),
+    });
+
+    const entries = await getInfos(log as any, url);
+
+    // one left unfilled makes namesAll false, so the alias row is never
+    // written and its blobKey loses the URL salt
+    expect(entries.map((e) => e.webpage_url)).toEqual([url, url]);
+    // a row keyed by undefined would be written per scrape: SQLite treats
+    // NULLs as distinct, so the cache would never hit
+    expect(infoCount()).toBe(1);
+  });
+
+  it('lets a shutdown abort through the salvage', async () => {
+    await stub({ block: '1', stdout: infoStr });
+    const scrape = getInfos(log as any, url).catch((e) => e);
+    await waitUntil(async () => (await stubArgs()) !== '');
+
+    abortDownloads();
+    try {
+      // salvaging it would burn an attempt on a job the next boot re-runs
+      expect((await scrape).name).toBe('ShutdownAbort');
+    } finally {
+      resetShutdown();
+      await rm(`${STUB_DIR}/block`, { force: true });
+    }
+  });
+
+  it('does not alias a playlist to its first video', async () => {
+    const first = 'https://test.invalid/watch?v=1';
+    await stub({
+      stdout: [
+        JSON.stringify({ ...VideoInfo, id: '1', webpage_url: first }),
+        JSON.stringify({
+          ...VideoInfo,
+          id: '2',
+          webpage_url: 'https://test.invalid/watch?v=2',
+        }),
+      ].join('\n'),
+    });
+
+    await getInfos(log as any, url);
+
+    expect(infoRow(first)).toBeNull();
+    expect(infoCount()).toBe(1);
+  });
+
+  it('keeps the videos a partly failing scrape did resolve', async () => {
+    const video = { ...VideoInfo, id: 'vid', webpage_url: url };
+    await stub({
+      exit: '1',
+      stdout: JSON.stringify(video),
+      stderr:
+        'ERROR: [Instagram] photo1: No video formats found!; please report this issue on  https://github.com/yt-dlp/yt-dlp/issues?q=\n',
+    });
+
+    expect(await getInfos(log as any, url)).toEqual([video]);
+  });
+
+  it('rethrows when a failing scrape resolved nothing', async () => {
+    await stub({
+      exit: '1',
+      stdout: '',
+      stderr:
+        'ERROR: [Instagram] photo1: No video formats found!\n' +
+        'ERROR: [Instagram] photo2: No video formats found!\n',
+    });
+
+    const err = await getInfos(log as any, url).catch((e) => e);
+    expect(err).toBeInstanceOf(YtdlpError);
+    expect(classifyFailure(err)).toBe('not-a-video');
+  });
+
+  it('judges another extractor\'s no-formats run on its own lines', async () => {
+    await stub({
+      exit: '1',
+      stdout: '',
+      stderr:
+        'ERROR: [Reddit] a: No video formats found!\n' +
+        'ERROR: [Reddit] b: No video formats found!\n',
+    });
+
+    const err = await getInfos(log as any, url).catch((e) => e);
+    expect(classifyFailure(err)).toBe('unavailable');
+  });
+
+  it('still reports a lone post that came back with no formats', async () => {
+    await stub({
+      exit: '1',
+      stdout: '',
+      stderr: 'ERROR: [Instagram] reel1: No video formats found!\n',
+    });
+
+    const err = await getInfos(log as any, url).catch((e) => e);
+    expect(classifyFailure(err)).toBe('unavailable');
+  });
+
+  it('evicts the canonical row too when the request came in under an alias', async () => {
+    const canonical = 'https://host/canonical';
+    const entry = { ...VideoInfo, webpage_url: canonical };
+    seedInfoRow(url, entry);
+    seedInfoRow(canonical, entry);
+
+    removeCachedInfo(entry as any, url);
+
+    // the alias row alone would leave the canonical one replaying the same
+    // expired signed URLs for the rest of its TTL
+    expect(infoCount()).toBe(0);
+  });
+
+  it('throws a readable error when a clean scrape yields no video at all', async () => {
+    await stub({ stdout: '' });
+
+    await expect(getInfos(log as any, url)).rejects.toThrow(
+      'yt-dlp found no video at that URL',
+    );
   });
 
   it('drops the proc from liveYtdlp even when the scrape throws', async () => {
     // the execYtdlp finally must clear the Set on every exit path; a leaked
     // dead proc would grow the Set unbounded and let abortDownloads kill a
     // stale handle. A nonzero exit throws AFTER the finally ran.
-    await stub({ exit: '1', stderr: 'boom' });
+    await stub({
+      exit: '1',
+      stderr: 'boom',
+      // an empty stdout is what makes this throw: a failing run that still
+      // dumped an entry gets salvaged
+      stdout: '',
+    });
     await expect(getInfo(log as any, url)).rejects.toBeInstanceOf(YtdlpError);
     expect(liveYtdlpSize()).toBe(0);
   });
@@ -603,6 +877,31 @@ describe('downloadVideo', () => {
         'ERROR: [generic] Unable to download webpage: HTTP Error 502: BAD GATEWAY (caused by <HTTPError 502: BAD GATEWAY>)\n',
       message: 'Unable to download webpage: HTTP Error 502: BAD GATEWAY',
     },
+    {
+      exit: '1',
+      stderr:
+        'ERROR: [Instagram] Dbnd91uAyMW: No video formats found!; please report this issue on  https://github.com/yt-dlp/yt-dlp/issues?q= , filling out the appropriate issue template. Confirm you are on the latest version using  yt-dlp -U\n',
+      message: 'Dbnd91uAyMW: No video formats found!',
+    },
+    {
+      exit: '1',
+      stderr:
+        "ERROR: [generic] An extractor error has occurred. (caused by KeyError('media')); please report this issue on  https://github.com/yt-dlp/yt-dlp/issues?q= , filling out the appropriate issue template. Confirm you are on the latest version using  yt-dlp -U\n",
+      message: 'An extractor error has occurred.',
+    },
+    {
+      exit: '1',
+      stderr:
+        'ERROR: [youtube] Failed to extract the player response. Please report this issue on  https://github.com/yt-dlp/yt-dlp/issues?q= , filling out the appropriate issue template. Confirm you are on the latest version using  yt-dlp -U\n',
+      message: 'Failed to extract the player response.',
+    },
+    {
+      exit: '1',
+      stderr:
+        'ERROR: [Instagram] Da4FbMds5BU: Instagram sent an empty media response. Check if this post is accessible in your browser without being logged-in. Otherwise, if the post is accessible in browser without being logged-in, please report this issue on  https://github.com/yt-dlp/yt-dlp/issues?q= , filling out the appropriate issue template. Confirm you are on the latest version using  yt-dlp -U\n',
+      message:
+        'Da4FbMds5BU: Instagram sent an empty media response. Check if this post is accessible in your browser without being logged-in. Otherwise, if the post is accessible in browser without being logged-in',
+    },
   ])(
     'error messages for failures: %j',
     async ({ signal, exit, stderr, message }) => {
@@ -777,6 +1076,39 @@ describe('isPermanentError', () => {
     expect(isPermanentError(new YtdlpError('failed', stderr))).toBe(false);
   });
 
+  it('reports the post\'s own failure, not a photo item that follows it', () => {
+    const stderr =
+      'ERROR: [Instagram] vid1: Requested content is not available, rate-limit reached\n' +
+      'ERROR: [Instagram] photo2: No video formats found!\n' +
+      'ERROR: [Instagram] photo3: No video formats found!';
+    // the trailing photo lines would tell the chat the post holds no video,
+    // for a post that holds one the rate limit kept us from
+    expect(new YtdlpError('failed', stderr).message).toBe(
+      'vid1: Requested content is not available, rate-limit reached',
+    );
+  });
+
+  it('falls back to the photo line when photos are all a post has', () => {
+    const stderr =
+      'ERROR: [Instagram] photo1: No video formats found!\n' +
+      'ERROR: [Instagram] photo2: No video formats found!';
+    expect(new YtdlpError('failed', stderr).message).toBe(
+      'photo2: No video formats found!',
+    );
+  });
+
+  it('drops the whole bug-report invitation, not a fragment of it', () => {
+    const stderr =
+      "ERROR: The extracted extension ('pdf') is unusual and will be skipped " +
+      'for safety reasons. If you believe this is an error, please report this ' +
+      'issue on  https://github.com/yt-dlp/yt-dlp/issues?q= , filling out the ' +
+      'appropriate issue template.';
+    expect(new YtdlpError('failed', stderr).message).toBe(
+      "The extracted extension ('pdf') is unusual and will be skipped for " +
+        'safety reasons.',
+    );
+  });
+
   it('treats a signal-killed failure as retryable even if stderr looks permanent', () => {
     const e = new YtdlpError('Timed out', 'ERROR: Unsupported URL: x', true);
     expect(isPermanentError(e)).toBe(false);
@@ -858,10 +1190,22 @@ describe('classifyFailure', () => {
     'ERROR: Unsupported URL: https://example.com/article',
     'ERROR: [Reddit] 92dd8: No media found',
     'ERROR: [Instagram] DbHhjdBJT9O: There is no video in this post',
+    // an archive.ph page holding a PDF
+    "ERROR: The extracted extension ('pdf') is unusual and will be skipped for safety reasons. If you believe this is an error, please report this issue on  https://github.com/yt-dlp/yt-dlp/issues?q= , filling out the appropriate issue template. Confirm you are on the latest version using  yt-dlp -U",
+    // a photo carousel
+    'ERROR: [Instagram] Dbnd83GgnNK: No video formats found!; please report this issue on  https://github.com/yt-dlp/yt-dlp/issues?q= , filling out the appropriate issue template. Confirm you are on the latest version using  yt-dlp -U\n' +
+      'ERROR: [Instagram] Dbnd91uAyMW: No video formats found!; please report this issue on  https://github.com/yt-dlp/yt-dlp/issues?q= , filling out the appropriate issue template. Confirm you are on the latest version using  yt-dlp -U',
   ])('classifies %j as not-a-video', (stderr) => {
     expect(classifyFailure(new YtdlpError('failed', stderr))).toBe(
       'not-a-video',
     );
+  });
+
+  it('judges a carousel on its non-photo items, so one bad item stays retryable', () => {
+    const stderr =
+      'ERROR: [Instagram] photo1: No video formats found!\n' +
+      'ERROR: [Instagram] vid2: Requested content is not available, rate-limit reached or login required';
+    expect(classifyFailure(new YtdlpError('failed', stderr))).toBe('transient');
   });
 
   it('keeps the f4m downloader\'s untagged "No media found" retryable', () => {
@@ -873,6 +1217,7 @@ describe('classifyFailure', () => {
   it.each([
     'ERROR: Private video. Sign in if you have access',
     'ERROR: Unable to download webpage: HTTP Error 410: Gone',
+    'ERROR: [youtube] dQw4w9WgXcQ: No video formats found!; please report this issue',
   ])('classifies %j as unavailable', (stderr) => {
     expect(classifyFailure(new YtdlpError('failed', stderr))).toBe('unavailable');
   });

@@ -12,6 +12,7 @@ import {
   BLOB_TTL_MS,
   blobKey,
   blobPath,
+  videoKey,
   getBlob,
   recordBlob,
   releaseBlob,
@@ -47,6 +48,39 @@ describe('blobKey / blobPath', () => {
       blobKey(info({ filename: '/b.mp4', title: 'B' })),
     );
     expect(blobKey(info())).not.toBe(blobKey(info({ format_id: '22' })));
+  });
+
+  it('keys a video without its format, so a re-scrape that drifts still matches', () => {
+    expect(videoKey(info())).toBe(videoKey(info({ format_id: '22' })));
+    expect(blobKey(info())).not.toBe(blobKey(info({ format_id: '22' })));
+  });
+
+  it('separates two identity-less videos of one page by title', () => {
+    const page = (title: string, format_id: string) =>
+      info({
+        extractor: 'generic',
+        id: 'master',
+        title,
+        format_id,
+        filename: `/x/${title}.${format_id}.mp4`,
+        webpage_url: 'https://p',
+      });
+    expect(videoKey(page('Clip (1)', 'a'))).not.toBe(
+      videoKey(page('Clip (2)', 'a')),
+    );
+    expect(videoKey(page('Clip (1)', 'a'))).toBe(videoKey(page('Clip (1)', 'b')));
+  });
+
+  it('separates same-titled identity-less videos by their ids', () => {
+    const clip = (id: string) =>
+      info({ extractor: 'generic', id, title: 'Clip', webpage_url: 'https://p' });
+    expect(videoKey(clip('v1'))).not.toBe(videoKey(clip('v2')));
+  });
+
+  it('separates same-titled identity-less videos of different pages', () => {
+    const clip = (webpage_url: string) =>
+      info({ extractor: 'generic', id: 'master', title: 'Clip', webpage_url });
+    expect(videoKey(clip('https://p1'))).not.toBe(videoKey(clip('https://p2')));
   });
 
   it('falls back to the filename when the identity is missing', () => {

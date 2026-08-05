@@ -47,11 +47,30 @@ describe('migrations', () => {
       Date.now(),
     );
 
-    migrate(db);
+    migrate(db, 5); // stop on the backfill: the next migration empties the table
 
     const row = db
       .query('SELECT webpage_url FROM video_info WHERE url = ?')
       .get('https://alias.example') as { webpage_url: string };
     expect(row.webpage_url).toBe('https://canonical.example');
+  });
+
+  it('drops cached info rows written before the payload became an array', () => {
+    const db = new Database(':memory:');
+    migrate(db, 5);
+    db.query(
+      'INSERT INTO video_info (url, info, webpage_url, created_at) VALUES (?, ?, ?, ?)',
+    ).run(
+      'https://alias.example',
+      JSON.stringify({ webpage_url: 'https://alias.example', title: 'T' }),
+      'https://alias.example',
+      Date.now(),
+    );
+
+    migrate(db);
+
+    expect(db.query('SELECT COUNT(*) c FROM video_info').get()).toEqual({
+      c: 0,
+    });
   });
 });

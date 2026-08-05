@@ -28,6 +28,7 @@ import {
   createMockMessageCtx,
   memoize,
   rowCount,
+  seedInfoRow,
   spyMock,
   telegramError,
 } from './test-utils.ts';
@@ -44,11 +45,34 @@ spyMock(console, 'debug'); // suppress debug logs
 // guard: nothing here should hit the real filesystem unlink
 spyOn(fsPromises, 'unlink').mockResolvedValue(undefined);
 
+// a real flush posts the thread, which is what gives it a message id
+const landThread = async () => {
+  mockLog.messageId = 4242;
+};
 const mockLog = {
   append: mock(),
-  flush: mock(),
-  messageId: 4242,
+  flush: mock(landThread),
+  messageId: 4242 as number | undefined,
   text: 'prior log content',
+};
+const freshThread = async <T>(fn: () => Promise<T>) => {
+  mockLog.messageId = undefined;
+  try {
+    return await fn();
+  } finally {
+    mockLog.messageId = 4242;
+  }
+};
+// a thread whose every send failed: flushing it leaves it without an id
+const deadThread = async <T>(fn: () => Promise<T>) => {
+  mockLog.messageId = undefined;
+  mockLog.flush.mockImplementation(async () => {});
+  try {
+    return await fn();
+  } finally {
+    mockLog.flush.mockImplementation(landThread);
+    mockLog.messageId = 4242;
+  }
 };
 spyOn(logMessage, 'LogMessage').mockReturnValue(mockLog as never);
 // logFor constructs LogMessage through log-message's module-internal binding,
@@ -144,6 +168,10 @@ const mockGetInfo = spyOn(downloadVideo, 'getInfo').mockImplementation(
   ),
 );
 
+const mockGetInfos = spyOn(downloadVideo, 'getInfos').mockImplementation(
+  async (log, url, verbose) => [await downloadVideo.getInfo(log, url, verbose)],
+);
+
 const mockSendInfo = spyMock(downloadVideo, 'sendInfo');
 const mockDownloadVideo = spyOn(
   downloadVideo,
@@ -178,8 +206,10 @@ describe.each([false, true])('textMessageHandler, edit: %p', (isEdit) => {
         verbose: false,
         // the mock ran the job inline, and processUrlJob mutates its job
         // (the mutation is what persists across retries); the recorded call
-        // arg is that same object, so the flag shows here
-        infoShown: true,
+        // arg is that same object, so these show here
+        announcedIds: ['test:id'],
+        answered: true,
+        settledIds: ['test:id'],
       },
       expect.any(Function), // the handled-urls record, run inside the tx
     );
@@ -500,7 +530,7 @@ describe('inlineQueryHandler', () => {
 
   it('handles errors gracefully and shows error to user', async () => {
     const ctx = createMockInlineQueryCtx();
-    mockGetInfo.mockRejectedValue(new Error('fail!'));
+    mockGetInfo.mockRejectedValueOnce(new Error('fail!'));
     const mockError = spyOn(console, 'error').mockImplementationOnce(() => {});
 
     await inlineQueryHandler(ctx as any);
@@ -513,6 +543,20 @@ describe('inlineQueryHandler', () => {
       }),
     ]);
     expect(mockError).toHaveBeenCalledTimes(1);
+  });
+
+  it('still answers when the download fails after the scrape resolved', async () => {
+    const ctx = createMockInlineQueryCtx();
+    spyOn(console, 'error').mockImplementationOnce(() => {});
+    mockDownloadVideo.mockRejectedValueOnce(
+      new downloadVideo.YtdlpError('failed', 'ERROR: HTTP Error 403'),
+    );
+
+    await inlineQueryHandler(ctx as any);
+
+    expect(ctx.answerInlineQuery).toHaveBeenCalledWith([
+      expect.objectContaining({ title: 'Failed to process video' }),
+    ]);
   });
 
   it('shows a sensible message when the inline failure is not an Error', async () => {
@@ -1164,7 +1208,7 @@ describe('post-download duration check', () => {
 const confirmedJob = (overrides: Record<string, unknown> = {}) =>
   ({
     kind: 'confirmed',
-    info: { filename: 'v.mp4', title: 'T', webpage_url: 'u' },
+    info: { filename: 'v.mp4', title: 'T', webpage_url: 'u', extractor: 'test', id: 'id' },
     verbose: false,
     messageId: 7,
     chatId: 7,
@@ -1183,6 +1227,8 @@ describe('confirmed job stale-info refresh', () => {
         filename: 'v.mp4',
         title: 'Old Snapshot',
         webpage_url: 'https://example.com',
+        extractor: 'test',
+        id: 'id',
       },
     });
     await processJob({} as any, job, 1);
@@ -1212,11 +1258,27 @@ describe('confirmed job stale-info refresh', () => {
 });
 
 describe('confirmed job oversize report', () => {
+  it('un-records a lone confirmed video that turns out too large', async () => {
+    const job = confirmedJob({ url: 'https://example.com/lone' });
+    db.query(
+      'INSERT INTO handled_urls (chat_id, message_id, url, created_at) VALUES (?, ?, ?, ?)',
+    ).run(job.chatId, job.messageId, job.url, Date.now());
+    mockSendVideo.mockResolvedValueOnce(undefined as any);
+
+    await processJob({} as any, job, 1);
+
+    expect(rowCount('handled_urls')).toBe(0);
+  });
+
   it('reports too-large (not silently) when real bytes overshoot the estimate', async () => {
     // the real bytes overshoot a missing/under estimate, so sendVideo returns
     // undefined; verify the report routes around the silent progress NoLog
     mockSendVideo.mockResolvedValueOnce(undefined as any);
-    const job = confirmedJob({ chatId: -100 });
+    // a format the refresh moves off, so the drift guard actually fires
+    const job = confirmedJob({
+      chatId: -100,
+      info: { ...confirmedJob().info, format_id: 'parked' },
+    });
 
     await expect(processJob({} as any, job, 1)).resolves.toBeUndefined();
 
@@ -1224,14 +1286,11 @@ describe('confirmed job oversize report', () => {
     expect(mockLog.append).toHaveBeenCalledWith(
       expect.stringContaining('Video too large'),
     );
-    // sendVideo already discarded the drifted info's oversize bytes; the only
-    // release is the drift guard freeing the parked (pre-refresh) job.info
-    // identity, whose key the getInfo refresh drifted away from. It has no
-    // recorded blob here, so the release is a harmless no-op, but never the
-    // drifted `info` sendVideo already handled (no double-release of that).
-    for (const [released] of mockReleaseBlob.mock.calls) {
-      expect((released as any).webpage_url).toBe(job.info.webpage_url);
-    }
+    // sendVideo already discarded the drifted info's oversize bytes; this
+    // release is the drift guard freeing the parked (pre-refresh) identity
+    expect(mockReleaseBlob.mock.calls.map(([i]: any) => i.format_id)).toEqual([
+      'parked',
+    ]);
   });
 });
 
@@ -1254,24 +1313,24 @@ describe('job retry classification', () => {
   });
 
   it('re-prints the info block only when the delivered thread lacks it', async () => {
-    // died during the scrape: infoShown never set → info must print, and the
-    // flag is set for persistence (the retry bump re-serializes the job)
-    const j1 = { ...urlJob, logText: '🧐 <b>Scraping</b> x...' };
+    // died during the scrape: nothing announced → info must print, and the
+    // key is recorded for persistence (the retry bump re-serializes the job)
+    const j1 = { ...urlJob, url: 'https://example.com/i1', logText: '🧐 <b>Scraping</b> x...' };
     await processJob({} as any, j1 as any, 2);
     expect(mockSendInfo).toHaveBeenCalledTimes(1);
-    expect((j1 as any).infoShown).toBe(true);
+    expect((j1 as any).announcedIds).toEqual(['test:id']);
 
     jest.clearAllMocks();
-    // shown AND delivered (a thread exists): skip, even though the info text
-    // may sit in an earlier chunk than the stashed last one
-    const j2 = { ...urlJob, logMessageId: 4242, logText: 'x', infoShown: true };
+    // announced AND delivered (a thread exists): skip, even though the info
+    // text may sit in an earlier chunk than the stashed last one
+    const j2 = { ...urlJob, url: 'https://example.com/i2', logMessageId: 4242, logText: 'x', announcedIds: ['test:id'] };
     await processJob({} as any, j2 as any, 2);
     expect(mockSendInfo).not.toHaveBeenCalled();
 
     jest.clearAllMocks();
     // appended but NEVER delivered (every send failed, so no thread was
     // stashed): the retry posts a fresh thread, which needs the info again
-    const j3 = { ...urlJob, logMessageId: undefined, infoShown: true };
+    const j3 = { ...urlJob, url: 'https://example.com/i3', logMessageId: undefined, announcedIds: ['test:id'] };
     await processJob({} as any, j3 as any, 2);
     expect(mockSendInfo).toHaveBeenCalledTimes(1);
 
@@ -1635,5 +1694,844 @@ describe('group terminal-failure feedback (issues #14/#17)', () => {
     } as any);
     await handle(ctx as any);
     expectGroupSilent(ctx);
+  });
+});
+
+describe('multi-video posts (carousels)', () => {
+  // clearAllMocks does not reset implementations, and this override would
+  // otherwise follow every test appended after this block
+  afterAll(() =>
+    mockGetInfos.mockImplementation(async (log, url, verbose) => [
+      await downloadVideo.getInfo(log, url, verbose),
+    ]),
+  );
+  const post = 'https://www.instagram.com/p/carousel';
+  const entries = ['a', 'b', 'c'].map((id) => ({
+    webpage_url: post,
+    title: `Video ${id}`,
+    extractor: 'Instagram',
+    id,
+    filename: `${id}.mp4`,
+  }));
+
+  const carousel = () =>
+    mockGetInfos.mockImplementation(async () => entries as any);
+
+  const sentIds = () =>
+    mockSendVideo.mock.calls.map(([, , info]: any) => info.id);
+
+  it('delivers every video of the post, in order', async () => {
+    carousel();
+    await processJob({} as any, { ...urlJob, url: post } as any, 1);
+    expect(sentIds()).toEqual(['a', 'b', 'c']);
+  });
+
+  it('remembers what it sent, so a retry resumes instead of re-sending', async () => {
+    spyMock(console, 'error');
+    carousel();
+    mockSendVideo.mockImplementationOnce(async () => ({
+      video: { file_id: 'id' },
+    })).mockImplementationOnce(async () => {
+      throw new Error('transient');
+    });
+    const job = { ...urlJob, url: post } as any;
+
+    await processJob({} as any, job, 1).catch(() => {});
+    await processJob({} as any, job, 2);
+
+    expect(sentIds().filter((id: string) => id === 'a')).toEqual(['a']);
+    expect(sentIds().filter((id: string) => id === 'c')).toEqual(['c']);
+    // marking an entry before its outcome is known would skip it here instead
+    expect(sentIds().filter((id: string) => id === 'b')).toEqual(['b', 'b']);
+  });
+
+  it('parks a long video and carries on with the rest of the post', async () => {
+    mockGetInfos.mockImplementation(async () => [
+      { ...entries[0], duration: 30 * 60 },
+      entries[1],
+      entries[2],
+    ] as any);
+    const groupJob = { ...urlJob, url: post, chatId: -100, chatType: 'group' };
+    const tg = { sendMessage: mock(async () => ({ message_id: 1 })) } as any;
+
+    await processJob(tg, groupJob as any, 1);
+    await processJob(tg, groupJob as any, 2);
+
+    // re-parking a settled video would prompt twice
+    expect(tg.sendMessage).toHaveBeenCalledTimes(1);
+    expect(sentIds()).toEqual(['b', 'c']);
+  });
+
+  it('counts a parked confirmation as part of the post having landed', async () => {
+    spyMock(console, 'error');
+    mockGetInfos.mockImplementation(async () => [
+      { ...entries[0], duration: 30 * 60 },
+      entries[1],
+    ] as any);
+    db.query(
+      'INSERT INTO handled_urls (chat_id, message_id, url, created_at) VALUES (?, ?, ?, ?)',
+    ).run(-100, urlJob.messageId, post, Date.now());
+    mockDownloadVideo.mockRejectedValue(
+      new downloadVideo.YtdlpError('failed', 'ERROR: Video unavailable'),
+    );
+    const tg = { sendMessage: mock(async () => ({ message_id: 1 })) } as any;
+    try {
+      await processJob(
+        tg,
+        { ...urlJob, url: post, chatId: -100, chatType: 'group' } as any,
+        jobQueue.MAX_ATTEMPTS,
+      );
+
+      // un-recording would let an edit re-park the confirmation
+      expect(rowCount('handled_urls')).toBe(1);
+    } finally {
+      mockDownloadVideo.mockResolvedValue('downloaded' as any);
+    }
+  });
+
+  it('announces the cap once, not again on every attempt', async () => {
+    spyMock(console, 'error');
+    const many = Array.from({ length: 25 }, (_, i) => ({
+      ...entries[0],
+      id: `v${i}`,
+    }));
+    mockGetInfos.mockImplementation(async () => many as any);
+    mockSendVideo.mockImplementationOnce(async () => {
+      throw new Error('transient');
+    });
+    const job = { ...urlJob, url: post, logMessageId: 7 } as any;
+
+    await processJob({} as any, job, 1).catch(() => {});
+    await processJob({} as any, job, 2);
+
+    expect(
+      mockLog.append.mock.calls.filter(([s]: any) =>
+        String(s).includes('videos here'),
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('sends a confirmed video with no identity after its format drifted', async () => {
+    const parked = {
+      webpage_url: post,
+      title: 'Clip',
+      extractor: 'generic',
+      id: 'master',
+      format_id: 'hls-1080',
+      filename: 'Clip.hls-1080.mp4',
+    };
+    mockGetInfos.mockImplementation(async () => [
+      { ...parked, format_id: 'hls-1200', filename: 'Clip.hls-1200.mp4' },
+    ] as any);
+
+    await processJob({} as any, confirmedJob({ info: parked }), 1);
+
+    expect(
+      mockSendVideo.mock.calls.map(([, , i]: any) => i.filename),
+    ).toEqual(['Clip.hls-1200.mp4']);
+  });
+
+  it('does not re-send an identity-less video whose format drifted on the retry', async () => {
+    spyMock(console, 'error');
+    const page = (fmt: string) =>
+      ['Clip (1)', 'Clip (2)'].map((title) => ({
+        webpage_url: post,
+        title,
+        extractor: 'generic',
+        id: 'master',
+        format_id: fmt,
+        filename: `${title}.${fmt}.mp4`,
+      }));
+    mockGetInfos.mockImplementation(async () => page('hls-1080') as any);
+    mockDownloadVideo.mockImplementationOnce(async () => 'downloaded');
+    mockDownloadVideo.mockImplementationOnce(async () => {
+      throw new downloadVideo.YtdlpError('failed', 'ERROR: HTTP Error 503');
+    });
+    const job = { ...urlJob, url: post } as any;
+    try {
+      await processJob({} as any, job, 1).catch(() => {});
+      mockGetInfos.mockImplementation(async () => page('hls-1200') as any);
+      await processJob({} as any, job, 2);
+
+      expect(
+        mockSendVideo.mock.calls.map(([, , i]: any) => i.title),
+      ).toEqual(['Clip (1)', 'Clip (2)']);
+    } finally {
+      mockDownloadVideo.mockResolvedValue('downloaded' as any);
+    }
+  });
+
+  it('tells two videos apart when the extractor gives them the same id', async () => {
+    mockGetInfos.mockImplementation(
+      async () =>
+        [
+          {
+            webpage_url: post,
+            title: 'Clip (1)',
+            extractor: 'generic',
+            id: 'master',
+            filename: 'one.mp4',
+          },
+          {
+            webpage_url: post,
+            title: 'Clip (2)',
+            extractor: 'generic',
+            id: 'master',
+            filename: 'two.mp4',
+          },
+        ] as any,
+    );
+
+    await processJob({} as any, { ...urlJob, url: post } as any, 1);
+
+    expect(mockSendVideo.mock.calls.map(([, , i]: any) => i.filename)).toEqual([
+      'one.mp4',
+      'two.mp4',
+    ]);
+  });
+
+  it('delivers the rest of the post when one video fails', async () => {
+    spyMock(console, 'error');
+    carousel();
+    mockDownloadVideo.mockImplementation(async (_log: any, info: any) => {
+      if (info.id === 'b') {
+        throw new downloadVideo.YtdlpError(
+          'failed',
+          'ERROR: Unsupported URL: https://x',
+        );
+      }
+      return 'downloaded';
+    });
+    try {
+      await processJob(
+        {} as any,
+        { ...urlJob, url: post } as any,
+        jobQueue.MAX_ATTEMPTS,
+      );
+      expect(sentIds()).toEqual(['a', 'c']);
+    } finally {
+      mockDownloadVideo.mockResolvedValue('downloaded' as any);
+    }
+  });
+
+  it('releases the blob of the video that failed, not whichever came last', async () => {
+    spyMock(console, 'error');
+    carousel();
+    mockDownloadVideo.mockImplementation(async (_log: any, info: any) => {
+      if (info.id === 'a') {
+        throw new downloadVideo.YtdlpError('failed', 'ERROR: Video unavailable');
+      }
+      return 'downloaded';
+    });
+    try {
+      await processJob(
+        {} as any,
+        { ...urlJob, url: post } as any,
+        jobQueue.MAX_ATTEMPTS,
+      );
+      expect(mockReleaseBlob.mock.calls.map(([i]: any) => i.id)).toEqual(['a']);
+    } finally {
+      mockDownloadVideo.mockResolvedValue('downloaded' as any);
+    }
+  });
+
+  it('reports a rejection that carries no value at all', async () => {
+    spyMock(console, 'error');
+    carousel();
+    mockDownloadVideo.mockRejectedValueOnce(undefined);
+    try {
+      await expect(
+        processJob({} as any, { ...urlJob, url: post } as any, 1),
+      ).rejects.toBeUndefined();
+    } finally {
+      mockDownloadVideo.mockResolvedValue('downloaded' as any);
+    }
+  });
+
+  it('comes back for a video that could still succeed, whatever failed last', async () => {
+    spyMock(console, 'error');
+    carousel();
+    mockDownloadVideo.mockImplementation(async (_log: any, info: any) => {
+      if (info.id === 'a') {
+        throw new downloadVideo.YtdlpError(
+          'failed',
+          'ERROR: Unable to download webpage: HTTP Error 503',
+        );
+      }
+      if (info.id === 'b') {
+        throw new downloadVideo.YtdlpError('failed', 'ERROR: Video unavailable');
+      }
+      return 'downloaded';
+    });
+    try {
+      // keeping the permanent failure would drop 'a' with no retry
+      await expect(
+        processJob({} as any, { ...urlJob, url: post } as any, 1),
+      ).rejects.toBeDefined();
+    } finally {
+      mockDownloadVideo.mockResolvedValue('downloaded' as any);
+    }
+  });
+
+  it('counts a post-download prompt as part of the post having landed', async () => {
+    spyMock(console, 'error');
+    mockGetInfos.mockImplementation(async () => [entries[0], entries[1]] as any);
+    db.query(
+      'INSERT INTO handled_urls (chat_id, message_id, url, created_at) VALUES (?, ?, ?, ?)',
+    ).run(-100, urlJob.messageId, post, Date.now());
+    mockDownloadVideo.mockImplementation(async (_log: any, info: any) => {
+      if (info.id === 'b') {
+        throw new downloadVideo.YtdlpError('failed', 'ERROR: Video unavailable');
+      }
+      // no scraped duration: only the probe after this download crosses the
+      // gate, so it is the post-download prompt that fires
+      blobStore.recordBlob(info);
+      blobStore.setBlobDuration(info, 30 * 60);
+      return 'downloaded';
+    });
+    const tg = { sendMessage: mock(async () => ({ message_id: 1 })) } as any;
+    try {
+      await processJob(
+        tg,
+        { ...urlJob, url: post, chatId: -100, chatType: 'group' } as any,
+        jobQueue.MAX_ATTEMPTS,
+      );
+
+      expect(tg.sendMessage).toHaveBeenCalled();
+      expect(rowCount('handled_urls')).toBe(1);
+    } finally {
+      mockDownloadVideo.mockResolvedValue('downloaded' as any);
+    }
+  });
+
+  it('comes back for a confirmed entry once the post lists it again', async () => {
+    spyMock(console, 'error');
+    mockGetInfos.mockImplementation(async () => [entries[0]] as any);
+    const job = confirmedJob({ info: entries[2], url: post, partOfPost: true });
+
+    // attempt 1, not the last: the miss has to be retryable, or the eviction
+    // above it buys nothing
+    await expect(processJob({} as any, job, 1)).rejects.toBeDefined();
+
+    mockGetInfos.mockImplementation(async () => entries as any);
+    await processJob({} as any, job, 2);
+
+    expect(sentIds()).toEqual(['c']);
+  });
+
+  it('evicts a post row a confirmed entry cannot name itself', async () => {
+    spyMock(console, 'error');
+    const parked = { ...entries[2], webpage_url: post };
+    mockGetInfos.mockImplementation(async () => [
+      { ...parked, webpage_url: 'https://c' },
+    ] as any);
+    db.query(
+      'INSERT INTO video_info (url, info, webpage_url, created_at) VALUES (?, ?, ?, ?)',
+    ).run(post, '[]', 'https://elsewhere', Date.now());
+    mockDownloadVideo.mockRejectedValue(
+      new downloadVideo.YtdlpError('failed', 'ERROR: Video unavailable'),
+    );
+    try {
+      await processJob(
+        {} as any,
+        confirmedJob({ info: parked, url: post }),
+        jobQueue.MAX_ATTEMPTS,
+      );
+      expect(rowCount('video_info')).toBe(0);
+    } finally {
+      mockDownloadVideo.mockResolvedValue('downloaded' as any);
+    }
+  });
+
+  it('keeps the message recorded when a confirmed entry of a post fails', async () => {
+    spyMock(console, 'error');
+    const job = confirmedJob({ info: entries[2], url: post, partOfPost: true });
+    db.query(
+      'INSERT INTO handled_urls (chat_id, message_id, url, created_at) VALUES (?, ?, ?, ?)',
+    ).run(job.chatId, job.messageId, post, Date.now());
+    mockGetInfos.mockImplementation(async () => entries as any);
+    mockDownloadVideo.mockRejectedValue(
+      new downloadVideo.YtdlpError('failed', 'ERROR: Video unavailable'),
+    );
+    try {
+      await processJob({} as any, job, jobQueue.MAX_ATTEMPTS);
+
+      expect(rowCount('handled_urls')).toBe(1);
+    } finally {
+      mockDownloadVideo.mockResolvedValue('downloaded' as any);
+    }
+  });
+
+  it('keeps the message recorded when a confirmed entry of a post is too large', async () => {
+    mockGetInfos.mockImplementation(async () => entries as any);
+    const job = confirmedJob({ info: entries[2], url: post, partOfPost: true });
+    db.query(
+      'INSERT INTO handled_urls (chat_id, message_id, url, created_at) VALUES (?, ?, ?, ?)',
+    ).run(job.chatId, job.messageId, post, Date.now());
+    mockSendVideo.mockResolvedValueOnce(undefined as any);
+
+    await processJob({} as any, job, 1);
+
+    expect(rowCount('handled_urls')).toBe(1);
+  });
+
+  it('releases every video that downloaded bytes and then failed', async () => {
+    spyMock(console, 'error');
+    carousel();
+    mockSendVideo.mockRejectedValue(telegramError(403, 'Forbidden'));
+    try {
+      await processJob({} as any, { ...urlJob, url: post } as any, 1);
+      expect(mockReleaseBlob.mock.calls.map(([i]: any) => i.id)).toEqual([
+        'a',
+        'b',
+        'c',
+      ]);
+    } finally {
+      mockSendVideo.mockResolvedValue({ video: { file_id: 'id' } } as any);
+    }
+  });
+
+  it('comes back for a video that could still succeed, whatever failed first', async () => {
+    spyMock(console, 'error');
+    carousel();
+    mockDownloadVideo.mockImplementation(async (_log: any, info: any) => {
+      if (info.id === 'a') {
+        throw new downloadVideo.YtdlpError('failed', 'ERROR: Video unavailable');
+      }
+      if (info.id === 'b') {
+        throw new downloadVideo.YtdlpError(
+          'failed',
+          'ERROR: Unable to download webpage: HTTP Error 503',
+        );
+      }
+      return 'downloaded';
+    });
+    try {
+      await expect(
+        processJob({} as any, { ...urlJob, url: post } as any, 1),
+      ).rejects.toBeDefined();
+    } finally {
+      mockDownloadVideo.mockResolvedValue('downloaded' as any);
+    }
+  });
+
+  it('keeps the message recorded across attempts once a video has landed', async () => {
+    spyMock(console, 'error');
+    carousel();
+    db.query(
+      'INSERT INTO handled_urls (chat_id, message_id, url, created_at) VALUES (?, ?, ?, ?)',
+    ).run(urlJob.chatId, urlJob.messageId, post, Date.now());
+    mockDownloadVideo.mockImplementation(async (_log: any, info: any) => {
+      if (info.id !== 'a') {
+        throw new downloadVideo.YtdlpError('failed', 'ERROR: Video unavailable');
+      }
+      return 'downloaded';
+    });
+    const job = { ...urlJob, url: post } as any;
+    try {
+      await processJob({} as any, job, 1).catch(() => {});
+      await processJob({} as any, job, jobQueue.MAX_ATTEMPTS);
+
+      expect(rowCount('handled_urls')).toBe(1);
+    } finally {
+      mockDownloadVideo.mockResolvedValue('downloaded' as any);
+    }
+  });
+
+  it('leaves the message recorded once part of the post has landed', async () => {
+    spyMock(console, 'error');
+    carousel();
+    db.query(
+      'INSERT INTO handled_urls (chat_id, message_id, url, created_at) VALUES (?, ?, ?, ?)',
+    ).run(urlJob.chatId, urlJob.messageId, post, Date.now());
+    mockDownloadVideo.mockImplementation(async (_log: any, info: any) => {
+      if (info.id === 'c') {
+        throw new downloadVideo.YtdlpError(
+          'failed',
+          'ERROR: Unsupported URL: https://x',
+        );
+      }
+      return 'downloaded';
+    });
+    try {
+      await processJob(
+        {} as any,
+        { ...urlJob, url: post } as any,
+        jobQueue.MAX_ATTEMPTS,
+      );
+
+      // un-recording here would re-send 'a' and 'b' on the next edit
+      expect(rowCount('handled_urls')).toBe(1);
+    } finally {
+      mockDownloadVideo.mockResolvedValue('downloaded' as any);
+    }
+  });
+
+  it('keeps a too-large verdict owed when the thread carrying it never landed', async () => {
+    spyMock(console, 'error');
+    mockGetInfos.mockImplementation(async () => [
+      { ...entries[0], filesize: 3_000_000_000 },
+      entries[1],
+    ] as any);
+    await deadThread(async () => {
+      mockSendVideo.mockImplementationOnce(async () => {
+        throw new Error('transient');
+      });
+      const job = { ...urlJob, url: post } as any;
+
+      await processJob({} as any, job, 1).catch(() => {});
+
+      // marking it would make the retry skip the video without ever having
+      // told the user why
+      expect(job.settledIds ?? []).not.toContain('Instagram:a');
+    });
+  });
+
+  it('says a video is too large once, not again on every attempt', async () => {
+    spyMock(console, 'error');
+    mockGetInfos.mockImplementation(async () => [
+      { ...entries[0], filesize: 3_000_000_000 },
+      entries[1],
+    ] as any);
+    await freshThread(async () => {
+      mockSendVideo.mockImplementationOnce(async () => {
+        throw new Error('transient');
+      });
+      const job = { ...urlJob, url: post } as any;
+
+      await processJob({} as any, job, 1).catch(() => {});
+      await processJob({} as any, job, 2);
+
+      expect(
+        mockLog.append.mock.calls.filter(([s]: any) =>
+          String(s).includes('too large'),
+        ),
+      ).toHaveLength(1);
+    });
+  });
+
+  it('owes nothing more for a video the real bytes made too large', async () => {
+    mockGetInfos.mockImplementation(async () => [entries[0], entries[1]] as any);
+    await freshThread(async () => {
+      mockSendVideo.mockResolvedValueOnce(undefined as any);
+      const job = { ...urlJob, url: post } as any;
+
+      await processJob({} as any, job, 1);
+
+      // leaving it unmarked would re-download the same oversized video, and
+      // repeat the verdict, on every later attempt
+      expect(job.settledIds).toContain('Instagram:a');
+    });
+  });
+
+  it('owes nothing more for an oversized video a group never hears about', async () => {
+    mockGetInfos.mockImplementation(async () => [entries[0], entries[1]] as any);
+    mockSendVideo.mockResolvedValueOnce(undefined as any);
+    const job = { ...urlJob, url: post, chatId: -100, chatType: 'group' } as any;
+
+    await processJob({} as any, job, 1);
+
+    expect(job.settledIds).toContain('Instagram:a');
+  });
+
+  it('keeps an oversized video owed when the thread carrying its verdict never landed', async () => {
+    mockGetInfos.mockImplementation(async () => [entries[0], entries[1]] as any);
+    await deadThread(async () => {
+      mockSendVideo.mockResolvedValueOnce(undefined as any);
+      const job = { ...urlJob, url: post } as any;
+
+      await processJob({} as any, job, 1);
+
+      expect(job.settledIds ?? []).not.toContain('Instagram:a');
+    });
+  });
+
+  it('tags a post-download prompt as part of the post as well', async () => {
+    spyMock(console, 'error');
+    mockGetInfos.mockImplementation(async () => [entries[0], entries[1]] as any);
+    mockDownloadVideo.mockImplementation(async (_log: any, info: any) => {
+      blobStore.recordBlob(info);
+      blobStore.setBlobDuration(info, 30 * 60);
+      return 'downloaded';
+    });
+    const tg = { sendMessage: mock(async () => ({ message_id: 1 })) } as any;
+    try {
+      await processJob(
+        tg,
+        { ...urlJob, url: post, chatId: -100, chatType: 'group' } as any,
+        1,
+      );
+
+      const data: string =
+        tg.sendMessage.mock.calls[0][2].reply_markup.inline_keyboard[0][0]
+          .callback_data;
+      const parked = await pendingDownloads.getPending(
+        data.slice('dl:'.length),
+      );
+      expect(parked!.partOfPost).toBe(true);
+
+      db.query('DELETE FROM pending').run();
+      // an entry the run above never downloaded, so its duration is again
+      // knowable only after the probe
+      mockGetInfos.mockImplementation(async () => [entries[2]] as any);
+      await processJob(
+        tg,
+        { ...urlJob, url: post, chatId: -100, chatType: 'group', messageId: 42 } as any,
+        1,
+      );
+
+      const lone: string =
+        tg.sendMessage.mock.calls.at(-1)![2].reply_markup.inline_keyboard[0][0]
+          .callback_data;
+      expect(
+        (await pendingDownloads.getPending(lone.slice('dl:'.length)))!
+          .partOfPost,
+      ).toBeUndefined();
+    } finally {
+      mockDownloadVideo.mockResolvedValue('downloaded' as any);
+    }
+  });
+
+  it('remembers a video it sent even when the thread never landed', async () => {
+    spyMock(console, 'error');
+    mockGetInfos.mockImplementation(async () => [entries[0], entries[1]] as any);
+    await deadThread(async () => {
+      mockSendVideo.mockImplementationOnce(async () => {
+        throw new Error('transient');
+      });
+      const job = { ...urlJob, url: post } as any;
+
+      await processJob({} as any, job, 1).catch(() => {});
+
+      // the video went out on its own Telegram call, not through the log thread
+      expect(job.settledIds).toContain('Instagram:b');
+    });
+  });
+
+  it('parks a confirmation tagged with whether it is part of a post', async () => {
+    const long = { ...entries[0], duration: 30 * 60 };
+    const groupJob = () =>
+      ({ ...urlJob, url: post, chatId: -100, chatType: 'group' }) as any;
+    const tg = { sendMessage: mock(async () => ({ message_id: 1 })) } as any;
+    const parked = async (call: number) => {
+      const data: string =
+        tg.sendMessage.mock.calls[call][2].reply_markup.inline_keyboard[0][0]
+          .callback_data;
+      return await pendingDownloads.getPending(data.slice('dl:'.length));
+    };
+
+    mockGetInfos.mockImplementation(async () => [long, entries[1]] as any);
+    await processJob(tg, groupJob(), 1);
+    expect((await parked(0))!.partOfPost).toBe(true);
+
+    mockGetInfos.mockImplementation(async () => [long] as any);
+    await processJob(tg, { ...groupJob(), messageId: 42 }, 1);
+    expect((await parked(1))!.partOfPost).toBeUndefined();
+  });
+
+  it('announces the videos a retry reaches for the first time', async () => {
+    spyMock(console, 'error');
+    carousel();
+    // a shutdown mid-post: 'b' is announced and aborted, 'c' is never reached
+    mockDownloadVideo.mockImplementationOnce(async () => 'downloaded');
+    mockDownloadVideo.mockImplementationOnce(async () => {
+      throw new jobQueue.ShutdownAbort();
+    });
+    const job = { ...urlJob, url: post, logMessageId: 9 } as any;
+    try {
+      await processJob({} as any, job, 1).catch(() => {});
+      jest.clearAllMocks();
+      await processJob({} as any, job, 2);
+
+      // only 'c' is new to the chat
+      expect(mockSendInfo).toHaveBeenCalledTimes(1);
+    } finally {
+      mockDownloadVideo.mockResolvedValue('downloaded' as any);
+    }
+  });
+
+  it('evicts the cached post when any entry failed in yt-dlp', async () => {
+    spyMock(console, 'error');
+    mockGetInfos.mockImplementation(async () => [entries[0], entries[1]] as any);
+    seedInfoRow(post, entries[0]);
+    // the send failure outranks the download one, so only the loop knows the
+    // scrape went stale
+    mockSendVideo.mockImplementationOnce(async () => {
+      throw new Error('transient');
+    });
+    mockDownloadVideo.mockImplementation(async (_log: any, info: any) => {
+      if (info.id === 'b') {
+        throw new downloadVideo.YtdlpError(
+          'failed',
+          'ERROR: unable to download video data: HTTP Error 403: Forbidden',
+        );
+      }
+      return 'downloaded';
+    });
+    try {
+      await processJob({} as any, { ...urlJob, url: post } as any, 1).catch(
+        () => {},
+      );
+
+      // keeping it makes every later attempt replay the same expired URLs
+      expect(rowCount('video_info')).toBe(0);
+    } finally {
+      mockDownloadVideo.mockResolvedValue('downloaded' as any);
+    }
+  });
+
+  it('reports the sibling that really failed, not the item with no video', async () => {
+    spyMock(console, 'error');
+    mockGetInfos.mockImplementation(async () => [entries[0], entries[1]] as any);
+    mockDownloadVideo.mockImplementation(async (_log: any, info: any) => {
+      throw new downloadVideo.YtdlpError(
+        'failed',
+        info.id === 'a'
+          ? 'ERROR: [Instagram] x: There is no video in this post'
+          : 'ERROR: Video unavailable',
+      );
+    });
+    try {
+      await processJob(
+        {} as any,
+        { ...urlJob, url: post, chatId: -100, chatType: 'group' } as any,
+        jobQueue.MAX_ATTEMPTS,
+      );
+
+      // letting 'a' speak for the post would leave the group with silence for
+      // a video that failed for a reason worth hearing
+      expect(
+        (logMessage.LogMessage as any).mock.calls.filter(
+          ([, dest]: any) => dest?.replyTo === urlJob.messageId,
+        ),
+      ).toHaveLength(1);
+    } finally {
+      mockDownloadVideo.mockResolvedValue('downloaded' as any);
+    }
+  });
+
+  it('answers a group with one report however many videos fail', async () => {
+    spyMock(console, 'error');
+    carousel();
+    mockDownloadVideo.mockRejectedValue(
+      new downloadVideo.YtdlpError(
+        'failed',
+        'ERROR: Unable to download webpage: HTTP Error 403: Forbidden',
+      ),
+    );
+    try {
+      await processJob(
+        {} as any,
+        { ...urlJob, url: post, chatId: -100, chatType: 'group' } as any,
+        jobQueue.MAX_ATTEMPTS,
+      );
+
+      expect(
+        (logMessage.LogMessage as any).mock.calls.filter(
+          ([, dest]: any) => dest?.replyTo === urlJob.messageId,
+        ),
+      ).toHaveLength(1);
+    } finally {
+      mockDownloadVideo.mockResolvedValue('downloaded' as any);
+    }
+  });
+
+  it('prints an info block for each video it sends', async () => {
+    carousel();
+    await processJob({} as any, { ...urlJob, url: post } as any, 1);
+    expect(mockSendInfo).toHaveBeenCalledTimes(3);
+  });
+
+  it('caps a playlist-sized post at ten videos and says how many it skipped', async () => {
+    const many = Array.from({ length: 25 }, (_, i) => ({
+      ...entries[0],
+      id: `v${i}`,
+    }));
+    mockGetInfos.mockImplementation(async () => many as any);
+
+    await processJob({} as any, { ...urlJob, url: post } as any, 1);
+
+    expect(sentIds()).toHaveLength(10);
+    expect(mockLog.append).toHaveBeenCalledWith(
+      '\n📚 <b>More than 10 videos here</b>; sending the first 10.',
+    );
+  });
+
+  it('re-announces the cap on a fresh thread the failed attempt never posted', async () => {
+    const many = Array.from({ length: 25 }, (_, i) => ({
+      ...entries[0],
+      id: `v${i}`,
+    }));
+    mockGetInfos.mockImplementation(async () => many as any);
+
+    await processJob(
+      {} as any,
+      { ...urlJob, url: post, capShown: true, logMessageId: undefined } as any,
+      2,
+    );
+
+    expect(mockLog.append).toHaveBeenCalledWith(
+      expect.stringContaining('videos here'),
+    );
+  });
+
+  it('does not announce a cap for a post that was not truncated', async () => {
+    carousel();
+    await processJob({} as any, { ...urlJob, url: post } as any, 1);
+    expect(mockLog.append).not.toHaveBeenCalledWith(
+      expect.stringContaining('videos here'),
+    );
+  });
+
+  it('re-resolves a confirmed entry to its own video, not the first', async () => {
+    carousel();
+    await processJob(
+      {} as any,
+      confirmedJob({ info: { ...entries[2], filename: 'c.mp4' } }),
+      1,
+    );
+    expect(sentIds()).toEqual(['c']);
+  });
+
+  it('sends the confirmed video, not entry 0, when the re-scrape lost it', async () => {
+    spyMock(console, 'error');
+    mockGetInfos.mockImplementation(async () => [entries[0]] as any);
+    seedInfoRow(post, entries[0]);
+
+    await processJob(
+      {} as any,
+      confirmedJob({ info: { ...entries[2], filename: 'c.mp4' } }),
+      jobQueue.MAX_ATTEMPTS,
+    );
+
+    expect(mockSendVideo).not.toHaveBeenCalled();
+    // without the eviction every attempt re-reads the same short list, and so
+    // does every later request for the post until the row's six hours are up
+    expect(rowCount('video_info')).toBe(0);
+  });
+
+  it('evicts a post row an entry cannot name itself when its download fails', async () => {
+    spyMock(console, 'error');
+    // the playlist shape: entries carry their OWN webpage_url, so neither the
+    // row's url nor its webpage_url column is one the entry can name
+    mockGetInfos.mockImplementation(async () => [
+      { ...entries[0], webpage_url: 'https://a' },
+    ] as any);
+    db.query(
+      'INSERT INTO video_info (url, info, webpage_url, created_at) VALUES (?, ?, ?, ?)',
+    ).run(post, '[]', 'https://elsewhere', Date.now());
+    mockDownloadVideo.mockRejectedValue(
+      new downloadVideo.YtdlpError('failed', 'ERROR: Video unavailable'),
+    );
+    try {
+      await processJob(
+        {} as any,
+        { ...urlJob, url: post } as any,
+        jobQueue.MAX_ATTEMPTS,
+      );
+      expect(rowCount('video_info')).toBe(0);
+    } finally {
+      mockDownloadVideo.mockResolvedValue('downloaded' as any);
+    }
   });
 });

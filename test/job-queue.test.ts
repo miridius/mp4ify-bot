@@ -14,6 +14,7 @@ import {
   startJobQueue,
   stopJobQueue,
   type Job,
+  type UrlJob,
 } from '../src/job-queue';
 import { addPending, getPending } from '../src/pending-downloads';
 import { rowCount, spyMock, waitUntil, withFailingWrite } from './test-utils';
@@ -371,6 +372,27 @@ it('carries a processor mutation forward to the retry', async () => {
 
   await waitUntil(jobsIdle);
   expect(seen).toEqual([undefined, 99]); // the retry saw the persisted mutation
+});
+
+it('carries a delivered-videos mutation forward to the retry', async () => {
+  // a multi-video post records what it sent before anything else on the job
+  // moves, so a retry that lost it would send those videos a second time
+  spyMock(console, 'error');
+  const seen: (string[] | undefined)[] = [];
+  let n = 0;
+  const processor = mock(async (j: Job) => {
+    seen.push((j as UrlJob).settledIds);
+    if (n++ === 0) {
+      (j as UrlJob).settledIds = ['sent'];
+      throw new Error('transient');
+    }
+  });
+  await startJobQueue(processor);
+
+  await enqueueJob(job());
+
+  await waitUntil(jobsIdle);
+  expect(seen).toEqual([undefined, ['sent']]);
 });
 
 it('clears a pending retry backoff on stop (the row recovers next boot)', async () => {

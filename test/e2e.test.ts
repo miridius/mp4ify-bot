@@ -10,7 +10,7 @@ import {
 } from 'bun:test';
 import { blobPath, recordBlob } from '../src/blob-store';
 import { resetDb } from '../src/db';
-import { downloadVideo, getInfo } from '../src/download-video';
+import { downloadVideo, getInfos } from '../src/download-video';
 import { jobsIdle, seedJob, setRetryBaseMs } from '../src/job-queue';
 import { FORMAT_ID_RE, MOCK_USER_ID, withBotApi } from './simulate-bot-api';
 import { rowCount, spyMock, waitUntil } from './test-utils';
@@ -80,7 +80,7 @@ const scrub = (messages: unknown) =>
   );
 
 const clearInMemoryCache = () => {
-  getInfo.cache.clear();
+  getInfos.cache.clear();
   downloadVideo.cache.clear();
 };
 
@@ -131,15 +131,17 @@ describe.if(!!Bun.env.TEST_E2E)('message handler', async () => {
 
   const groupChat = { id: -1000000000001, title: 'Test Group', type: 'supergroup' };
 
-  it(
-    'stays silent for a not-a-video link in a group',
-    () =>
+  it.each([
+    // a lone photo
+    'https://www.instagram.com/p/DbHhjdBJT9O/',
+    // a photo carousel (see PHOTO_ITEM)
+    'https://www.instagram.com/p/Dbnd-yeAP9S/',
+  ])(
+    'stays silent for a not-a-video link in a group: %s',
+    (url) =>
       withBotApi(async (api) => {
         clearInMemoryCache();
-        api.sendTextMessageToBot(
-          urlMessage('https://www.instagram.com/p/DbHhjdBJT9O/'),
-          groupChat,
-        );
+        api.sendTextMessageToBot(urlMessage(url), groupChat);
         // gate on the job actually starting, else a never-started job passes this
         // silence test vacuously
         expect(await waitUntil(() => !jobsIdle(), 15_000)).toBe(true);
@@ -151,14 +153,41 @@ describe.if(!!Bun.env.TEST_E2E)('message handler', async () => {
           const reports = api.sentMessages.filter(isFailureReport);
           expect(reports).toHaveLength(1);
           // pin the tolerated report to rate-limit/login wording: a broken
-          // not-a-video gate would instead report "There is no video in this
-          // post" and must still fail this test
+          // not-a-video gate would instead report a no-video wording and must
+          // still fail this test
           expect(reports[0]!.text).toMatch(/rate.?limit|login required|empty media response/i);
         } else {
           expect(api.sentMessages).toEqual([]);
         }
       }),
     45_000,
+  );
+
+  it.if(!!Bun.env.TEST_E2E_FULL)(
+    'delivers every video of a post that mixes photos and videos',
+    () =>
+      withBotApi(async (api) => {
+        clearInMemoryCache();
+        const videos = () => api.sentMessages.filter((m: any) => m.video);
+        api.sendTextMessageToBot(
+          // a post holding three videos and a photo
+          urlMessage('https://www.instagram.com/p/DIqghhpok2K/'),
+        );
+        await waitUntil(
+          () => videos().length >= 3 || api.sentMessages.some(isFailureReport),
+          120_000,
+        );
+        const reports = api.sentMessages.filter(isFailureReport);
+        // tolerate a rate-limited scrape the way the group-silence test does
+        if (reports.length) {
+          expect(reports[0]!.text).toMatch(
+            /rate.?limit|login required|empty media response/i,
+          );
+        } else {
+          expect(videos()).toHaveLength(3);
+        }
+      }),
+    150_000,
   );
 
   it(
