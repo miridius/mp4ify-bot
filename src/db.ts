@@ -82,6 +82,9 @@ export const MIGRATIONS: string[] = [
    UPDATE video_info SET webpage_url = json_extract(info, '$.webpage_url');
    CREATE INDEX video_info_webpage_col ON video_info (webpage_url);
    DROP INDEX video_info_webpage;`,
+  // `info` holds the JSON array of a post's video entries; rows predating that
+  // hold one bare object. A six-hour cache, so drop them instead of converting.
+  `DELETE FROM video_info;`,
 ];
 
 // Exported so the migration tests replay THIS loop against a scratch DB (a

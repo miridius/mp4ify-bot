@@ -60,8 +60,8 @@ export const telegramError = (code: number, description: string) =>
     response: { error_code: code, description },
   });
 
-// seed a video_info row the way getInfo stores one (webpage_url denormalized
-// into its own column, mirroring insertInfoStmt)
+// seed a video_info row the way getInfos stores a single-video post
+// (webpage_url denormalized into its own column, mirroring insertInfoStmt)
 export const seedInfoRow = (
   url: string,
   info: unknown,
@@ -73,7 +73,7 @@ export const seedInfoRow = (
     )
     .run(
       url,
-      JSON.stringify(info),
+      JSON.stringify([info]),
       (info as any)?.webpage_url ?? null,
       createdAt,
     );

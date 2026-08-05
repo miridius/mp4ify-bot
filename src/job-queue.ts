@@ -21,10 +21,21 @@ export type UrlJob = JobBase & {
   kind: 'url';
   url: string;
   fromId: number;
-  // whether the info block already reached the chat, so a retry's continued
-  // thread doesn't print it twice (its text may sit in an earlier chunk than
-  // the one logText carries, so string-matching logText can't answer this)
-  infoShown?: boolean;
+  // the videos of a multi-video post this job is done with (sent, or ruled out
+  // by a gate), by videoKey, so a retry picks up where it stopped
+  settledIds?: string[];
+  // and the ones whose info block already reached the chat, so a retry does
+  // not print it again for a video it announced but could not deliver
+  announcedIds?: string[];
+  // whether the post has answered the message at all: a video sent, or a
+  // confirmation prompt parked. Either is a promise the edit-retry gesture
+  // must not undo by re-running the whole post.
+  answered?: true;
+  // whether the "more than N videos here" notice already reached the chat, so
+  // a retry's continued thread doesn't print it twice (its text may sit in an
+  // earlier chunk than the one logText carries, so string-matching logText
+  // can't answer this)
+  capShown?: boolean;
 };
 
 export type ConfirmedJob = JobBase & {
@@ -36,6 +47,10 @@ export type ConfirmedJob = JobBase & {
   // un-record it and re-open the edit-retry gesture. Optional: rows parked
   // before this field existed lack it and just skip the un-record.
   url?: string;
+  // this video is one of several in its post, so the message's record belongs
+  // to the job delivering them all: un-recording it here would re-deliver the
+  // ones that already landed
+  partOfPost?: true;
 };
 
 export type Job = UrlJob | ConfirmedJob;
@@ -270,7 +285,10 @@ const run = async (id: number) => {
   const before = {
     logMessageId: job.logMessageId,
     logText: job.logText,
-    infoShown: (job as UrlJob).infoShown,
+    capShown: (job as UrlJob).capShown,
+    settled: (job as UrlJob).settledIds?.length,
+    announced: (job as UrlJob).announcedIds?.length,
+    answered: (job as UrlJob).answered,
   };
   try {
     await processor!(job, attempt);
@@ -278,7 +296,10 @@ const run = async (id: number) => {
     const dirty =
       before.logMessageId !== job.logMessageId ||
       before.logText !== job.logText ||
-      before.infoShown !== (job as UrlJob).infoShown;
+      before.capShown !== (job as UrlJob).capShown ||
+      before.settled !== (job as UrlJob).settledIds?.length ||
+      before.announced !== (job as UrlJob).announcedIds?.length ||
+      before.answered !== (job as UrlJob).answered;
     const persistJob = (attempts: number) =>
       dirty
         ? bumpAttemptsStmt.run(attempts, JSON.stringify(job), id)
