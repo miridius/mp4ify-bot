@@ -57,10 +57,10 @@ export class YtdlpError extends Error {
     // A signal kill keeps its message: the timeout is the real story there,
     // and any ERROR line in a killed process's output is a stale partial.
     const lines = signalled ? [] : errorLines(stderr);
-    const errLine = (lines.findLast((l) => !PHOTO_ITEM.test(l)) ?? lines.at(-1))
+    const real = lines.filter((l) => !isPhotoItemError(l));
+    const errLine = (real.at(-1) ?? lines.at(-1))
       ?.slice('ERROR:'.length)
-      // De-noising is lossless: the raw line still streams to the chat
-      // verbatim, and classification reads raw stderr.
+      // De-noising is lossless: classification reads the raw stderr.
       .replace(/^\s*\[[^\]]+\]\s*/, '')
       // yt-dlp appends this after any "(caused by ...)", so it has to be
       // stripped first
@@ -70,7 +70,11 @@ export class YtdlpError extends Error {
       )
       .replace(/\s*\(caused by .*\)\s*$/, '')
       .trim();
-    super(errLine || message);
+    // Every item failing as a photo is a verdict on the post, and the last id
+    // is no more the reason than its siblings. A lone line has no siblings: it
+    // is the extractor's own verdict on the post.
+    const allPhotos = !real.length && lines.length > 1;
+    super((allPhotos ? 'There is no video in this post' : errLine) || message);
     this.name = 'YtdlpError';
     // hidden from console.error, which prints an Error's own properties whole:
     // a playlist's dump-json runs to megabytes (see STDERR_TAIL for the cap on
@@ -91,6 +95,8 @@ const NOT_A_VIDEO_PATTERNS = [
 // carousel is a playlist, whose photo items each fall through to yt-dlp's
 // generic no-formats error, a verdict on the item rather than the post.
 const PHOTO_ITEM = /\[instagram\] .+: no video formats found/i;
+const isPhotoItemError = (line: string) =>
+  line.startsWith('ERROR:') && PHOTO_ITEM.test(line);
 const PERMANENT_PATTERNS = [
   /unable to extract/i,
   /no video formats found/i,
@@ -113,7 +119,7 @@ export const classifyFailure = (e: unknown): FailureKind => {
   if (!all.length) return 'transient';
   // one line is the whole post reporting no formats, a failure the chat hears
   // about
-  const rest = all.length > 1 ? all.filter((l) => !PHOTO_ITEM.test(l)) : all;
+  const rest = all.length > 1 ? all.filter((l) => !isPhotoItemError(l)) : all;
   if (!rest.length) return 'not-a-video';
   if (rest.some((l) => NOT_A_VIDEO_PATTERNS.some((re) => re.test(l))))
     return 'not-a-video';
@@ -401,15 +407,30 @@ const execYtdlp = limit(
     // streaming decoder, so a multi-byte char split across chunks isn't garbled
     // (which would both mis-render and could defeat the classifier).
     let stderr = '';
+    let held = '';
     let firstLine = true;
     const decoder = new TextDecoder();
+    // A photo item's ERROR answers nothing the chat asked for. /verbose is a
+    // debugging request for yt-dlp's actual output, so it is exempt.
+    const show = (block: string) => {
+      const text = (
+        verbose
+          ? block
+          : block
+              .split('\n')
+              .filter((l) => !isPhotoItemError(l))
+              .join('\n')
+      ).trim();
+      if (!text) return;
+      if (firstLine) {
+        // visually separate the streamed stderr from the progress above it
+        logMsg.append('');
+        firstLine = false;
+      }
+      logMsg.append(`<code>${Bun.escapeHTML(text)}</code>`);
+    };
     try {
       for await (const chunk of proc.stderr) {
-        if (firstLine) {
-          // visually separate the streamed stderr from the progress above it
-          logMsg.append('');
-          firstLine = false;
-        }
         const text = decoder.decode(chunk, { stream: true });
         stderr += text;
         if (stderr.length > 2 * STDERR_TAIL) {
@@ -418,9 +439,23 @@ const execYtdlp = limit(
           const nl = stderr.indexOf('\n', stderr.length - STDERR_TAIL);
           stderr = nl === -1 ? stderr.slice(-STDERR_TAIL) : stderr.slice(nl + 1);
         }
-        logMsg.append(`<code>${Bun.escapeHTML(text.trim())}</code>`);
+        // the filter judges whole lines, so a line the chunk boundary cut waits
+        // for its other half
+        held += text;
+        const nl = held.lastIndexOf('\n');
+        if (nl !== -1) {
+          show(held.slice(0, nl));
+          held = held.slice(nl + 1);
+        } else if (held.length > STDERR_TAIL) {
+          // nothing this long is a photo item, and a stream that never sends a
+          // newline would otherwise hold all of it (stderr above is capped)
+          show(held);
+          held = '';
+        }
       }
-      stderr += decoder.decode(); // flush any buffered trailing bytes
+      const tail = decoder.decode(); // flush any buffered trailing bytes
+      stderr += tail;
+      show(held + tail);
 
       await proc.exited;
     } finally {
@@ -482,7 +517,7 @@ const onlyPhotoItemsFailed = (e: YtdlpError) => {
   const lines = errorLines(e.stderr);
   // no ERROR line at all means the run failed for a reason this stderr no
   // longer holds: the tail trim drops the oldest lines
-  return !!lines.length && lines.every((line) => PHOTO_ITEM.test(line));
+  return !!lines.length && lines.every(isPhotoItemError);
 };
 
 const parseEntries = (out: string): VideoInfo[] =>

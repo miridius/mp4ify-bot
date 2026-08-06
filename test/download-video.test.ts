@@ -542,6 +542,92 @@ describe('getInfo', () => {
     expect(infoCount()).toBe(0);
   });
 
+  it("keeps a carousel's photo errors out of the chat entirely", async () => {
+    await stub({
+      exit: '1',
+      stdout: JSON.stringify({ ...VideoInfo, id: 'v1', webpage_url: url }),
+      stderr:
+        'ERROR: [Instagram] photo1: No video formats found!; please report this issue on  https://github.com/yt-dlp/yt-dlp/issues?q=\n' +
+        'ERROR: [Instagram] photo2: No video formats found!\n',
+    });
+
+    await getInfos(log as any, url);
+
+    // not even the blank line that sets streamed stderr off from the progress
+    expect(mockAppend.mock.calls.map(([s]) => s)).toEqual([
+      `🧐 <b>Scraping</b> ${url}...`,
+    ]);
+  });
+
+  it('streams a real error the photo errors are mixed in with', async () => {
+    await stub({
+      exit: '1',
+      stderr:
+        'ERROR: [Instagram] photo1: No video formats found!\n' +
+        'ERROR: [Instagram] v2: Requested content is not available, rate-limit reached\n' +
+        'ERROR: [Instagram] photo3: No video formats found!\n',
+    });
+
+    await expect(getInfos(log as any, url)).rejects.toBeInstanceOf(YtdlpError);
+
+    expect(appendedText()).toContain('rate-limit reached');
+    expect(appendedText()).not.toContain('photo1');
+    expect(appendedText()).not.toContain('photo3');
+  });
+
+  it('streams the photo errors under verbose, which asks for them', async () => {
+    await stub({
+      exit: '1',
+      stderr: 'ERROR: [Instagram] photo1: No video formats found!\n',
+    });
+
+    await getInfos(log as any, url, true);
+
+    expect(appendedText()).toContain('photo1: No video formats found!');
+  });
+
+  it('filters a photo error the chunk boundary cut in half', async () => {
+    await stub({
+      exit: '1',
+      stdout: JSON.stringify({ ...VideoInfo, id: 'v1', webpage_url: url }),
+      stderr: 'ERROR: [Instagram] photo1: No video formats found!\n',
+      // mid-line: the leading half alone reads as a plain unrecognized error
+      stderr_split: '25',
+    });
+
+    await getInfos(log as any, url);
+
+    expect(mockAppend.mock.calls.map(([s]) => s)).toEqual([
+      `🧐 <b>Scraping</b> ${url}...`,
+    ]);
+  });
+
+  it('streams a final line yt-dlp left unterminated', async () => {
+    await stub({ exit: '1', stderr: 'ERROR: Unsupported URL: https://x' });
+
+    await expect(getInfos(log as any, url)).rejects.toBeInstanceOf(YtdlpError);
+
+    expect(appendedText()).toContain('Unsupported URL: https://x');
+  });
+
+  it('stops holding a line that never ends', async () => {
+    // three writes with no newline anywhere, each on its own past the hold
+    // bound: unbounded holding would keep all of it until the process exits,
+    // however long it runs, and emit it as a single block at the end
+    await stub({
+      exit: '1',
+      stderr: 'x'.repeat(210 * 1024),
+      stderr_split: `${70 * 1024},${140 * 1024}`,
+    });
+
+    await expect(getInfos(log as any, url)).rejects.toBeInstanceOf(YtdlpError);
+
+    const blocks = mockAppend.mock.calls.filter(([s]) =>
+      s.startsWith('<code>'),
+    );
+    expect(blocks.length).toBeGreaterThan(1);
+  });
+
   it('keeps the salvage payload out of the logged error', async () => {
     const e = new YtdlpError('failed', 'stderr', false, 'x'.repeat(1000));
     expect(Object.keys(e)).not.toContain('stdout');
@@ -883,6 +969,17 @@ describe('downloadVideo', () => {
         'ERROR: [Instagram] Dbnd91uAyMW: No video formats found!; please report this issue on  https://github.com/yt-dlp/yt-dlp/issues?q= , filling out the appropriate issue template. Confirm you are on the latest version using  yt-dlp -U\n',
       message: 'Dbnd91uAyMW: No video formats found!',
     },
+    // more than one item: no single id is the reason the post held no video
+    {
+      exit: '1',
+      stderr: ['Dbi3QbCCZYU', 'Dbi3Qa4Cdzq', 'Dbi3QbCCcTd']
+        .map(
+          (id) =>
+            `ERROR: [Instagram] ${id}: No video formats found!; please report this issue on  https://github.com/yt-dlp/yt-dlp/issues?q= , filling out the appropriate issue template. Confirm you are on the latest version using  yt-dlp -U\n`,
+        )
+        .join(''),
+      message: 'There is no video in this post',
+    },
     {
       exit: '1',
       stderr:
@@ -1088,12 +1185,19 @@ describe('isPermanentError', () => {
     );
   });
 
-  it('falls back to the photo line when photos are all a post has', () => {
+  it('blames the post, not a photo, when photos are all a post has', () => {
     const stderr =
       'ERROR: [Instagram] photo1: No video formats found!\n' +
       'ERROR: [Instagram] photo2: No video formats found!';
     expect(new YtdlpError('failed', stderr).message).toBe(
-      'photo2: No video formats found!',
+      'There is no video in this post',
+    );
+  });
+
+  it("keeps a lone no-formats line, the extractor's verdict on the post", () => {
+    const stderr = 'ERROR: [Instagram] DaaWmzzAH9s: No video formats found!';
+    expect(new YtdlpError('failed', stderr).message).toBe(
+      'DaaWmzzAH9s: No video formats found!',
     );
   });
 
