@@ -144,3 +144,6 @@ dist
 mp4ify.db
 mp4ify.db-wal
 mp4ify.db-shm
+
+# Agent worktrees: git repos in their own right
+.claude/worktrees/

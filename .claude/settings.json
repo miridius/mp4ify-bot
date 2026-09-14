@@ -7,17 +7,15 @@
       "Bash(git reset:*)"
     ]
   },
-  "hooks": {
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "jq -e '.stop_hook_active == true' >/dev/null && exit 0; [ -n \"$(git -C \"${CLAUDE_PROJECT_DIR:-.}\" status --porcelain 2>/dev/null)\" ] && jq -n '{decision: \"block\", reason: \"The working tree has uncommitted changes. Commit your work before finishing (branch first if on a detached HEAD). If something must stay uncommitted, tell the user why.\"}'; exit 0"
-          }
-        ]
+  "extraKnownMarketplaces": {
+    "miridius-plugins": {
+      "source": {
+        "source": "github",
+        "repo": "miridius/claude-plugins"
       }
-    ]
+    }
   },
-  "enabledPlugins": {}
+  "enabledPlugins": {
+    "gated-workflow@miridius-plugins": true
+  }
 }

@@ -8,8 +8,7 @@
     "@faker-js/faker": "^9.8.0",
     "@types/bun": "latest",
     "oxlint": "^0.16.10",
-    "prettier": "^3.5.3",
-    "simple-git-hooks": "^2.13.0"
+    "prettier": "^3.5.3"
   },
   "peerDependencies": {
     "typescript": "^5"
@@ -21,7 +20,8 @@
     "dev": "bun --watch .",
     "start": "bun .",
     "lint": "oxlint --deny-warnings --fix",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "prepare": "sh scripts/install-hooks.sh"
   },
   "prettier": {
     "singleQuote": true
