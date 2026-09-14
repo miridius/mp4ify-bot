@@ -11,7 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
-      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile --ignore-scripts
       - run: bunx oxlint --deny-warnings
       # same dash gate as the local hook, for pushes that bypassed it
       - run: ./scripts/check-dashes.sh
@@ -32,4 +32,4 @@ jobs:
 
   # NOTE: no e2e job. Tried in 9dce83d: reddit/youtube hard-block GitHub's
   # datacenter IPs (403 / auth walls), so e2e only works from residential
-  # IPs. It runs as the pre-push git hook instead (see .simple-git-hooks.json).
+  # IPs. It runs as the pre-push git hook instead (see scripts/install-hooks.sh).

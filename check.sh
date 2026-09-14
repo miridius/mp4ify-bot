@@ -18,4 +18,4 @@ fi
 # `timeout` runs inside the container, so a hung/non-exiting `bun test` (a leaked
 # handle, a runaway loop) self-kills and `--rm` cleans up, instead of leaving an
 # orphaned container pinning a CPU. -k force-kills if SIGTERM is ignored.
-UID=$(id -u) GID=$(id -g) docker compose run --rm --no-deps test timeout -k 30 300 bun test
+UID=$(id -u) GID=$(id -g) docker compose run --build --rm --no-deps test timeout -k 30 300 bun test
