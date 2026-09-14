@@ -1,0 +1,4 @@
+{
+  "pre-commit": "./.claude/hooks/commit-gate.sh",
+  "pre-push": "./e2e.sh"
+}

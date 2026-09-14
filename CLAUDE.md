@@ -8,7 +8,7 @@ telegram-bot-api server.
   host). The in-container `timeout` bounds the run so a hung/non-exiting `bun
   test` self-kills and `--rm` cleans up instead of orphaning a 100%-CPU
   container; keep it, especially when backgrounding the run:
-  `UID=$(id -u) GID=$(id -g) docker compose run --build --rm --no-deps test timeout -k 30 300 bun test`
+  `UID=$(id -u) GID=$(id -g) docker compose run --rm --no-deps test timeout -k 30 300 bun test`
 - Everything goes on a branch + PR (main is protected). Use /commit, /pr,
   and /merge instead of raw `git commit`, `gh pr create`, `gh pr merge`.
 - Never assume Telegram API behavior from the docs — verify against real
@@ -20,15 +20,3 @@ telegram-bot-api server.
   work or to create GitHub issues.
 - File a GitHub issue only when I ask, with facts only (symptoms + repro for a
   bug, requirements/user story for a feature), never a proposed solution.
-
-Repo-specific commands the workflow skills defer to here:
-
-- QA: drive the live dev bot via web.telegram.org with the browser tools (ask
-  me to log in if there's no session); the dev bot serves the working tree, so
-  don't switch branches mid-QA. Verify the path taken in `docker compose logs
-  dev`.
-- e2e: the /pr e2e gate is `./e2e.sh full`; bare `./e2e.sh` (pre-push) runs a
-  reduced set.
-- Deploy: `./prod.sh`, then confirm via `docker compose ps` and a clean recent
-  `docker compose logs prod`.
-- Mechanical check: `./check.sh`.
