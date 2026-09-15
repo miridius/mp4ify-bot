@@ -1,6 +1,7 @@
 import { $ } from 'bun';
 import {
   afterAll,
+  afterEach,
   beforeEach,
   describe,
   expect,
@@ -8,12 +9,28 @@ import {
   jest,
   mock,
 } from 'bun:test';
-import { blobPath, recordBlob } from '../src/blob-store';
+import { rm } from 'fs/promises';
 import { resetDb } from '../src/db';
 import { downloadVideo, getInfos } from '../src/download-video';
+import { SEVERAL_VIDEOS } from '../src/handlers';
 import { jobsIdle, seedJob, setRetryBaseMs } from '../src/job-queue';
-import { FORMAT_ID_RE, MOCK_USER_ID, withBotApi } from './simulate-bot-api';
-import { rowCount, spyMock, waitUntil } from './test-utils';
+import {
+  FORMAT_ID_RE,
+  MOCK_GROUP_CHAT,
+  MOCK_USER_ID,
+  withBotApi,
+  type MockBotApi,
+} from './simulate-bot-api';
+import {
+  resetStub,
+  rowCount,
+  seedBytes,
+  spyMock,
+  STUB_DIR,
+  stub,
+  urlMessage,
+  waitUntil,
+} from './test-utils';
 
 beforeEach(() => jest.clearAllMocks());
 afterAll(() => mock.restore());
@@ -31,17 +48,27 @@ const hiMessage = { text: 'hi' };
 const isFailureReport = (m: { text?: string }) =>
   !!m.text && m.text.includes('💥 <b>Download failed</b>:');
 
-const urlMessage = (url: string, verbose?: boolean) => ({
-  text: verbose ? `/verbose ${url}` : url,
-  entities: [
-    {
-      offset: verbose ? 9 : 0,
-      length: (verbose ? 9 : 0) + url.length,
-      type: 'url' as const,
-    },
-  ],
-  link_preview_options: { is_disabled: true },
-});
+const runInGroup = async (
+  api: MockBotApi,
+  msg: ReturnType<typeof urlMessage>,
+  timeout: number,
+) => {
+  api.sendTextMessageToBot(msg, MOCK_GROUP_CHAT);
+  // a never-started job would pass a silence assertion vacuously
+  expect(await waitUntil(() => !jobsIdle(), 15_000)).toBe(true);
+  expect(await waitUntil(jobsIdle, timeout)).toBe(true);
+};
+
+const expectSilenceOrRateLimitReport = (api: MockBotApi) => {
+  if (!api.sentMessages.length) return false;
+  const reports = api.sentMessages.filter(isFailureReport);
+  expect(reports).toHaveLength(1);
+  expect(api.sentMessages).toEqual(reports);
+  expect(reports[0]!.text).toMatch(
+    /rate.?limit|login required|empty media response/i,
+  );
+  return true;
+};
 
 const testUrls = [
   'https://www.instagram.com/reel/DKbYQgeoL3F/?igsh=MTh4MnpnYm9hdjJ5OA==',
@@ -129,8 +156,6 @@ describe.if(!!Bun.env.TEST_E2E)('message handler', async () => {
     40_000,
   );
 
-  const groupChat = { id: -1000000000001, title: 'Test Group', type: 'supergroup' };
-
   it.each([
     // a lone photo
     'https://www.instagram.com/p/DbHhjdBJT9O/',
@@ -141,51 +166,33 @@ describe.if(!!Bun.env.TEST_E2E)('message handler', async () => {
     (url) =>
       withBotApi(async (api) => {
         clearInMemoryCache();
-        api.sendTextMessageToBot(urlMessage(url), groupChat);
-        // gate on the job actually starting, else a never-started job passes this
-        // silence test vacuously
-        expect(await waitUntil(() => !jobsIdle(), 15_000)).toBe(true);
-        await waitUntil(jobsIdle, 25_000);
-        // a rate-limited scrape classifies 'unavailable' (whitelisted host =>
-        // one terminal report), so tolerate that live-scrape degradation the
-        // same way the download tests tolerate a 💥
-        if (api.sentMessages.length) {
-          const reports = api.sentMessages.filter(isFailureReport);
-          expect(reports).toHaveLength(1);
-          // pin the tolerated report to rate-limit/login wording: a broken
-          // not-a-video gate would instead report a no-video wording and must
-          // still fail this test
-          expect(reports[0]!.text).toMatch(/rate.?limit|login required|empty media response/i);
-        } else {
-          expect(api.sentMessages).toEqual([]);
-        }
+        await runInGroup(api, urlMessage(url), 25_000);
+        expectSilenceOrRateLimitReport(api);
       }),
     45_000,
   );
 
   it.if(!!Bun.env.TEST_E2E_FULL)(
-    'delivers every video of a post that mixes photos and videos',
+    'refuses a post holding several videos',
     () =>
       withBotApi(async (api) => {
         clearInMemoryCache();
-        const videos = () => api.sentMessages.filter((m: any) => m.video);
-        api.sendTextMessageToBot(
-          // a post holding three videos and a photo
-          urlMessage('https://www.instagram.com/p/DIqghhpok2K/'),
-        );
-        await waitUntil(
-          () => videos().length >= 3 || api.sentMessages.some(isFailureReport),
-          120_000,
-        );
-        const reports = api.sentMessages.filter(isFailureReport);
-        // tolerate a rate-limited scrape the way the group-silence test does
-        if (reports.length) {
-          expect(reports[0]!.text).toMatch(
-            /rate.?limit|login required|empty media response/i,
-          );
-        } else {
-          expect(videos()).toHaveLength(3);
-        }
+        // a post holding three videos and a photo
+        const post = urlMessage('https://www.instagram.com/p/DIqghhpok2K/');
+        const isVerdict = (m: { text?: string }) =>
+          !!m.text?.includes(SEVERAL_VIDEOS);
+
+        await runInGroup(api, post, 120_000);
+        if (expectSilenceOrRateLimitReport(api)) return;
+
+        api.sendTextMessageToBot(post);
+        expect(
+          await waitUntil(() => api.sentMessages.some(isVerdict), 10_000),
+        ).toBe(true);
+        expect(await waitUntil(jobsIdle, 10_000)).toBe(true);
+        const reply = api.sentMessages.find(isVerdict)!.text!;
+        expect(reply).not.toContain('🧐 <b>Scraping</b>');
+        expect(api.sentMessages.filter((m: any) => m.video)).toEqual([]);
       }),
     150_000,
   );
@@ -198,12 +205,12 @@ describe.if(!!Bun.env.TEST_E2E)('message handler', async () => {
         clearInMemoryCache();
         api.sendTextMessageToBot(
           urlMessage('https://www.instagram.com/reel/C0aaaaaaaaa/'),
-          groupChat,
+          MOCK_GROUP_CHAT,
         );
         await waitUntil(() => api.sentMessages.some(isFailureReport), 60_000);
         const reports = api.sentMessages.filter(isFailureReport);
         expect(reports).toHaveLength(1);
-        expect(reports[0]!.chat_id).toBe(groupChat.id);
+        expect(reports[0]!.chat_id).toBe(MOCK_GROUP_CHAT.id);
         // id 0 is the link message: the first update in this fresh api
         expect((reports[0] as any).reply_parameters?.message_id).toBe(0);
       }),
@@ -213,12 +220,10 @@ describe.if(!!Bun.env.TEST_E2E)('message handler', async () => {
 
 describe.todo('inline query handler');
 
-// Drives the whole restart seam: a real bot boots and recovers a job persisted
-// by a prior boot: the success case (blob already on disk, recovery just
-// uploads) and the failure case (no blob, so the recovered download fails fast
-// on placeholder info). Both are network-free, so they run in the normal suite
-// rather than only under TEST_E2E.
+// Network-free, so these run outside TEST_E2E.
 describe('restart recovery', () => {
+  afterEach(() => rm(STUB_DIR, { recursive: true, force: true }));
+
   it('runs a persisted job on the next boot and delivers its video', async () => {
     clearInMemoryCache(); // or a leftover memo masks the no-op this test checks
     resetDb();
@@ -230,14 +235,12 @@ describe('restart recovery', () => {
       webpage_url: 'https://x',
       duration: 1,
     };
-    await Bun.write(blobPath(info), 'not a real video, but non-empty');
-    // seed through the real store helper, exactly what a prior boot's
-    // downloadVideo would have written
-    recordBlob(info as any);
+    await seedBytes(info as any, 'not a real video, but non-empty');
     // a job row left by a prior boot: recovery must run it
     seedJob({
       kind: 'confirmed',
       info,
+      url: 'https://x',
       verbose: false,
       messageId: 1,
       chatId: MOCK_USER_ID,
@@ -261,13 +264,16 @@ describe('restart recovery', () => {
     setRetryBaseMs(1); // don't sleep the real 1s+2s backoff in the test
     resetDb();
 
-    // a confirmed job with no recorded blob: recovery re-runs the download,
-    // which throws (the placeholder info isn't a real video) → retryable, so it
-    // reports through the real (group-capable) LogMessage, editing one message
-    // ⚠️→⚠️→💥 across the 3 attempts rather than sending three
+    await resetStub();
+    await stub({
+      exit: '1',
+      stderr:
+        'ERROR: [generic] x: Unable to download webpage: [Errno -2] Name or service not known\n',
+    });
     seedJob({
       kind: 'confirmed',
       info: { filename: '/storage/does-not-exist.mp4', title: 'T', webpage_url: 'https://x', duration: 1 },
+      url: 'https://x',
       verbose: false,
       messageId: 1,
       chatId: MOCK_USER_ID,

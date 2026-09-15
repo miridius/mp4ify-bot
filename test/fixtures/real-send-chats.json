@@ -1,0 +1,17 @@
+{
+  "description": "Real chat objects the Telegram Bot API echoes in a sendMessage reply, captured 2026-10-05 through the local telegram-bot-api server.",
+  "chats": {
+    "dev_test_group": {
+      "id": -5135380628,
+      "title": "mp4ify-bot testing with Claude",
+      "type": "group",
+      "all_members_are_administrators": false
+    },
+    "inline_cache_group": {
+      "id": -4640446184,
+      "title": "mp4ify testing",
+      "type": "group",
+      "all_members_are_administrators": false
+    }
+  }
+}

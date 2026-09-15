@@ -12,8 +12,16 @@
  */
 import { beforeEach, describe, expect, it } from 'bun:test';
 import payloads from './fixtures/real-payloads.json';
+import sendChats from './fixtures/real-send-chats.json';
 import durationFixtures from './fixtures/video-info-duration.json';
-import { MockBotApi } from './simulate-bot-api';
+import {
+  errResp,
+  MOCK_GROUP_CHAT,
+  MOCK_USER_ID,
+  MockBotApi,
+  REAL_ERRORS,
+  runtimeFetch,
+} from './simulate-bot-api';
 
 const real = payloads.payloads;
 const INTEGRATION = process.env.INTEGRATION === '1';
@@ -121,6 +129,22 @@ describe('real payload structure (fixtures)', () => {
     });
   });
 
+  describe('DM with a /verbose command', () => {
+    it('brackets the command and the url with separate entities', () => {
+      const { message } = real.dm_verbose_command;
+      const [command, url] = message.entities;
+      expect(command).toEqual({
+        offset: 0,
+        length: '/verbose'.length,
+        type: 'bot_command',
+      });
+      expect(url!.type).toBe('url');
+      expect(message.text.slice(url!.offset, url!.offset + url!.length)).toBe(
+        'https://example.com',
+      );
+    });
+  });
+
   describe('DM edited message', () => {
     it('has expected edited_message shape', () => {
       assertEditedMessage(real.dm_edited_message);
@@ -219,13 +243,23 @@ describe('MockBotApi produces compatible update structures', () => {
   });
 
   it('sendTextMessageToBot with group chat override', () => {
-    const groupChat = { id: -5135380628, title: 'Test Group', type: 'group' };
-    api.sendTextMessageToBot({ text: 'test' } as any, groupChat);
+    api.sendTextMessageToBot({ text: 'test' } as any, MOCK_GROUP_CHAT);
     const msg = (api['updates'][0] as any).message;
-    expect(msg.chat.id).toBeLessThan(0);
-    expect(msg.chat.type).toBe('group');
-    expect(msg.chat.title).toBe('Test Group');
+    const realMsg = real.group_plain_text.message;
+    expect(Object.keys(msg).sort()).toEqual(Object.keys(realMsg).sort());
+    expect(Object.keys(msg.from).sort()).toEqual(
+      Object.keys(realMsg.from).sort(),
+    );
+    expect(msg.chat).toEqual(realMsg.chat);
   });
+
+  it.each(Object.values(sendChats.chats))(
+    "a send reply echoes the real server's chat: $title",
+    async (chat) => {
+      const resp = await api.call('sendMessage', { chat_id: chat.id, text: 'x' });
+      expect(((await resp.json()) as any).result.chat).toEqual(chat);
+    },
+  );
 
   it('sendEditedMessageToBot matches real edited_message shape', () => {
     api.sendEditedMessageToBot({ message_id: 42, text: 'edited' } as any);
@@ -234,18 +268,37 @@ describe('MockBotApi produces compatible update structures', () => {
     expect((update as any).edited_message.message_id).toBe(42);
   });
 
-  it('sendCallbackQueryToBot matches real callback_query shape', () => {
-    api.sendTextMessageToBot({ text: 'test' } as any);
-    api.sendCallbackQueryToBot(0, 'test_data');
-    const update = api['updates'][1];
+  it('sendCallbackQueryToBot on a message the bot sent matches the real click', async () => {
+    const realMessage = real.callback_query_confirm.callback_query.message;
+    await api.call('sendMessage', {
+      chat_id: MOCK_USER_ID,
+      text: realMessage.text,
+      reply_markup: realMessage.reply_markup,
+    });
+    const update = api.sendCallbackQueryToBot(0, 'test_data') as any;
     assertCallbackQuery(update);
-    expect((update as any).callback_query.data).toBe('test_data');
+    expect(update.callback_query.data).toBe('test_data');
+    const { message } = update.callback_query;
+    expect(Object.keys(message).sort()).toEqual(Object.keys(realMessage).sort());
+    expect(message.chat.type).toBe(realMessage.chat.type);
+    expect(message.text).toBe(realMessage.text);
+    expect(message.reply_markup).toEqual(realMessage.reply_markup);
+  });
+
+  it('sendInlineQueryToBot matches real DM inline_query shape', () => {
+    const update = api.sendInlineQueryToBot('https://example.com') as any;
+    const { inline_query } = update;
+    expect(Object.keys(inline_query).sort()).toEqual(
+      Object.keys(real.inline_query_dm.inline_query).sort(),
+    );
+    expect(inline_query.id).toMatch(/^\d+$/);
+    expect(inline_query.chat_type).toBe(real.inline_query_dm.inline_query.chat_type);
+    expect(inline_query.offset).toBe('');
+    expect(inline_query.from.is_bot).toBe(false);
   });
 
   it('getMe response matches real bot shape', async () => {
-    const { apiRoot } = await import('../src/consts');
-    const url = new URL(`${apiRoot}/bot${api.botToken}/getMe`);
-    const resp = api.handle(url, { method: 'POST', body: '{}' }) as Response;
+    const resp = await api.call('getMe', {});
     const json = await resp.json();
     const result = json.result;
     expect(result.is_bot).toBe(true);
@@ -255,6 +308,56 @@ describe('MockBotApi produces compatible update structures', () => {
     expect(result).toHaveProperty('can_connect_to_business');
     expect(result).toHaveProperty('has_main_web_app');
   });
+
+  it.each(
+    Object.entries(REAL_ERRORS).filter(
+      ([, captured]) => !('parameters' in captured.body),
+    ),
+  )(
+    "the mock's own error replies match the real server's shape: %s",
+    async (_name, captured) => {
+      const { error_code, description } = captured.body;
+      const resp = errResp(description, error_code);
+      expect(resp.status).toBe(captured.status);
+      expect(await resp.json()).toEqual(captured.body);
+    },
+  );
+
+  it.each([0, 50])(
+    'an aborted poll rejects like the runtime fetch (abort after %pms)',
+    async (abortAfter) => {
+      const server = Bun.serve({
+        port: 0,
+        fetch: async () => {
+          await Bun.sleep(1000);
+          return new Response('{}');
+        },
+      });
+      const aborted = () => {
+        const c = new AbortController();
+        if (abortAfter) setTimeout(() => c.abort(), abortAfter);
+        else c.abort();
+        return c.signal;
+      };
+      const shape = (e: any) => ({
+        name: e?.name,
+        ctor: e?.constructor?.name,
+        message: e?.message,
+      });
+      try {
+        const real = await runtimeFetch(`http://localhost:${server.port}/`, {
+          signal: aborted(),
+        }).catch((e) => e);
+        const mocked = await api
+          .call('getUpdates', { timeout: 50 }, aborted())
+          .catch((e) => e);
+        expect(shape(mocked)).toEqual(shape(real));
+        expect(real.name).toBe('AbortError');
+      } finally {
+        server.stop(true);
+      }
+    },
+  );
 });
 
 // ─── Contract tests: yt-dlp duration (fixtures) ────────────────────────────

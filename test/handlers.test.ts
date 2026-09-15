@@ -6,2532 +6,1624 @@ import {
   it,
   jest,
   mock,
-  spyOn,
 } from 'bun:test';
-import * as fsPromises from 'node:fs/promises';
-import type { Message } from 'telegraf/types';
-import * as blobStore from '../src/blob-store.ts';
-import { db, resetDb } from '../src/db.ts';
-import * as downloadVideo from '../src/download-video.ts';
+import { rm } from 'fs/promises';
 import {
-  callbackQueryHandler,
-  inlineIdle,
-  inlineQueryHandler,
-  processJob,
-  textMessageHandler,
-} from '../src/handlers';
-import * as jobQueue from '../src/job-queue';
-import * as logMessage from '../src/log-message.ts';
-import * as pendingDownloads from '../src/pending-downloads.ts';
+  getBlob,
+  recordBlob,
+  setBlobDuration,
+  setBlobFileId,
+} from '../src/blob-store';
+import { db, resetDb } from '../src/db';
+import payloads from './fixtures/real-payloads.json';
 import {
-  createMockCallbackCtx,
-  createMockMessageCtx,
-  memoize,
+  abortDownloads,
+  MAX_DOWNLOADS_REACHED,
+  resetShutdown,
+  VIDEOS_TO_DECIDE,
+  type VideoInfo,
+} from '../src/download-video';
+import { INLINE_CACHE_CHAT_ID } from '../src/consts';
+import { inlineIdle, processJob, SEVERAL_VIDEOS } from '../src/handlers';
+import {
+  jobsIdle,
+  setRetryBaseMs,
+  type ConfirmedJob,
+  type UrlJob,
+} from '../src/job-queue';
+import { setRetryPassDelayMs } from '../src/log-message';
+import {
+  GONE_REPLY_ID,
+  MOCK_GROUP_CHAT,
+  MOCK_USER_ID,
+  REAL_ERRORS,
+  withBotApi,
+  type MockBotApi,
+} from './simulate-bot-api';
+import {
+  bytesOnDisk,
+  resetStub,
   rowCount,
-  seedInfoRow,
+  seedBytes,
+  seedHandledUrl,
+  seedOversize,
   spyMock,
-  telegramError,
-} from './test-utils.ts';
+  STUB_DIR,
+  stub,
+  stubScrape,
+  stubSpawns,
+  unblockStub,
+  urlMessage,
+  waitUntil,
+  withFailingWrite,
+} from './test-utils';
 
-beforeEach(() => {
+const consoleError = spyMock(console, 'error');
+spyMock(console, 'log');
+
+beforeEach(async () => {
   jest.clearAllMocks();
-  // Full resetDb (not just clearPending): handled_urls rows would otherwise
-  // dedupe away re-used chat/message ids across tests, and blob rows would
-  // leak stored durations into the confirmation-gate tests.
   resetDb();
+  await resetStub();
+  setRetryBaseMs(1);
+  setRetryPassDelayMs(0);
 });
-afterAll(() => mock.restore());
-spyMock(console, 'debug'); // suppress debug logs
-// guard: nothing here should hit the real filesystem unlink
-spyOn(fsPromises, 'unlink').mockResolvedValue(undefined);
+afterAll(async () => {
+  await rm(STUB_DIR, { recursive: true, force: true });
+  setRetryPassDelayMs();
+  mock.restore();
+});
 
-// a real flush posts the thread, which is what gives it a message id
-const landThread = async () => {
-  mockLog.messageId = 4242;
-};
-const mockLog = {
-  append: mock(),
-  flush: mock(landThread),
-  messageId: 4242 as number | undefined,
-  text: 'prior log content',
-};
-const freshThread = async <T>(fn: () => Promise<T>) => {
-  mockLog.messageId = undefined;
-  try {
-    return await fn();
-  } finally {
-    mockLog.messageId = 4242;
-  }
-};
-// a thread whose every send failed: flushing it leaves it without an id
-const deadThread = async <T>(fn: () => Promise<T>) => {
-  mockLog.messageId = undefined;
-  mockLog.flush.mockImplementation(async () => {});
-  try {
-    return await fn();
-  } finally {
-    mockLog.flush.mockImplementation(landThread);
-    mockLog.messageId = 4242;
-  }
-};
-spyOn(logMessage, 'LogMessage').mockReturnValue(mockLog as never);
-// logFor constructs LogMessage through log-message's module-internal binding,
-// which the constructor spy above can't reach: mock it directly, mirroring
-// the real policy (private → the observable mockLog, group → silent)
-spyOn(logMessage, 'logFor').mockImplementation((_tg, chatType) =>
-  chatType === 'private' ? (mockLog as never) : new logMessage.NoLog(),
-);
-const lastAppend = () => mockLog.append.mock.calls.map(([s]) => s).at(-1);
+const TEST_URL = 'https://example.com';
+const LONG = 25 * 60;
 
-const expectNoGroupReport = () => {
-  expect(logMessage.LogMessage).not.toHaveBeenCalled();
-  expect(mockLog.append).not.toHaveBeenCalled();
+const video = (over: Partial<VideoInfo> = {}): VideoInfo => ({
+  webpage_url: TEST_URL,
+  title: 'Test Video',
+  extractor: 'test',
+  id: 'id',
+  filename: 'video.mp4',
+  ext: 'mp4',
+  ...over,
+});
+
+const tooBig = 3 * 1024 * 1024 * 1024;
+
+const failScrape = (stderr: string) =>
+  stub({ exit: '1', stderr: `${stderr}\n` });
+const armDownload = () =>
+  stub({ outfile: 'video.mp4' }, `${STUB_DIR}/download`);
+const failDownload = (stderr: string) =>
+  stub({ exit: '1', stderr: `${stderr}\n` }, `${STUB_DIR}/download`);
+const armProbe = (secs: number) =>
+  stub({ stdout: `${secs}\n` }, `${STUB_DIR}/ffprobe`);
+const failProbe = () =>
+  stub({ exit: '1', stderr: 'corrupt\n' }, `${STUB_DIR}/ffprobe`);
+const serve = async (info = video()) => {
+  await stubScrape([info]);
+  await armDownload();
 };
 
-const expectGroupSilent = (ctx: any) => {
-  expectNoGroupReport();
-  expect(ctx.telegram.sendMessage).not.toHaveBeenCalled();
-};
+const scrapes = async () =>
+  (await stubSpawns()).filter((l) => l.includes('--dump-json'));
+const downloads = async () =>
+  (await stubSpawns()).filter((l) => l.includes('--load-info-json'));
+const probes = async () =>
+  (await stubSpawns()).filter((l) => l.includes('/ffprobe '));
 
-const expectGroupReport = (replyTo: number) => {
-  expect(logMessage.LogMessage).toHaveBeenCalledWith(
-    expect.anything(),
-    expect.objectContaining({ replyTo }),
+const messageOf = (u: any) => u.message ?? u.edited_message;
+const sendText = (
+  api: MockBotApi,
+  msg: Parameters<MockBotApi['sendTextMessageToBot']>[0],
+  edit: boolean,
+) =>
+  edit
+    ? api.sendEditedMessageToBot({ message_id: 42, ...msg })
+    : api.sendTextMessageToBot(msg);
+
+const settle = async (api: MockBotApi, update: { update_id: number }) => {
+  expect(await waitUntil(() => api.handledOffset > update.update_id)).toBe(
+    true,
   );
-  expect(lastAppend()).toMatch(/^💥 <b>Download failed<\/b>:/);
+  expect(await waitUntil(jobsIdle, 10_000)).toBe(true);
 };
 
-const urlJob = {
-  kind: 'url' as const,
-  url: 'https://example.com',
-  chatId: 1,
+const postInGroup = async (api: MockBotApi, url = TEST_URL) => {
+  const u = api.sendTextMessageToBot(urlMessage(url), MOCK_GROUP_CHAT);
+  await settle(api, u);
+  return u.message!.message_id;
+};
+
+const texts = (api: MockBotApi) =>
+  api.sentMessages.flatMap((m) => (m.text ? [m.text] : []));
+const videos = (api: MockBotApi) => api.sentMessages.filter((m) => m.video);
+const prompts = (api: MockBotApi) =>
+  api.sentMessages.filter((m) => m.reply_markup);
+const requestsOf = (api: MockBotApi, method: string) =>
+  api.requests.filter((r) => r.method === method).map((r) => r.data);
+
+const urlJob = (over: Partial<UrlJob> = {}): UrlJob => ({
+  kind: 'url',
+  url: TEST_URL,
+  chatId: MOCK_USER_ID,
   chatType: 'private',
-  messageId: 2,
-  fromId: 3,
+  messageId: 1,
+  fromId: MOCK_USER_ID,
   verbose: false,
-};
-
-// run enqueued jobs inline against the invoking ctx's telegram client, so
-// the handler tests below exercise the full enqueue→process flow
-let bridgeTg: any;
-const mockEnqueue = spyOn(jobQueue, 'enqueueJob').mockImplementation(
-  async (j, guard) => {
-    // honor the guard like the real enqueue: it dedupes (handled_urls) inside
-    // the insert tx, and a false return means this enqueue must be skipped
-    if (guard && !guard()) return;
-    // the queue (not enqueue) runs the job at attempt 1; a retryable error
-    // rethrows to signal the queue to retry, so absorb it here
-    await processJob(bridgeTg, j, 1).catch(() => {});
-  },
-);
-// adoptJob moves a parked confirmation into the queue; mirror that by taking
-// the real pending row and running the confirmed job inline
-const mockAdopt = spyOn(jobQueue, 'adoptJob').mockImplementation(
-  async (id: string) => {
-    const pending = await pendingDownloads.takePending(id);
-    if (!pending) return false; // mirrors the real contract: row already gone
-    await processJob(bridgeTg, pending, 1).catch(() => {});
-    return true;
-  },
-);
-const handle = async (ctx: any) => {
-  bridgeTg = ctx.telegram;
-  await textMessageHandler(ctx);
-};
-const handleCb = async (ctx: any) => {
-  bridgeTg = ctx.telegram;
-  await callbackQueryHandler(ctx);
-};
-
-// Helper to create a mock InlineQueryContext
-const createMockInlineQueryCtx = (overrides: any = {}) => ({
-  inlineQuery: {
-    query: 'https://example.com',
-    ...overrides.inlineQuery,
-  },
-  answerInlineQuery: mock(async () => {}),
-  ...overrides,
+  ...over,
+});
+const groupUrlJob = (url: string) =>
+  urlJob({ url, chatId: MOCK_GROUP_CHAT.id, chatType: 'group' });
+const confirmedJob = (over: Partial<ConfirmedJob> = {}): ConfirmedJob => ({
+  kind: 'confirmed',
+  info: video(),
+  url: TEST_URL,
+  verbose: false,
+  messageId: 1,
+  chatId: MOCK_USER_ID,
+  chatType: 'private',
+  postDownload: false,
+  ...over,
 });
 
-// Mock download-video.ts
-const mockGetInfo = spyOn(downloadVideo, 'getInfo').mockImplementation(
-  memoize(
-    mock(async (_log, url, _verbose) => ({
-      webpage_url: url,
-      title: 'Test Video',
-      extractor: 'test',
-      playlist_title: 'Playlist',
-      id: 'id',
-      description: 'desc',
-      filename: 'video.mp4',
-    })),
-  ),
-);
+const retryNotice = (n: number) =>
+  `⚠️ <b>Download failed</b>, retrying (attempt ${n} of 3)...\n`;
+const failure = (reason: string) => `💥 <b>Download failed</b>: ${reason}`;
+const promptText = (d: string) =>
+  `This video is pretty long (${d}), do you want me to download it anyway?`;
 
-const mockGetInfos = spyOn(downloadVideo, 'getInfos').mockImplementation(
-  async (log, url, verbose) => [await downloadVideo.getInfo(log, url, verbose)],
-);
+const TRANSIENT_SCRAPE =
+  'ERROR: [generic] Unable to download webpage: HTTP Error 503: Service Unavailable';
+const TRANSIENT_SCRAPE_REASON =
+  'Unable to download webpage: HTTP Error 503: Service Unavailable';
+const TRANSIENT_DOWNLOAD =
+  'ERROR: unable to download video data: HTTP Error 403: Forbidden';
+const TRANSIENT_DOWNLOAD_REASON =
+  'unable to download video data: HTTP Error 403: Forbidden';
+const SEND_RATE_LIMITED = REAL_ERRORS.sendMessage_rate_limited;
+const VIDEO_RATE_LIMITED = REAL_ERRORS.sendVideo_rate_limited;
+const BLOCKED = REAL_ERRORS.sendVideo_blocked_by_user;
 
-const mockSendInfo = spyMock(downloadVideo, 'sendInfo');
-const mockDownloadVideo = spyOn(
-  downloadVideo,
-  'downloadVideo',
-).mockResolvedValue('downloaded');
-const mockSendVideo = spyOn(downloadVideo, 'sendVideo').mockResolvedValue({
-  video: { file_id: 'file123' },
-} as Message.VideoMessage);
-const mockProbeDuration = spyOn(
-  downloadVideo,
-  'probeDuration',
-).mockResolvedValue(undefined);
-// pass through to the real releaseBlob so release calls are observable; tests
-// that seed blob rows get the real delete
-const mockReleaseBlob = spyOn(blobStore, 'releaseBlob');
+describe('a private text message', () => {
+  it.each([false, true])(
+    'persists one job per URL carrying the message fields (edit: %p)',
+    (isEdit) =>
+      withBotApi(async (api) => {
+        await serve();
+        await stub({ block: '1' });
+        const u = sendText(api, urlMessage(TEST_URL), isEdit);
+        expect(await waitUntil(() => api.handledOffset > u.update_id)).toBe(
+          true,
+        );
 
-const groupChat = { id: -100, type: 'group', title: 'Test Group' };
+        const rows = db.query('SELECT payload FROM jobs').all() as {
+          payload: string;
+        }[];
+        expect(rows.map((r) => JSON.parse(r.payload))).toEqual([
+          {
+            kind: 'url',
+            url: TEST_URL,
+            chatId: MOCK_USER_ID,
+            chatType: 'private',
+            messageId: messageOf(u).message_id,
+            fromId: MOCK_USER_ID,
+            verbose: false,
+          },
+        ]);
+        await unblockStub();
+        await settle(api, u);
+      }),
+  );
 
-describe.each([false, true])('textMessageHandler, edit: %p', (isEdit) => {
-  it('enqueues one durable job per URL with the message fields', async () => {
-    const ctx = createMockMessageCtx(isEdit);
-    await handle(ctx as any);
-    expect(mockEnqueue).toHaveBeenCalledTimes(1);
-    expect(mockEnqueue).toHaveBeenCalledWith(
-      {
-        kind: 'url',
-        url: 'https://example.com',
-        chatId: 123,
-        chatType: 'private',
-        messageId: 1,
-        fromId: 123,
-        verbose: false,
-        // the mock ran the job inline, and processUrlJob mutates its job
-        // (the mutation is what persists across retries); the recorded call
-        // arg is that same object, so these show here
-        announcedIds: ['test:id'],
-        answered: true,
-        settledIds: ['test:id'],
-      },
-      expect.any(Function), // the handled-urls record, run inside the tx
+  it.each([false, true])(
+    'replies with the progress log, then the video (edit: %p)',
+    (isEdit) =>
+      withBotApi(async (api) => {
+        await serve();
+        const u = sendText(api, urlMessage(TEST_URL), isEdit);
+        await settle(api, u);
+
+        const replyTo = { message_id: messageOf(u).message_id };
+        const [log] = api.sentMessages;
+        expect(log!.reply_parameters).toEqual(replyTo);
+        expect(log!.text).toContain(`🧐 <b>Scraping</b> ${TEST_URL}...`);
+        expect(log!.text).toContain('🎬 <b>Video info:</b>');
+        expect(log!.text).toContain('⬇️ <b>Downloading...</b>');
+        expect(log!.text).toContain('🚀 <b>Uploading');
+        expect(videos(api)).toEqual([
+          expect.objectContaining({
+            chat_id: MOCK_USER_ID,
+            reply_parameters: replyTo,
+          }),
+        ]);
+      }),
+  );
+
+  it.each([false, true])(
+    'prepends a scheme to a host that merely starts with "http" (edit: %p)',
+    (isEdit) =>
+      withBotApi(async (api) => {
+        await serve();
+        await settle(
+          api,
+          sendText(api, urlMessage('httpbin.org/clip'), isEdit),
+        );
+        expect(await scrapes()).toEqual([
+          expect.stringContaining('yt-dlp https://httpbin.org/clip '),
+        ]);
+      }),
+  );
+
+  it.each([false, true])(
+    'sends a URL pasted twice in one message only once (edit: %p)',
+    (isEdit) =>
+      withBotApi(async (api) => {
+        await serve();
+        const text = `${TEST_URL} ${TEST_URL}`;
+        const u = sendText(
+          api,
+          {
+            text,
+            entities: [
+              { type: 'url', offset: 0, length: TEST_URL.length },
+              {
+                type: 'url',
+                offset: TEST_URL.length + 1,
+                length: TEST_URL.length,
+              },
+            ],
+          },
+          isEdit,
+        );
+        await settle(api, u);
+        expect(videos(api)).toHaveLength(1);
+      }),
+  );
+
+  it.each([false, true])(
+    'reports an enqueue failure to the user (edit: %p)',
+    (isEdit) =>
+      withBotApi(async (api) => {
+        let u!: { update_id: number };
+        await withFailingWrite('jobs', 'INSERT', async () => {
+          u = sendText(api, urlMessage(TEST_URL), isEdit);
+          await settle(api, u);
+        });
+        expect(consoleError).toHaveBeenCalledWith(
+          'Failed to enqueue download:',
+          expect.any(Error),
+        );
+        expect(api.sentMessages).toEqual([
+          expect.objectContaining({
+            chat_id: MOCK_USER_ID,
+            text: failure('ENOSPC'),
+            reply_parameters: { message_id: messageOf(u).message_id },
+          }),
+        ]);
+        expect(await stubSpawns()).toEqual([]);
+      }),
+  );
+
+  it('retries a transient failure in one progress message, then reports the reason', () =>
+    withBotApi(async (api) => {
+      await failScrape(TRANSIENT_SCRAPE);
+      await settle(api, api.sendTextMessageToBot(urlMessage(TEST_URL)));
+
+      expect(await scrapes()).toHaveLength(3);
+      const [log, ...rest] = texts(api);
+      expect(rest).toEqual([]);
+      expect(log).toContain(`\n${retryNotice(2)}`);
+      expect(log).toContain(`\n${retryNotice(3)}`);
+      expect(log).toEndWith(failure(TRANSIENT_SCRAPE_REASON));
+    }));
+
+  it('still logs the original error when reporting to the user fails', () =>
+    withBotApi(async (api) => {
+      await failScrape('ERROR: Unsupported URL: https://example.com');
+      api.failNext(SEND_RATE_LIMITED, Infinity);
+      await settle(api, api.sendTextMessageToBot(urlMessage(TEST_URL)));
+
+      expect(api.sentMessages).toEqual([]);
+      expect(consoleError).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'YtdlpError',
+          message: 'Unsupported URL: https://example.com',
+        }),
+      );
+    }));
+
+  it.each([false, true])(
+    'ignores a message without links (edit: %p)',
+    (isEdit) =>
+      withBotApi(async (api) => {
+        const u = isEdit
+          ? api.sendEditedMessageToBot({ message_id: 42, text: 'hi' })
+          : api.sendTextMessageToBot({ text: 'hi' });
+        await settle(api, u);
+        expect(await stubSpawns()).toEqual([]);
+        expect(api.sentMessages).toEqual([]);
+        expect(rowCount('handled_urls')).toBe(0);
+      }),
+  );
+
+  it('downloads a video over 20 min without asking', () =>
+    withBotApi(async (api) => {
+      await serve(video({ duration: LONG }));
+      await settle(api, api.sendTextMessageToBot(urlMessage(TEST_URL)));
+      expect(videos(api)).toHaveLength(1);
+      expect(prompts(api)).toEqual([]);
+    }));
+
+  it('uploads an unknown-duration video without asking, storing its probed duration', () =>
+    withBotApi(async (api) => {
+      await serve();
+      await armProbe(LONG);
+      await settle(api, api.sendTextMessageToBot(urlMessage(TEST_URL)));
+      expect(videos(api)).toHaveLength(1);
+      expect(prompts(api)).toEqual([]);
+      expect(getBlob(video())?.duration).toBe(LONG);
+    }));
+});
+
+it('runs a /verbose request with the yt-dlp output streamed to the chat', () =>
+  withBotApi(async (api) => {
+    await serve();
+    await stub({ stderr: '[debug] Command-line config\n' });
+    const { text, entities } = payloads.payloads.dm_verbose_command.message;
+    await settle(
+      api,
+      api.sendTextMessageToBot({ text, entities: entities as any }),
     );
-  });
-
-  it('prepends a scheme only when a real one is missing', async () => {
-    // "httpbin.org" merely STARTS with "http", it still needs a scheme
-    const text = 'httpbin.org/clip';
-    const ctx = createMockMessageCtx(isEdit);
-    const msg = (ctx as any).message ?? (ctx as any).editedMessage;
-    msg.text = text;
-    msg.entities = [{ type: 'url', offset: 0, length: text.length }];
-    await handle(ctx as any);
-    expect(mockEnqueue).toHaveBeenCalledWith(
-      expect.objectContaining({ url: 'https://httpbin.org/clip' }),
-      expect.any(Function),
+    expect(await scrapes()).toEqual([
+      expect.stringContaining(`yt-dlp ${TEST_URL} --verbose `),
+    ]);
+    expect(texts(api).join('')).toContain(
+      '<code>[debug] Command-line config</code>',
     );
-  });
+    expect(videos(api)).toHaveLength(1);
+  }));
 
-  it('enqueues a URL pasted twice in one message only once', async () => {
-    const text = 'https://example.com https://example.com';
-    const ctx = createMockMessageCtx(isEdit);
-    const msg = (ctx as any).message ?? (ctx as any).editedMessage;
-    msg.text = text;
-    msg.entities = [
-      { type: 'url', offset: 0, length: 19 },
-      { type: 'url', offset: 20, length: 19 },
-    ];
-    await handle(ctx as any);
-    expect(mockEnqueue).toHaveBeenCalledTimes(1);
-  });
-
-  it('reports enqueue failures to the user', async () => {
-    const consoleError = spyMock(console, 'error');
-    mockEnqueue.mockImplementationOnce(() =>
-      Promise.reject(new Error('disk full')),
-    );
-    const ctx = createMockMessageCtx(isEdit);
-    await handle(ctx as any); // must not throw
+it('stays silent on an enqueue failure in a group chat', () =>
+  withBotApi(async (api) => {
+    await withFailingWrite('jobs', 'INSERT', async () => {
+      await postInGroup(api);
+    });
     expect(consoleError).toHaveBeenCalledWith(
       'Failed to enqueue download:',
       expect.any(Error),
     );
-    // reported through the chat-type-aware log, replying to the original
-    // message (logFor is mocked above to hand back mockLog for private chats)
-    expect(logMessage.logFor).toHaveBeenCalledWith(
-      ctx.telegram,
-      'private',
-      expect.objectContaining({ replyTo: 1 }),
-    );
-    expect(mockLog.append).toHaveBeenCalledWith(
-      expect.stringContaining('Download failed'),
-    );
-  });
-
-  it('stays silent on an enqueue failure in a group chat', async () => {
-    const consoleError = spyMock(console, 'error');
-    mockEnqueue.mockImplementationOnce(() =>
-      Promise.reject(new Error('disk full')),
-    );
-    const ctx = createMockMessageCtx(isEdit, { chat: groupChat });
-    await handle(ctx as any); // must not throw
-    expect(consoleError).toHaveBeenCalledWith(
-      'Failed to enqueue download:',
-      expect.any(Error),
-    );
-    expect(logMessage.LogMessage).not.toHaveBeenCalled();
-    expect(ctx.telegram.sendMessage).not.toHaveBeenCalled();
-    consoleError.mockRestore();
-  });
-
-  it('enqueues with fromId 0 when the message has no sender', async () => {
-    const ctx = createMockMessageCtx(isEdit, { from: null });
-    delete (ctx.message || ctx.editedMessage).from;
-    await handle(ctx as any); // must not throw
-    expect(mockEnqueue).toHaveBeenCalledWith(
-      expect.objectContaining({ fromId: 0 }),
-      expect.any(Function),
-    );
-  });
-
-  it('handles a message with a URL', async () => {
-    const ctx = createMockMessageCtx(isEdit);
-    await handle(ctx as any);
-    expect(mockGetInfo).toHaveBeenCalled();
-    expect(mockSendInfo).toHaveBeenCalled();
-    expect(mockDownloadVideo).toHaveBeenCalled();
-    expect(mockSendVideo).toHaveBeenCalled();
-  });
-
-  it('handles download errors gracefully', async () => {
-    const ctx = createMockMessageCtx(isEdit);
-    mockGetInfo.mockRejectedValueOnce(new Error('oh noes!'));
-    const mockError = spyOn(console, 'error').mockImplementationOnce(() => {});
-    await handle(ctx as any);
-    expect(mockGetInfo).toHaveBeenCalled();
-    expect(mockError).toHaveBeenCalledTimes(1);
-    expect(mockLog.append).toHaveBeenCalledWith(
-      '\n⚠️ <b>Download failed</b>, retrying (attempt 2 of 3)...\n',
-    );
-  });
-
-  it('still logs the original error when reporting to the user fails', async () => {
-    const ctx = createMockMessageCtx(isEdit);
-    mockGetInfo.mockImplementationOnce(() =>
-      Promise.reject(new Error('oh noes!')),
-    );
-    const mockError = spyMock(console, 'error');
-    mockLog.flush.mockImplementationOnce(() =>
-      Promise.reject(new Error('telegram down')),
-    );
-    await handle(ctx as any); // must not throw
-    const logged = mockError.mock.calls.map(([first]) => first);
-    expect(logged).toContainEqual(
-      expect.objectContaining({ message: 'oh noes!' }),
-    );
-  });
-
-  it('reports non-Error throws sensibly', async () => {
-    const ctx = createMockMessageCtx(isEdit);
-    mockGetInfo.mockImplementationOnce(() => Promise.reject('string error'));
-    spyMock(console, 'error');
-    await handle(ctx as any);
-    expect(mockLog.append).toHaveBeenCalledWith(
-      '\n⚠️ <b>Download failed</b>, retrying (attempt 2 of 3)...\n',
-    );
-  });
-
-  it('does nothing if no url entities', async () => {
-    const ctx = createMockMessageCtx(isEdit);
-    (ctx.message || ctx.editedMessage).entities = [];
-    await handle(ctx);
-    // Should not call any download functions
-    expect(mockGetInfo).not.toHaveBeenCalled();
-  });
-});
+    expect(api.sentMessages).toEqual([]);
+  }));
 
 describe('edited-message dedup (handled_urls)', () => {
-  it('does not re-send for an edit that keeps the same URL (e.g. a typo fix)', async () => {
-    await handle(createMockMessageCtx(false) as any); // original message
-    expect(mockEnqueue).toHaveBeenCalledTimes(1);
+  const post = async (api: MockBotApi, url = TEST_URL) => {
+    const u = api.sendTextMessageToBot(urlMessage(url));
+    await settle(api, u);
+    return u.message!.message_id;
+  };
+  const edit = (api: MockBotApi, message_id: number, url = TEST_URL) =>
+    settle(api, api.sendEditedMessageToBot({ message_id, ...urlMessage(url) }));
 
-    // the edit re-triggers the handler with the same chat/message ids and URL
-    await handle(createMockMessageCtx(true) as any);
-    expect(mockEnqueue).toHaveBeenCalledTimes(1); // no duplicate video
-  });
-
-  it('treats a scheme-variant of a handled URL as the same video', async () => {
-    // "example.com" and "https://example.com" normalize to one URL: an edit
-    // that merely makes the scheme explicit must not re-send
-    const bare = createMockMessageCtx(false);
-    const msg = (bare as any).message;
-    msg.text = 'example.com';
-    msg.entities = [{ type: 'url', offset: 0, length: 11 }];
-    await handle(bare as any);
-    expect(mockEnqueue).toHaveBeenCalledTimes(1);
-    expect(mockEnqueue).toHaveBeenCalledWith(
-      expect.objectContaining({ url: 'https://example.com' }),
-      expect.any(Function),
-    );
-
-    await handle(createMockMessageCtx(true) as any); // edit: https://example.com
-    expect(mockEnqueue).toHaveBeenCalledTimes(1); // deduped across the variant
-  });
-
-  it('concurrent dispatch of a message and its edit enqueues once', async () => {
-    // telegraf dispatches a poll batch with Promise.all; the record lands
-    // synchronously before the handler's first await, so the second
-    // invocation's pre-check already sees it
-    const a = createMockMessageCtx(false);
-    const b = createMockMessageCtx(true); // same chat/message/url
-    await Promise.all([handle(a as any), handle(b as any)]);
-    expect(mockEnqueue).toHaveBeenCalledTimes(1);
-  });
-
-  it('processes the new URL when an edit changes it', async () => {
-    await handle(createMockMessageCtx(false) as any);
-    expect(mockEnqueue).toHaveBeenCalledTimes(1);
-
-    const edited = createMockMessageCtx(true);
-    const msg = (edited as any).editedMessage;
-    msg.text = 'https://changed.example';
-    msg.entities = [{ type: 'url', offset: 0, length: msg.text.length }];
-    await handle(edited as any);
-    expect(mockEnqueue).toHaveBeenCalledTimes(2);
-    expect(mockEnqueue).toHaveBeenLastCalledWith(
-      expect.objectContaining({ url: 'https://changed.example' }),
-      expect.any(Function),
-    );
-  });
-
-  it('un-records a terminally failed URL so an edit retries it', async () => {
-    // yt-dlp may self-update (or the site recover) after a permanent failure;
-    // the edit gesture must reach a fresh job instead of the dedup record
-    spyMock(console, 'error');
-    mockGetInfo.mockRejectedValueOnce(
-      new downloadVideo.YtdlpError(
-        'failed',
-        'ERROR: Unsupported URL: https://example.com',
-      ),
-    );
-    await handle(createMockMessageCtx(false) as any);
-    expect(mockEnqueue).toHaveBeenCalledTimes(1); // ran, failed terminally
-
-    await handle(createMockMessageCtx(true) as any); // the edit retries
-    expect(mockEnqueue).toHaveBeenCalledTimes(2); // not deduped away
-  });
-
-  it('un-records on a too-large estimate verdict so an edit retries it', async () => {
-    // estimates are unreliable and formats change: the verdict is terminal
-    // for this message, so the edit gesture must reach a fresh job
-    mockGetInfo.mockImplementationOnce(async (_log, url) => ({
-      webpage_url: url,
-      title: 'Huge',
-      filename: 'huge.mp4',
-      filesize: 3000 * 1024 * 1024,
+  it('does not re-send for an edit that keeps the same URL (e.g. a typo fix)', () =>
+    withBotApi(async (api) => {
+      await serve();
+      await edit(api, await post(api));
+      expect(videos(api)).toHaveLength(1);
+      expect(await scrapes()).toHaveLength(1);
     }));
-    await handle(createMockMessageCtx(false) as any);
-    expect(mockEnqueue).toHaveBeenCalledTimes(1);
 
-    await handle(createMockMessageCtx(true) as any); // the edit retries
-    expect(mockEnqueue).toHaveBeenCalledTimes(2);
-  });
+  it('treats a scheme-variant of a handled URL as the same video', () =>
+    withBotApi(async (api) => {
+      await serve();
+      await edit(api, await post(api, 'example.com'), TEST_URL);
+      expect(videos(api)).toHaveLength(1);
+      expect(await scrapes()).toEqual([
+        expect.stringContaining(`yt-dlp ${TEST_URL} `),
+      ]);
+    }));
 
-  it('un-records when the real bytes overshoot (sendVideo returns undefined)', async () => {
-    // a missing/under estimate slips past tooLargeToSend, then sendVideo finds
-    // the real on-disk bytes too large and returns undefined; that too-large
-    // verdict is terminal, so the edit gesture must reach a fresh job
-    mockSendVideo.mockResolvedValueOnce(undefined as any);
-    await handle(createMockMessageCtx(false) as any);
-    expect(mockEnqueue).toHaveBeenCalledTimes(1);
+  it('handles a message and its edit dispatched in one batch once', () =>
+    withBotApi(async (api) => {
+      await serve();
+      const original = api.sendTextMessageToBot(urlMessage(TEST_URL));
+      const edited = api.sendEditedMessageToBot({
+        message_id: original.message!.message_id,
+        ...urlMessage(TEST_URL),
+      });
+      await settle(api, edited);
+      expect(videos(api)).toHaveLength(1);
+    }));
 
-    await handle(createMockMessageCtx(true) as any); // the edit retries
-    expect(mockEnqueue).toHaveBeenCalledTimes(2);
-  });
+  it('processes the new URL when an edit changes it', () =>
+    withBotApi(async (api) => {
+      await serve();
+      await edit(api, await post(api), 'https://changed.example');
+      expect(videos(api)).toHaveLength(2);
+      expect(await scrapes()).toContainEqual(
+        expect.stringContaining('yt-dlp https://changed.example '),
+      );
+    }));
 
-  it('does not mark a URL handled when its enqueue failed (the edit can retry it)', async () => {
-    spyMock(console, 'error');
-    mockEnqueue.mockImplementationOnce(() =>
-      Promise.reject(new Error('disk full')),
-    );
-    await handle(createMockMessageCtx(false) as any);
-    expect(mockEnqueue).toHaveBeenCalledTimes(1);
+  it('un-records a terminally failed URL so an edit retries it', () =>
+    withBotApi(async (api) => {
+      await failScrape('ERROR: Unsupported URL: https://example.com');
+      await edit(api, await post(api));
+      expect(await scrapes()).toHaveLength(2);
+    }));
 
-    await handle(createMockMessageCtx(true) as any); // the edit retries
-    expect(mockEnqueue).toHaveBeenCalledTimes(2);
-  });
+  it('un-records on a too-large estimate verdict so an edit retries it', () =>
+    withBotApi(async (api) => {
+      await serve(video({ filesize: tooBig }));
+      await edit(api, await post(api));
+      expect(
+        texts(api).filter((t) => t.includes('Video too large')),
+      ).toHaveLength(2);
+      expect(await downloads()).toEqual([]);
+    }));
+
+  it('un-records when the real bytes overshoot, so an edit re-downloads and sends', () =>
+    withBotApi(async (api) => {
+      await serve();
+      await seedOversize(video());
+      const id = await post(api);
+      expect(
+        texts(api).some((t) => t.includes('😞 Video too large (2001.00 MB)')),
+      ).toBe(true);
+      expect(videos(api)).toEqual([]);
+
+      await edit(api, id);
+      expect(videos(api)).toHaveLength(1);
+      expect(await downloads()).toHaveLength(1);
+    }));
+
+  it('does not mark a URL handled when its enqueue failed (the edit can retry it)', () =>
+    withBotApi(async (api) => {
+      await serve();
+      let id!: number;
+      await withFailingWrite('jobs', 'INSERT', async () => {
+        id = await post(api);
+      });
+      await edit(api, id);
+      expect(videos(api)).toHaveLength(1);
+    }));
 });
 
-describe('processUrlJob oversize rejection', () => {
-  const oversize = () =>
-    mockGetInfo.mockResolvedValueOnce({
-      webpage_url: 'https://example.com',
-      title: 'Huge',
-      filename: 'huge.mp4',
-      filesize_approx: 3 * 1024 * 1024 * 1024, // 3 GB > the 2 GB send limit
-    } as any);
+describe('oversize estimate', () => {
+  it('rejects an oversize estimate up front, without downloading', () =>
+    withBotApi(async (api) => {
+      await serve(video({ filesize_approx: tooBig }));
+      await settle(api, api.sendTextMessageToBot(urlMessage(TEST_URL)));
+      expect(texts(api)[0]).toContain('😞 Video too large (3072.00 MB)');
+      expect(await downloads()).toEqual([]);
+      expect(videos(api)).toEqual([]);
+    }));
 
-  it('rejects an oversize estimate up front, without downloading', async () => {
-    oversize();
-    const ctx = createMockMessageCtx(false);
-    await handle(ctx as any);
-    expect(mockDownloadVideo).not.toHaveBeenCalled();
-    expect(mockSendVideo).not.toHaveBeenCalled();
-    expect(mockLog.append).toHaveBeenCalledWith(
-      expect.stringContaining('Video too large'),
-    );
-  });
+  it('stays silent on an oversize estimate in a group chat', () =>
+    withBotApi(async (api) => {
+      await serve(video({ filesize_approx: tooBig }));
+      await postInGroup(api);
+      expect(await downloads()).toEqual([]);
+      expect(api.sentMessages).toEqual([]);
+    }));
 
-  it('stays silent on an oversize estimate in a group chat', async () => {
-    oversize();
-    const ctx = createMockMessageCtx(false, { chat: groupChat });
-    await handle(ctx as any);
-    expect(mockDownloadVideo).not.toHaveBeenCalled();
-    expect(mockSendVideo).not.toHaveBeenCalled();
-    // a group's NoLog reports nothing: no message, no confirmation prompt
-    expect(ctx.telegram.sendMessage).not.toHaveBeenCalled();
-  });
+  it('never offers to download an oversize long video in a group chat', () =>
+    withBotApi(async (api) => {
+      await serve(video({ duration: LONG, filesize_approx: tooBig }));
+      await postInGroup(api);
+      expect(await downloads()).toEqual([]);
+      expect(api.sentMessages).toEqual([]);
+    }));
 });
 
-describe('inlineQueryHandler', () => {
-  it('counts an in-flight query for the shutdown drain (inlineIdle)', async () => {
-    // inline work has no durable job row: the drain hold (bot.ts) must wait
-    // on this counter or the process could exit mid-upload and lose the query
-    let release!: (info: any) => void;
-    mockGetInfo.mockImplementationOnce(
-      () => new Promise((r) => (release = r)),
-    );
-    const ctx = createMockInlineQueryCtx();
-    const inFlight = inlineQueryHandler(ctx as any);
-    expect(inlineIdle()).toBe(false);
-    release({
-      webpage_url: 'https://example.com',
-      title: 'T',
-      filename: 'v.mp4',
-    });
-    await inFlight;
-    expect(inlineIdle()).toBe(true);
+describe('inline queries', () => {
+  const ask = async (api: MockBotApi, query = TEST_URL) => {
+    await settle(api, api.sendInlineQueryToBot(query));
+    return api.answeredInlineQueries.map((a) => a.results);
+  };
+  const errorArticle = (detail: string) => ({
+    type: 'article',
+    id: 'error',
+    title: 'Failed to process video',
+    description: detail,
+    input_message_content: {
+      message_text: `Failed to process video: ${detail}`,
+    },
   });
 
-  it('handles an inline query with a URL', async () => {
-    const ctx = createMockInlineQueryCtx();
-    await inlineQueryHandler(ctx as any);
-    expect(mockGetInfo).toHaveBeenCalled();
-    expect(mockDownloadVideo).toHaveBeenCalled();
-    expect(mockSendVideo).toHaveBeenCalled();
-    expect(ctx.answerInlineQuery).toHaveBeenCalled();
-  });
+  it('counts an in-flight query for the shutdown drain (inlineIdle)', () =>
+    withBotApi(async (api) => {
+      await serve();
+      await stub({ block: '1' });
+      const u = api.sendInlineQueryToBot(TEST_URL);
+      expect(await waitUntil(async () => (await stubSpawns()).length > 0)).toBe(
+        true,
+      );
+      expect(inlineIdle()).toBe(false);
 
-  it('does nothing if no URL in query', async () => {
-    const ctx = createMockInlineQueryCtx({
-      inlineQuery: { query: 'no url here' },
-    });
-    await inlineQueryHandler(ctx as any);
-    expect(mockGetInfo).not.toHaveBeenCalled();
-    expect(ctx.answerInlineQuery).not.toHaveBeenCalled();
-  });
+      await unblockStub();
+      await settle(api, u);
+      expect(inlineIdle()).toBe(true);
+      expect(api.answeredInlineQueries).toHaveLength(1);
+    }));
 
-  it('handles errors gracefully and shows error to user', async () => {
-    const ctx = createMockInlineQueryCtx();
-    mockGetInfo.mockRejectedValueOnce(new Error('fail!'));
-    const mockError = spyOn(console, 'error').mockImplementationOnce(() => {});
+  it('uploads to the cache chat and answers with the video variants', () =>
+    withBotApi(async (api) => {
+      await serve();
+      const [results] = await ask(api);
 
-    await inlineQueryHandler(ctx as any);
-    // Should not throw, should show error to user
-    expect(ctx.answerInlineQuery).toHaveBeenCalledWith([
-      expect.objectContaining({
-        type: 'article',
-        title: 'Failed to process video',
-        description: 'fail!',
-      }),
-    ]);
-    expect(mockError).toHaveBeenCalledTimes(1);
-  });
-
-  it('still answers when the download fails after the scrape resolved', async () => {
-    const ctx = createMockInlineQueryCtx();
-    spyOn(console, 'error').mockImplementationOnce(() => {});
-    mockDownloadVideo.mockRejectedValueOnce(
-      new downloadVideo.YtdlpError('failed', 'ERROR: HTTP Error 403'),
-    );
-
-    await inlineQueryHandler(ctx as any);
-
-    expect(ctx.answerInlineQuery).toHaveBeenCalledWith([
-      expect.objectContaining({ title: 'Failed to process video' }),
-    ]);
-  });
-
-  it('shows a sensible message when the inline failure is not an Error', async () => {
-    const ctx = createMockInlineQueryCtx();
-    mockGetInfo.mockRejectedValueOnce('boom');
-    spyOn(console, 'error').mockImplementationOnce(() => {});
-    await inlineQueryHandler(ctx as any);
-    expect(ctx.answerInlineQuery).toHaveBeenCalledWith([
-      expect.objectContaining({
-        description: 'An unknown error occurred',
-        input_message_content: {
-          message_text: 'Failed to process video: An unknown error occurred',
+      expect(videos(api)).toEqual([
+        expect.objectContaining({ chat_id: INLINE_CACHE_CHAT_ID }),
+      ]);
+      const video_file_id = getBlob(video())!.file_id;
+      const source = { inline_keyboard: [[{ text: 'Source', url: TEST_URL }]] };
+      expect(results).toEqual([
+        {
+          id: '0',
+          type: 'video',
+          title: 'Send video "Test Video"',
+          video_file_id,
+          caption: 'Test Video',
+          reply_markup: source,
         },
-      }),
-    ]);
-  });
-
-  it('answers a shutdown-aborted inline query with a retry hint, not a resume promise', async () => {
-    const ctx = createMockInlineQueryCtx();
-    mockGetInfo.mockRejectedValueOnce(new jobQueue.ShutdownAbort());
-    spyOn(console, 'error').mockImplementationOnce(() => {});
-    await inlineQueryHandler(ctx as any);
-    expect(ctx.answerInlineQuery).toHaveBeenCalledWith([
-      expect.objectContaining({
-        // inline work has no queue row; "resumes shortly" would be a lie
-        description: 'The bot is restarting, please try again in a moment',
-      }),
-    ]);
-  });
-
-  it('rejects an oversize video up front, without downloading', async () => {
-    const ctx = createMockInlineQueryCtx();
-    mockGetInfo.mockResolvedValueOnce({
-      webpage_url: 'https://example.com',
-      title: 'Huge',
-      filename: 'huge.mp4',
-      filesize_approx: 3 * 1024 * 1024 * 1024, // 3 GB > the 2 GB send limit
-    } as any);
-
-    await inlineQueryHandler(ctx as any);
-
-    expect(mockDownloadVideo).not.toHaveBeenCalled();
-    expect(mockSendVideo).not.toHaveBeenCalled();
-    expect(ctx.answerInlineQuery).toHaveBeenCalledWith([
-      expect.objectContaining({
-        type: 'article',
-        title: 'Video too large',
-        description: expect.stringContaining('3072.00 MB'),
-        input_message_content: {
-          message_text: 'Video too large to send (3072.00 MB).',
+        {
+          id: '1',
+          type: 'video',
+          title: 'Send without caption',
+          video_file_id,
+          reply_markup: source,
         },
-      }),
-    ]);
-  });
+        {
+          id: '2',
+          type: 'video',
+          title: 'Send without source',
+          video_file_id,
+          caption: 'Test Video',
+        },
+        {
+          id: '3',
+          type: 'video',
+          title: 'Send without caption or source (no context)',
+          video_file_id,
+        },
+      ]);
+    }));
 
-  it('answers "too large" when the real bytes exceed the limit post-download', async () => {
-    const ctx = createMockInlineQueryCtx();
-    mockGetInfo.mockResolvedValueOnce({
-      webpage_url: 'https://example.com',
-      title: 'T',
-      filename: 'v.mp4',
-    } as any);
-    mockSendVideo.mockResolvedValueOnce(undefined as any);
+  it('does nothing if the query holds no URL', () =>
+    withBotApi(async (api) => {
+      expect(await ask(api, 'no url here')).toEqual([]);
+      expect(await stubSpawns()).toEqual([]);
+    }));
 
-    await inlineQueryHandler(ctx as any);
+  it('answers with the error when the scrape fails', () =>
+    withBotApi(async (api) => {
+      await failScrape(
+        'ERROR: [generic] Unable to download webpage: HTTP Error 404: Not Found',
+      );
+      expect(await ask(api)).toEqual([
+        [errorArticle('Unable to download webpage: HTTP Error 404: Not Found')],
+      ]);
+      expect(consoleError).toHaveBeenCalledWith(
+        'error while handling inline query:',
+        expect.anything(),
+      );
+    }));
 
-    expect(mockDownloadVideo).toHaveBeenCalled();
-    expect(ctx.answerInlineQuery).toHaveBeenCalledWith([
-      expect.objectContaining({ type: 'article', title: 'Video too large' }),
-    ]);
-  });
+  it('survives a failing error answer', () =>
+    withBotApi(async (api) => {
+      await failScrape('ERROR: Unsupported URL: https://example.com');
+      api.failNext(REAL_ERRORS.answerInlineQuery_query_too_old);
+      expect(await ask(api)).toEqual([]);
+      expect(consoleError).toHaveBeenCalledWith(
+        'Failed to send inline error result:',
+        expect.any(Error),
+      );
+    }));
+
+  it('still answers when the download fails after the scrape resolved', () =>
+    withBotApi(async (api) => {
+      await stubScrape([video()]);
+      await failDownload(TRANSIENT_DOWNLOAD);
+      expect(await ask(api)).toEqual([
+        [errorArticle(TRANSIENT_DOWNLOAD_REASON)],
+      ]);
+    }));
+
+  it('answers a shutdown-aborted query with a retry hint, not a resume promise', () =>
+    withBotApi(async (api) => {
+      await serve();
+      await stub({ block: '1' });
+      const u = api.sendInlineQueryToBot(TEST_URL);
+      expect(await waitUntil(async () => (await stubSpawns()).length > 0)).toBe(
+        true,
+      );
+      abortDownloads();
+      try {
+        await settle(api, u);
+      } finally {
+        resetShutdown();
+      }
+      expect(api.answeredInlineQueries.map((a) => a.results)).toEqual([
+        [errorArticle('The bot is restarting, please try again in a moment')],
+      ]);
+    }));
+
+  it('rejects an oversize video up front, without downloading', () =>
+    withBotApi(async (api) => {
+      await serve(video({ filesize_approx: tooBig }));
+      expect(await ask(api)).toEqual([
+        [
+          {
+            type: 'article',
+            id: 'too-large',
+            title: 'Video too large',
+            description: 'Too large to send (3072.00 MB).',
+            input_message_content: {
+              message_text: 'Video too large to send (3072.00 MB).',
+            },
+          },
+        ],
+      ]);
+      expect(await downloads()).toEqual([]);
+    }));
+
+  it('answers "too large" and drops the bytes when they exceed the limit post-download', () =>
+    withBotApi(async (api) => {
+      await stubScrape([video()]);
+      await seedOversize(video());
+      expect(await ask(api)).toEqual([
+        [
+          expect.objectContaining({
+            type: 'article',
+            title: 'Video too large',
+            description: 'Too large to send.',
+          }),
+        ],
+      ]);
+      expect(await bytesOnDisk(video())).toBe(false);
+    }));
 });
 
-describe('confirmation for long videos (>20 min)', () => {
-  const LONG_DURATION = 25 * 60; // 25 minutes
+const promptFor = async (api: MockBotApi) => {
+  const linkId = await postInGroup(api);
+  const promptId = api.sentMessages.findIndex((m) => m.reply_markup);
+  expect(promptId).toBeGreaterThanOrEqual(0);
+  const [yes, no] = api.sentMessages[promptId]!.reply_markup.inline_keyboard[0];
+  return {
+    linkId,
+    promptId,
+    yes: yes.callback_data as string,
+    no: no.callback_data as string,
+  };
+};
+const botMessage = async (api: MockBotApi) => {
+  await api.call('sendMessage', { chat_id: MOCK_USER_ID, text: 'Sure?' });
+  return api.sentMessages.length - 1;
+};
+const click = async (
+  api: MockBotApi,
+  promptId: number,
+  data: string,
+  user?: { id: number },
+) => {
+  const u = api.sendCallbackQueryToBot(promptId, data, user);
+  await settle(api, u);
+  return u;
+};
+const answerTo = (api: MockBotApi, u: any) =>
+  api.answeredCallbacks.find((a) => a.callback_query_id === u.callback_query.id)
+    ?.text;
+const deleted = (api: MockBotApi) => requestsOf(api, 'deleteMessage');
 
-  const mockGetInfoLong = () =>
-    mockGetInfo.mockImplementation(
-      memoize(
-        mock(async (_log, url, _verbose) => ({
-          webpage_url: url,
-          title: 'Long Video',
-          extractor: 'test',
-          id: 'id',
-          description: 'desc',
-          filename: 'long-video.mp4',
-          duration: LONG_DURATION,
-        })),
-      ),
-    );
+describe('confirmation for long videos (>20 min) in groups', () => {
+  it('leaves no orphaned pending row when the confirmation send fails', () =>
+    withBotApi(async (api) => {
+      await serve(video({ duration: LONG }));
+      api.failNext(SEND_RATE_LIMITED);
+      await postInGroup(api);
 
-  const mockGetInfoShort = (duration: number = 5 * 60) =>
-    mockGetInfo.mockImplementation(
-      memoize(
-        mock(async (_log: any, url: string) => ({
-          webpage_url: url,
-          title: 'Short Video',
-          extractor: 'test',
-          id: 'id',
-          description: 'desc',
-          filename: 'short-video.mp4',
-          duration,
-        })),
-      ),
-    );
+      const attempts = requestsOf(api, 'sendMessage').filter(
+        (m) => m.text === promptText('25m'),
+      );
+      expect(attempts).toHaveLength(2);
+      expect(prompts(api)).toHaveLength(1);
+      expect(rowCount('pending')).toBe(1);
+    }));
 
-  // Helper: trigger confirmation in a group chat and return the button callback data
-  const triggerConfirmation = async () => {
-    mockGetInfoLong();
-    const msgCtx = createMockMessageCtx(false, { chat: groupChat });
-    await handle(msgCtx as any);
-    const buttons = (msgCtx.telegram.sendMessage as any).mock.calls[0][2]
-      .reply_markup.inline_keyboard[0];
-    return {
-      msgCtx,
-      confirmData: buttons[0].callback_data as string,
-      cancelData: buttons[1].callback_data as string,
+  it('shows confirmation buttons instead of downloading', () =>
+    withBotApi(async (api) => {
+      await serve(video({ duration: LONG }));
+      const { linkId } = await promptFor(api);
+
+      expect(api.sentMessages).toEqual([
+        expect.objectContaining({
+          chat_id: MOCK_GROUP_CHAT.id,
+          text: promptText('25m'),
+          reply_parameters: { message_id: linkId },
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: '👍 Yes please',
+                  callback_data: expect.stringMatching(/^dl:/),
+                },
+                {
+                  text: '👎 No thanks',
+                  callback_data: expect.stringMatching(/^no:/),
+                },
+              ],
+            ],
+          },
+        }),
+      ]);
+      expect(await downloads()).toEqual([]);
+    }));
+
+  it('formats the duration with seconds', () =>
+    withBotApi(async (api) => {
+      await serve(video({ duration: LONG + 30 }));
+      await promptFor(api);
+      expect(texts(api)).toEqual([promptText('25m 30s')]);
+    }));
+
+  it('downloads a video of 20 min or less immediately', () =>
+    withBotApi(async (api) => {
+      await serve(video({ duration: 5 * 60 }));
+      await postInGroup(api);
+      expect(videos(api)).toEqual([
+        expect.objectContaining({ chat_id: MOCK_GROUP_CHAT.id }),
+      ]);
+    }));
+
+  it('asks after the download when the probed duration is long though metadata says short', () =>
+    withBotApi(async (api) => {
+      await serve(video({ duration: 5 * 60 }));
+      await armProbe(LONG);
+      await promptFor(api);
+
+      expect(await downloads()).toHaveLength(1);
+      expect(videos(api)).toEqual([]);
+      expect(texts(api)).toEqual([promptText('25m')]);
+      expect(await bytesOnDisk(video())).toBe(true);
+      expect(rowCount('handled_urls')).toBe(1);
+    }));
+
+  it('sends when the probed duration is short too', () =>
+    withBotApi(async (api) => {
+      await serve(video({ duration: 5 * 60 }));
+      await armProbe(5 * 60);
+      await postInGroup(api);
+      expect(videos(api)).toHaveLength(1);
+    }));
+
+  it('gates on the stored duration BEFORE download when metadata lacks one (uploaded blob, bytes gone)', () =>
+    withBotApi(async (api) => {
+      recordBlob(video());
+      setBlobDuration(video(), LONG);
+      setBlobFileId(video(), 'uploaded-file-id');
+      await serve();
+      await promptFor(api);
+
+      expect(texts(api)).toEqual([promptText('25m')]);
+      expect(await stubSpawns()).toEqual([
+        expect.stringContaining('--dump-json'),
+      ]);
+      expect(videos(api)).toEqual([]);
+    }));
+
+  describe('button clicks', () => {
+    const prompted = async (api: MockBotApi) => {
+      await serve(video({ duration: LONG }));
+      return promptFor(api);
     };
+
+    it('confirms the download when the requester clicks Yes', () =>
+      withBotApi(async (api) => {
+        const p = await prompted(api);
+        const u = await click(api, p.promptId, p.yes);
+
+        expect(answerTo(api, u)).toBe('Starting download...');
+        expect(deleted(api)).toEqual([
+          { chat_id: MOCK_GROUP_CHAT.id, message_id: p.promptId },
+        ]);
+        expect(videos(api)).toEqual([
+          expect.objectContaining({
+            chat_id: MOCK_GROUP_CHAT.id,
+            reply_parameters: { message_id: p.linkId },
+          }),
+        ]);
+      }));
+
+    it('lets a different group member confirm', () =>
+      withBotApi(async (api) => {
+        const p = await prompted(api);
+        const u = await click(api, p.promptId, p.yes, { id: 999 });
+        expect(answerTo(api, u)).toBe('Starting download...');
+        expect(videos(api)).toHaveLength(1);
+      }));
+
+    it('cancels when the requester clicks No', () =>
+      withBotApi(async (api) => {
+        const p = await prompted(api);
+        const u = await click(api, p.promptId, p.no);
+
+        expect(answerTo(api, u)).toBe('Cancelled.');
+        expect(deleted(api)).toEqual([
+          { chat_id: MOCK_GROUP_CHAT.id, message_id: p.promptId },
+        ]);
+        expect(await downloads()).toEqual([]);
+        expect(videos(api)).toEqual([]);
+        expect(rowCount('pending')).toBe(0);
+      }));
+
+    it('rejects a cancel from a non-requester without removing the pending row', () =>
+      withBotApi(async (api) => {
+        const p = await prompted(api);
+        const u = await click(api, p.promptId, p.no, { id: 999 });
+
+        expect(answerTo(api, u)).toBe('Only the requester can cancel.');
+        expect(deleted(api)).toEqual([]);
+        expect(rowCount('pending')).toBe(1);
+      }));
+
+    it('treats an authorized cancel as unavailable if a confirm adopted it first', () =>
+      withBotApi(async (api) => {
+        const p = await prompted(api);
+        // the cancel peeks the row, then the confirm adopts it before the
+        // cancel's take
+        const cancel = api.sendCallbackQueryToBot(p.promptId, p.no);
+        const confirm = api.sendCallbackQueryToBot(p.promptId, p.yes);
+        await settle(api, confirm);
+
+        expect(answerTo(api, cancel)).toBe(
+          'This request is no longer available.',
+        );
+        expect(answerTo(api, confirm)).toBe('Starting download...');
+        expect(videos(api)).toHaveLength(1);
+      }));
+
+    it('answers "Something went wrong" when handling throws unexpectedly', () =>
+      withBotApi(async (api) => {
+        const p = await prompted(api);
+        let u: unknown;
+        await withFailingWrite('pending', 'DELETE', async () => {
+          u = await click(api, p.promptId, p.yes);
+        });
+        expect(answerTo(api, u)).toBe('Something went wrong.');
+        expect(consoleError).toHaveBeenCalledWith(
+          'Error handling callback query:',
+          expect.any(Error),
+        );
+      }));
+
+    it('answers silently for malformed callback data', () =>
+      withBotApi(async (api) => {
+        const u = await click(api, await botMessage(api), 'garbage');
+        expect(answerTo(api, u)).toBe('');
+        expect(await stubSpawns()).toEqual([]);
+      }));
+
+    it('survives a failing answerCbQuery', () =>
+      withBotApi(async (api) => {
+        api.failNext(REAL_ERRORS.answerCallbackQuery_query_too_old);
+        await click(api, await botMessage(api), 'garbage');
+        expect(consoleError).toHaveBeenCalledWith(
+          'answerCbQuery failed:',
+          expect.any(Error),
+        );
+      }));
+
+    it('answers unavailable for an unknown request id', () =>
+      withBotApi(async (api) => {
+        const u = await click(api, await botMessage(api), 'dl:nonexistent');
+        expect(answerTo(api, u)).toBe('This request is no longer available.');
+        expect(await stubSpawns()).toEqual([]);
+      }));
+
+    it('leaves the claim clickable when the move into the queue fails', () =>
+      withBotApi(async (api) => {
+        const p = await prompted(api);
+        let first: unknown;
+        await withFailingWrite('jobs', 'INSERT', async () => {
+          first = await click(api, p.promptId, p.yes);
+        });
+        expect(answerTo(api, first)).toBe('Something went wrong.');
+
+        const second = await click(api, p.promptId, p.yes);
+        expect(answerTo(api, second)).toBe('Starting download...');
+        expect(videos(api)).toHaveLength(1);
+      }));
+
+    it('answers unavailable on a duplicate confirm', () =>
+      withBotApi(async (api) => {
+        const p = await prompted(api);
+        const first = await click(api, p.promptId, p.yes);
+        const second = await click(api, p.promptId, p.yes);
+        expect(answerTo(api, first)).toBe('Starting download...');
+        expect(answerTo(api, second)).toBe(
+          'This request is no longer available.',
+        );
+        expect(videos(api)).toHaveLength(1);
+      }));
+
+    it('keeps retries of a confirmed download silent in a group, reporting only the terminal failure', () =>
+      withBotApi(async (api) => {
+        const p = await prompted(api);
+        await failDownload(TRANSIENT_DOWNLOAD);
+        const u = await click(api, p.promptId, p.yes);
+
+        expect(answerTo(api, u)).toBe('Starting download...');
+        expect(await downloads()).toHaveLength(3);
+        expect(texts(api)).toEqual([
+          promptText('25m'),
+          failure(TRANSIENT_DOWNLOAD_REASON),
+        ]);
+      }));
+
+    it('answers unavailable on a duplicate cancel', () =>
+      withBotApi(async (api) => {
+        const p = await prompted(api);
+        const first = await click(api, p.promptId, p.no);
+        const second = await click(api, p.promptId, p.no);
+        expect(answerTo(api, first)).toBe('Cancelled.');
+        expect(answerTo(api, second)).toBe(
+          'This request is no longer available.',
+        );
+      }));
+  });
+});
+
+describe('post-download duration check in groups', () => {
+  const unknownLength = async (probed = LONG) => {
+    await serve();
+    await armProbe(probed);
   };
 
-  it('does not orphan the pending row when the confirmation send fails', async () => {
-    mockGetInfoLong();
-    const ctx = createMockMessageCtx(false, { chat: groupChat });
-    (ctx.telegram.sendMessage as any).mockRejectedValueOnce(new Error('429'));
-    const mockError = spyMock(console, 'error');
+  it('releases the blob and the pending row when a post-download confirmation send fails', () =>
+    withBotApi(async (api, bot) => {
+      await unknownLength();
+      api.failNext(SEND_RATE_LIMITED);
 
-    await handle(ctx as any); // the handler contains the send failure
+      // before the final attempt, only the prompt's own cleanup can have
+      // released anything
+      await expect(
+        processJob(bot.telegram, groupUrlJob(TEST_URL), 1),
+      ).rejects.toThrow(SEND_RATE_LIMITED.body.description);
+      expect(requestsOf(api, 'sendMessage')).toEqual([
+        expect.objectContaining({ text: promptText('25m') }),
+      ]);
+      expect(rowCount('pending')).toBe(0);
+      expect(getBlob(video())).toBeNull();
+      expect(await bytesOnDisk(video())).toBe(false);
+    }));
 
-    // the confirmation send was actually attempted (and is the only send, so
-    // the rejection hit it): without this the no-orphan check passes vacuously
-    expect(ctx.telegram.sendMessage).toHaveBeenCalledTimes(1);
-    expect(rowCount('pending')).toBe(0); // the parked row was rolled back
-    mockError.mockRestore();
-  });
+  it('downloads, then asks when the duration is unknown and ffprobe finds >20 min', () =>
+    withBotApi(async (api) => {
+      await unknownLength();
+      const { linkId } = await promptFor(api);
 
-  describe.each([false, true])('textMessageHandler, edit: %p', (isEdit) => {
-    it('shows confirmation buttons for video >20 min in group chat', async () => {
-      mockGetInfoLong();
-      const ctx = createMockMessageCtx(isEdit, { chat: groupChat });
-      await handle(ctx as any);
-
-      // Should NOT download
-      expect(mockDownloadVideo).not.toHaveBeenCalled();
-      expect(mockSendVideo).not.toHaveBeenCalled();
-
-      // Should send a message with inline keyboard
-      expect(ctx.telegram.sendMessage).toHaveBeenCalledTimes(1);
-      const [chatId, text, opts] = (ctx.telegram.sendMessage as any).mock
-        .calls[0];
-      expect(chatId).toBe(-100);
-      expect(text).toBe(
-        'This video is pretty long (25m), do you want me to download it anyway?',
+      expect(await downloads()).toHaveLength(1);
+      expect(videos(api)).toEqual([]);
+      expect(api.sentMessages).toEqual([
+        expect.objectContaining({
+          text: promptText('25m'),
+          reply_parameters: { message_id: linkId },
+        }),
+      ]);
+      expect(api.sentMessages[0]!.reply_markup.inline_keyboard[0]).toHaveLength(
+        2,
       );
-      expect(opts.reply_parameters).toEqual({ message_id: 1 });
-      expect(opts.reply_markup.inline_keyboard).toBeArray();
-      const buttons = opts.reply_markup.inline_keyboard[0];
-      expect(buttons).toHaveLength(2);
-      expect(buttons[0].callback_data).toMatch(/^dl:/);
-      expect(buttons[1].callback_data).toMatch(/^no:/);
-    });
+    }));
 
-    it('formats duration with seconds in confirmation message', async () => {
-      mockGetInfo.mockImplementation(
-        memoize(
-          mock(async (_log, url, _verbose) => ({
-            webpage_url: url,
-            title: 'Long Video',
-            extractor: 'test',
-            id: 'id',
-            description: 'desc',
-            filename: 'long-video.mp4',
-            duration: 25 * 60 + 30, // 25m 30s
-          })),
-        ),
+  it('asks before downloading when the duration is 0 and a past probe stored >20 min', () =>
+    withBotApi(async (api) => {
+      await serve(video({ duration: 0 }));
+      recordBlob(video());
+      setBlobDuration(video(), LONG);
+      await promptFor(api);
+      expect(await downloads()).toEqual([]);
+    }));
+
+  it('downloads, then asks when the duration is 0 and ffprobe finds >20 min', () =>
+    withBotApi(async (api) => {
+      await serve(video({ duration: 0 }));
+      await armProbe(LONG);
+      await promptFor(api);
+      expect(await downloads()).toHaveLength(1);
+      expect(videos(api)).toEqual([]);
+    }));
+
+  it('parks the probed duration without the sponsor chapters it already excludes', () =>
+    withBotApi(async (api) => {
+      await serve(
+        video({
+          sponsorblock_chapters: [
+            {
+              start_time: 0,
+              end_time: 60,
+              category: 'sponsor',
+              title: 'Sponsor',
+              type: 'skip',
+            },
+          ],
+        }),
       );
-      const ctx = createMockMessageCtx(isEdit, { chat: groupChat });
-      await handle(ctx as any);
-
-      const [, text] = (ctx.telegram.sendMessage as any).mock.calls[0];
-      expect(text).toBe(
-        'This video is pretty long (25m 30s), do you want me to download it anyway?',
-      );
-    });
-
-    it('downloads immediately for video >20 min in private chat', async () => {
-      mockGetInfoLong();
-      const ctx = createMockMessageCtx(isEdit);
-      await handle(ctx as any);
-
-      // Private chats skip confirmation
-      expect(mockDownloadVideo).toHaveBeenCalled();
-      expect(mockSendVideo).toHaveBeenCalled();
-    });
-
-    it('downloads immediately for video <=20 min in group chat', async () => {
-      mockGetInfoShort();
-      const ctx = createMockMessageCtx(isEdit, { chat: groupChat });
-      await handle(ctx as any);
-
-      expect(mockDownloadVideo).toHaveBeenCalled();
-      expect(mockSendVideo).toHaveBeenCalled();
-    });
-
-    // blobKey depends only on the identity fields, so this matches whatever
-    // info object the mocked getInfo hands the handler for the same video
-    const shortInfo = {
-      extractor: 'test',
-      id: 'id',
-      filename: 'short-video.mp4',
-      title: 'Short Video',
-    } as any;
-
-    it('checks the stored real duration after download in group chats even when metadata says short', async () => {
-      // metadata claims 5 min, but the blob row (written by downloadVideo's
-      // post-download probe: mocked here, so seed it) knows the real 25 min:
-      // the post-download backstop must park a confirmation, not send
-      mockGetInfoShort(5 * 60);
-      blobStore.recordBlob(shortInfo);
-      blobStore.setBlobDuration(shortInfo, 25 * 60);
-      const ctx = createMockMessageCtx(isEdit, { chat: groupChat });
-      await handle(ctx as any);
-
-      expect(mockDownloadVideo).toHaveBeenCalled();
-      expect(mockSendVideo).not.toHaveBeenCalled();
-      const [, text] = (ctx.telegram.sendMessage as any).mock.calls[0];
-      expect(text).toContain('pretty long (25m)');
-    });
-
-    it('sends when the stored real duration is short too', async () => {
-      mockGetInfoShort(5 * 60);
-      blobStore.recordBlob(shortInfo);
-      blobStore.setBlobDuration(shortInfo, 5 * 60);
-      const ctx = createMockMessageCtx(isEdit, { chat: groupChat });
-      await handle(ctx as any);
-
-      expect(mockDownloadVideo).toHaveBeenCalled();
-      expect(mockSendVideo).toHaveBeenCalled();
-    });
-
-    it('gates on the stored duration BEFORE download when metadata lacks one (uploaded blob, bytes gone)', async () => {
-      // a >20-min video with NO metadata duration was already uploaded once
-      // (file_id cached, bytes disposed): nothing left to probe, so only the
-      // stored duration can keep it from slipping past the group gate
-      // (an explicit `undefined` would hit mockGetInfoShort's 5-min default)
-      mockGetInfo.mockImplementation(
-        memoize(
-          mock(async (_log: any, url: string) => ({
-            webpage_url: url,
-            title: 'Short Video',
-            extractor: 'test',
-            id: 'id',
-            description: 'desc',
-            filename: 'short-video.mp4',
-          })),
-        ),
-      );
-      blobStore.recordBlob(shortInfo);
-      blobStore.setBlobDuration(shortInfo, 25 * 60);
-      blobStore.setBlobFileId(shortInfo, 'cached-file-id');
-      const ctx = createMockMessageCtx(isEdit, { chat: groupChat });
-      await handle(ctx as any);
-
-      // parked for confirmation up front: no download, no send
-      expect(mockDownloadVideo).not.toHaveBeenCalled();
-      expect(mockSendVideo).not.toHaveBeenCalled();
-      const [, text] = (ctx.telegram.sendMessage as any).mock.calls[0];
-      expect(text).toContain('pretty long');
-    });
-  });
-
-  describe('callbackQueryHandler', () => {
-    it('confirms download when requester clicks Download', async () => {
-      const { confirmData } = await triggerConfirmation();
-
-      const cbCtx = createMockCallbackCtx(confirmData, 123);
-      await handleCb(cbCtx as any);
-
-      expect(cbCtx.answerCbQuery).toHaveBeenCalledWith('Starting download...');
-      expect(cbCtx.deleteMessage).toHaveBeenCalled();
-      expect(mockDownloadVideo).toHaveBeenCalled();
-      expect(mockSendVideo).toHaveBeenCalled();
-    });
-
-    it('allows a different group member to confirm download', async () => {
-      const { confirmData } = await triggerConfirmation();
-
-      const cbCtx = createMockCallbackCtx(confirmData, 999);
-      await handleCb(cbCtx as any);
-
-      expect(cbCtx.answerCbQuery).toHaveBeenCalledWith('Starting download...');
-      expect(mockDownloadVideo).toHaveBeenCalled();
-      expect(mockSendVideo).toHaveBeenCalled();
-    });
-
-    it('cancels download when requester clicks Cancel', async () => {
-      const { cancelData } = await triggerConfirmation();
-
-      const cbCtx = createMockCallbackCtx(cancelData, 123);
-      await handleCb(cbCtx as any);
-
-      expect(cbCtx.answerCbQuery).toHaveBeenCalledWith('Cancelled.');
-      expect(cbCtx.deleteMessage).toHaveBeenCalled();
-      expect(mockDownloadVideo).not.toHaveBeenCalled();
-      expect(mockSendVideo).not.toHaveBeenCalled();
-    });
-
-    it('rejects cancel from non-requester without removing the pending row', async () => {
-      const { cancelData } = await triggerConfirmation();
-      const takeSpy = spyOn(pendingDownloads, 'takePending');
-
-      const cbCtx = createMockCallbackCtx(cancelData, 999);
-      await handleCb(cbCtx as any);
-
-      expect(cbCtx.answerCbQuery).toHaveBeenCalledWith(
-        'Only the requester can cancel.',
-      );
-      expect(mockDownloadVideo).not.toHaveBeenCalled();
-      expect(takeSpy).not.toHaveBeenCalled();
-      takeSpy.mockRestore();
-    });
-
-    it('treats an authorized cancel as unavailable if a confirm adopted it first', async () => {
-      const { cancelData } = await triggerConfirmation();
-      spyOn(pendingDownloads, 'takePending').mockResolvedValueOnce(undefined);
-
-      const cbCtx = createMockCallbackCtx(cancelData, 123);
-      await handleCb(cbCtx as any);
-
-      expect(cbCtx.answerCbQuery).toHaveBeenCalledWith(
-        'This request is no longer available.',
-      );
-    });
-
-    it('answers gracefully when handling throws unexpectedly', async () => {
-      const mockError = spyMock(console, 'error');
-      mockAdopt.mockImplementationOnce(() => {
-        throw new Error('disk on fire');
-      });
-      await triggerConfirmation();
-      const cbCtx = createMockCallbackCtx('dl:aaaa', 123);
-      await handleCb(cbCtx as any); // must not throw
-      expect(mockError).toHaveBeenCalledWith(
-        'Error handling callback query:',
-        expect.any(Error),
-      );
-      expect(cbCtx.answerCbQuery).toHaveBeenCalledWith('Something went wrong.');
-    });
-
-    it('answers silently for malformed callback data', async () => {
-      const cbCtx = createMockCallbackCtx('garbage', 123);
-      await handleCb(cbCtx as any);
-      expect(cbCtx.answerCbQuery).toHaveBeenCalledWith('');
-      expect(mockDownloadVideo).not.toHaveBeenCalled();
-    });
-
-    it('survives answerCbQuery failures', async () => {
-      const mockError = spyMock(console, 'error');
-      const cbCtx = createMockCallbackCtx('garbage', 123);
-      (cbCtx.answerCbQuery as any).mockImplementationOnce(() =>
-        Promise.reject(new Error('query is too old')),
-      );
-      await handleCb(cbCtx as any);
-      expect(mockError).toHaveBeenCalledWith(
-        'answerCbQuery failed:',
-        expect.any(Error),
-      );
-    });
-
-    it('responds with unavailable for unknown callback data', async () => {
-      const cbCtx = createMockCallbackCtx('dl:nonexistent', 123);
-      await handleCb(cbCtx as any);
-
-      expect(cbCtx.answerCbQuery).toHaveBeenCalledWith(
-        'This request is no longer available.',
-      );
-      expect(mockDownloadVideo).not.toHaveBeenCalled();
-    });
-
-    it('leaves the claim clickable when the move into the queue fails', async () => {
-      const consoleError = spyMock(console, 'error');
-      const { confirmData } = await triggerConfirmation();
-      // a non-ENOENT failure (a disk error): the pending row is untouched, so
-      // the claim stays clickable for a retry
-      mockAdopt.mockImplementationOnce(() =>
-        Promise.reject(new Error('disk I/O error')),
-      );
-      const cbCtx = createMockCallbackCtx(confirmData);
-      await handleCb(cbCtx as any);
-      expect(cbCtx.answerCbQuery).toHaveBeenCalledWith('Something went wrong.');
-      expect(consoleError).toHaveBeenCalled();
-      // the claim survived: clicking again works
-      const cbCtx2 = createMockCallbackCtx(confirmData);
-      await handleCb(cbCtx2 as any);
-      expect(mockDownloadVideo).toHaveBeenCalled();
-      expect(mockSendVideo).toHaveBeenCalled();
-    });
-
-    it('responds with unavailable on duplicate confirm', async () => {
-      const { confirmData } = await triggerConfirmation();
-
-      // First click succeeds
-      const cbCtx1 = createMockCallbackCtx(confirmData, 123);
-      await callbackQueryHandler(cbCtx1 as any);
-      expect(cbCtx1.answerCbQuery).toHaveBeenCalledWith('Starting download...');
-
-      // Second click: pending was already taken
-      const cbCtx2 = createMockCallbackCtx(confirmData, 123);
-      await callbackQueryHandler(cbCtx2 as any);
-      expect(cbCtx2.answerCbQuery).toHaveBeenCalledWith(
-        'This request is no longer available.',
-      );
-    });
-
-    it('handles download errors gracefully on confirm (group retry stays silent)', async () => {
-      const { confirmData } = await triggerConfirmation();
-      // Reject lazily: mockRejectedValueOnce creates the rejected promise
-      // eagerly, and the handler crosses an event loop tick (file I/O in
-      // takePending) before awaiting it, so Bun reports it as an unhandled
-      // rejection and fails the test.
-      mockDownloadVideo.mockImplementationOnce(() =>
-        Promise.reject(new Error('network fail')),
-      );
-      const mockError = spyMock(console, 'error');
-
-      const cbCtx = createMockCallbackCtx(confirmData, 123);
-      await handleCb(cbCtx as any);
-
-      expect(cbCtx.answerCbQuery).toHaveBeenCalledWith('Starting download...');
-      expect(mockError).toHaveBeenCalled();
-      // a group retry stays silent, only the terminal report would post
-      // (reportJobFailure; the retry is attempt 1 of 3 here)
-      expect(mockLog.append).not.toHaveBeenCalled();
-    });
-
-    it('responds with unavailable on duplicate cancel', async () => {
-      const { cancelData } = await triggerConfirmation();
-
-      // First click cancels
-      const cbCtx1 = createMockCallbackCtx(cancelData, 123);
-      await callbackQueryHandler(cbCtx1 as any);
-      expect(cbCtx1.answerCbQuery).toHaveBeenCalledWith('Cancelled.');
-
-      // Second click: pending was already taken
-      const cbCtx2 = createMockCallbackCtx(cancelData, 123);
-      await callbackQueryHandler(cbCtx2 as any);
-      expect(cbCtx2.answerCbQuery).toHaveBeenCalledWith(
-        'This request is no longer available.',
-      );
-    });
-  });
-});
-
-describe('post-download duration check', () => {
-  const LONG_DURATION = 25 * 60;
-
-  // the real downloadVideo records the blob and stores the probed duration on
-  // its row (the handler reads getBlob().duration rather than probing):
-  // emulate that contract here, still driven through mockProbeDuration
-  beforeEach(() => {
-    mockDownloadVideo.mockImplementation(async (_log: any, info: any) => {
-      blobStore.recordBlob(info);
-      const d = await downloadVideo.probeDuration(info.filename);
-      if (d) blobStore.setBlobDuration(info, d);
-      return 'downloaded';
-    });
-  });
-  afterAll(() => {
-    mockDownloadVideo.mockResolvedValue('downloaded');
-  });
-
-  const mockGetInfoNoDuration = () =>
-    mockGetInfo.mockImplementation(
-      memoize(
-        mock(async (_log: any, url: string) => ({
-          webpage_url: url,
-          title: 'Unknown Duration Video',
-          extractor: 'test',
-          id: 'id',
-          description: 'desc',
-          filename: 'unknown-duration.mp4',
-        })),
-      ),
-    );
-
-  const mockGetInfoZeroDuration = () =>
-    mockGetInfo.mockImplementation(
-      memoize(
-        mock(async (_log: any, url: string) => ({
-          webpage_url: url,
-          title: 'Zero Duration Video',
-          extractor: 'test',
-          id: 'id',
-          description: 'desc',
-          filename: 'zero-duration.mp4',
-          duration: 0,
-        })),
-      ),
-    );
-
-  it('releases the blob (and pending) when a postDownload confirmation send fails', async () => {
-    mockGetInfoNoDuration();
-    mockProbeDuration.mockResolvedValueOnce(LONG_DURATION);
-    const ctx = createMockMessageCtx(false, { chat: groupChat });
-    (ctx.telegram.sendMessage as any).mockRejectedValueOnce(new Error('429'));
-    const mockError = spyMock(console, 'error');
-
-    await handle(ctx as any);
-
-    expect(ctx.telegram.sendMessage).toHaveBeenCalledTimes(1); // the confirmation
-    expect(mockReleaseBlob).toHaveBeenCalledWith(
-      expect.objectContaining({ filename: 'unknown-duration.mp4' }),
-    );
-    expect(rowCount('pending')).toBe(0); // no pending orphan
-    mockError.mockRestore();
-  });
-
-  describe.each([false, true])('textMessageHandler, edit: %p', (isEdit) => {
-    it('downloads then shows confirmation when duration unknown and ffprobe finds >20min', async () => {
-      mockGetInfoNoDuration();
-      mockProbeDuration.mockResolvedValueOnce(LONG_DURATION);
-      const ctx = createMockMessageCtx(isEdit, { chat: groupChat });
-      await handle(ctx as any);
-
-      // Should download (duration unknown = proceed)
-      expect(mockDownloadVideo).toHaveBeenCalled();
-      // Should NOT upload yet (ffprobe found it's long)
-      expect(mockSendVideo).not.toHaveBeenCalled();
-      // Should show same confirmation dialog as pre-download check
-      expect(ctx.telegram.sendMessage).toHaveBeenCalledTimes(1);
-      const [, text, opts] = (ctx.telegram.sendMessage as any).mock.calls[0];
-      expect(text).toBe(
-        'This video is pretty long (25m), do you want me to download it anyway?',
-      );
-      expect(opts.reply_parameters).toEqual({ message_id: 1 });
-      expect(opts.reply_markup.inline_keyboard[0]).toHaveLength(2);
-    });
-
-    it('downloads then shows confirmation when duration is 0 and ffprobe finds >20min', async () => {
-      mockGetInfoZeroDuration();
-      mockProbeDuration.mockResolvedValueOnce(LONG_DURATION);
-      const ctx = createMockMessageCtx(isEdit, { chat: groupChat });
-      await handle(ctx as any);
-
-      expect(mockDownloadVideo).toHaveBeenCalled();
-      expect(mockSendVideo).not.toHaveBeenCalled();
-      expect(ctx.telegram.sendMessage).toHaveBeenCalledTimes(1);
-    });
-
-    it('downloads and uploads immediately when duration unknown and ffprobe finds <=20min', async () => {
-      mockGetInfoNoDuration();
-      mockProbeDuration.mockResolvedValueOnce(5 * 60); // 5 minutes
-      const ctx = createMockMessageCtx(isEdit, { chat: groupChat });
-      await handle(ctx as any);
-
-      expect(mockDownloadVideo).toHaveBeenCalled();
-      expect(mockSendVideo).toHaveBeenCalled();
-    });
-
-    it('re-probes and stores when a crash left the blob row without a duration', async () => {
-      // the download's own probe fails (a crash window leaves the same shape:
-      // row recorded, duration never stored); the gate must re-probe rather
-      // than let a duration-less long video skip confirmation forever
-      mockGetInfoNoDuration();
-      mockProbeDuration
-        .mockResolvedValueOnce(undefined) // during the (emulated) download
-        .mockResolvedValueOnce(LONG_DURATION); // the gate's backfill
-      const ctx = createMockMessageCtx(isEdit, { chat: groupChat });
-      await handle(ctx as any);
-
-      expect(mockSendVideo).not.toHaveBeenCalled();
-      expect(ctx.telegram.sendMessage).toHaveBeenCalledTimes(1); // confirmation
-      // and the backfilled duration is stored for the next request (the same
-      // identity the mocked info carries, so the keys match)
-      expect(
-        blobStore.getBlob({ extractor: 'test', id: 'id' } as any)?.duration,
-      ).toBe(LONG_DURATION);
-    });
-
-    it('downloads and uploads immediately when duration unknown and ffprobe fails', async () => {
-      mockGetInfoNoDuration();
-      mockProbeDuration.mockResolvedValueOnce(undefined);
-      const ctx = createMockMessageCtx(isEdit, { chat: groupChat });
-      await handle(ctx as any);
-
-      expect(mockDownloadVideo).toHaveBeenCalled();
-      expect(mockSendVideo).toHaveBeenCalled();
-    });
-
-    it('private chat with unknown duration downloads and uploads without any confirmation', async () => {
-      mockGetInfoNoDuration();
-      const ctx = createMockMessageCtx(isEdit); // private chat
-      await handle(ctx as any);
-
-      expect(mockDownloadVideo).toHaveBeenCalled();
-      expect(mockSendVideo).toHaveBeenCalled();
-      // the download itself probes in every chat type (the stored duration
-      // serves future group requests); what private chats skip is the gate
-      expect(ctx.telegram.sendMessage).not.toHaveBeenCalled();
-    });
-  });
-
-  describe('callbackQueryHandler (post-download)', () => {
-    // Helper: trigger post-download confirmation
-    const triggerPostDownloadConfirmation = async () => {
-      mockGetInfoNoDuration();
-      mockProbeDuration.mockResolvedValueOnce(LONG_DURATION);
-      const msgCtx = createMockMessageCtx(false, { chat: groupChat });
-      await handle(msgCtx as any);
-      const buttons = (msgCtx.telegram.sendMessage as any).mock.calls[0][2]
-        .reply_markup.inline_keyboard[0];
-      return {
-        msgCtx,
-        confirmData: buttons[0].callback_data as string,
-        cancelData: buttons[1].callback_data as string,
+      await armProbe(LONG);
+      await promptFor(api);
+      const { payload } = db.query('SELECT payload FROM pending').get() as {
+        payload: string;
       };
-    };
+      const parked = JSON.parse(payload).info;
+      expect(parked.duration).toBe(LONG);
+      expect(parked.sponsorblock_chapters).toBeUndefined();
+    }));
 
-    it('uploads on confirm (the download call is a no-op when the blob is present)', async () => {
-      const { confirmData } = await triggerPostDownloadConfirmation();
-      jest.clearAllMocks(); // clear download mock calls from setup
+  it('downloads and uploads when the duration is unknown and ffprobe finds <=20 min', () =>
+    withBotApi(async (api) => {
+      await unknownLength(5 * 60);
+      await postInGroup(api);
+      expect(videos(api)).toHaveLength(1);
+    }));
 
-      const cbCtx = createMockCallbackCtx(confirmData, 123);
-      await handleCb(cbCtx as any);
+  it('re-probes and stores when a crash left the blob row without a duration', () =>
+    withBotApi(async (api) => {
+      await seedBytes(video());
+      await unknownLength();
+      await promptFor(api);
 
-      expect(cbCtx.answerCbQuery).toHaveBeenCalledWith('Starting download...');
-      // downloadVideo is called but short-circuits in reality (isDownloaded);
-      // the upload is what matters here
-      expect(mockSendVideo).toHaveBeenCalled();
-    });
+      expect(await downloads()).toEqual([]);
+      expect(await probes()).toHaveLength(1);
+      expect(videos(api)).toEqual([]);
+      expect(getBlob(video())?.duration).toBe(LONG);
+    }));
 
-    it('releases the blob, and does not upload, on cancel', async () => {
-      const { cancelData } = await triggerPostDownloadConfirmation();
-      jest.clearAllMocks();
+  it('downloads and uploads when the duration is unknown and ffprobe fails', () =>
+    withBotApi(async (api) => {
+      await serve();
+      await failProbe();
+      await postInGroup(api);
+      expect(videos(api)).toHaveLength(1);
+    }));
 
-      const cbCtx = createMockCallbackCtx(cancelData, 123);
-      await handleCb(cbCtx as any);
+  it('uploads on confirm without downloading again', () =>
+    withBotApi(async (api) => {
+      await unknownLength();
+      const p = await promptFor(api);
+      const u = await click(api, p.promptId, p.yes);
 
-      expect(cbCtx.answerCbQuery).toHaveBeenCalledWith('Cancelled.');
-      expect(mockDownloadVideo).not.toHaveBeenCalled();
-      expect(mockSendVideo).not.toHaveBeenCalled();
-      expect(mockReleaseBlob).toHaveBeenCalledWith(
-        expect.objectContaining({ filename: 'unknown-duration.mp4' }),
-      );
-    });
-  });
+      expect(answerTo(api, u)).toBe('Starting download...');
+      expect(videos(api)).toHaveLength(1);
+      expect(await downloads()).toHaveLength(1);
+    }));
+
+  it('releases the blob, and does not upload, on cancel', () =>
+    withBotApi(async (api) => {
+      await unknownLength();
+      const p = await promptFor(api);
+      const u = await click(api, p.promptId, p.no);
+
+      expect(answerTo(api, u)).toBe('Cancelled.');
+      expect(videos(api)).toEqual([]);
+      expect(getBlob(video())).toBeNull();
+      expect(await bytesOnDisk(video())).toBe(false);
+    }));
 });
-
-// a parked-confirmation job as adoptJob delivers it; override what varies
-const confirmedJob = (overrides: Record<string, unknown> = {}) =>
-  ({
-    kind: 'confirmed',
-    info: { filename: 'v.mp4', title: 'T', webpage_url: 'u', extractor: 'test', id: 'id' },
-    verbose: false,
-    messageId: 7,
-    chatId: 7,
-    chatType: 'private',
-    postDownload: false,
-    ...overrides,
-  }) as any;
 
 describe('confirmed job stale-info refresh', () => {
-  it('re-resolves through getInfo when no blob exists yet', async () => {
-    // the payload pins a snapshot whose signed URLs expire; with nothing
-    // downloaded to reuse, the job must go through getInfo (fresh within its
-    // TTL = DB hit, stale = live re-scrape)
-    const job = confirmedJob({
-      info: {
-        filename: 'v.mp4',
-        title: 'Old Snapshot',
-        webpage_url: 'https://example.com',
-        extractor: 'test',
-        id: 'id',
-      },
-    });
-    await processJob({} as any, job, 1);
-    expect(mockGetInfo).toHaveBeenCalledWith(
-      expect.anything(),
-      'https://example.com',
-      false,
-    );
-    expect(mockSendVideo).toHaveBeenCalled();
-  });
+  it('re-resolves the URL when no blob exists yet', () =>
+    withBotApi(async (api, bot) => {
+      await serve(video({ width: 640, height: 360 }));
+      await processJob(
+        bot.telegram,
+        confirmedJob({ info: video({ title: 'Old Snapshot' }) }),
+        1,
+      );
+      expect(await scrapes()).toEqual([
+        expect.stringContaining(`yt-dlp ${TEST_URL} `),
+      ]);
+      expect(videos(api)).toEqual([
+        expect.objectContaining({ width: 640, height: 360 }),
+      ]);
+    }));
 
-  it('reuses an existing blob without re-resolving', async () => {
-    const info = {
-      filename: 'v.mp4',
-      title: 'T',
-      webpage_url: 'https://example.com',
-      extractor: 'test',
-      id: 'has-blob',
-    } as any;
-    blobStore.recordBlob(info);
-    blobStore.setBlobFileId(info, 'cached');
-    const job = confirmedJob({ info, postDownload: true });
-    await processJob({} as any, job, 1);
-    expect(mockGetInfo).not.toHaveBeenCalled(); // the blob answers already
-    expect(mockSendVideo).toHaveBeenCalled();
-  });
+  it('reuses an existing blob without re-resolving', () =>
+    withBotApi(async (api, bot) => {
+      const info = video({ id: 'has-blob' });
+      recordBlob(info);
+      setBlobFileId(info, 'cached-file-id');
+      api.fileIds.set('cached-file-id', '/storage/earlier-upload.mp4');
+
+      await processJob(
+        bot.telegram,
+        confirmedJob({ info, postDownload: true }),
+        1,
+      );
+      expect(await stubSpawns()).toEqual([]);
+      expect(videos(api)).toEqual([
+        expect.objectContaining({ video: 'cached-file-id' }),
+      ]);
+    }));
+
+  it('downloads again when a parked post-download blob was released', () =>
+    withBotApi(async (api, bot) => {
+      await serve();
+      await processJob(bot.telegram, confirmedJob({ postDownload: true }), 1);
+      expect(await downloads()).toHaveLength(1);
+      expect(videos(api)).toHaveLength(1);
+    }));
 });
 
 describe('confirmed job oversize report', () => {
-  it('un-records a lone confirmed video that turns out too large', async () => {
-    const job = confirmedJob({ url: 'https://example.com/lone' });
-    db.query(
-      'INSERT INTO handled_urls (chat_id, message_id, url, created_at) VALUES (?, ?, ?, ?)',
-    ).run(job.chatId, job.messageId, job.url, Date.now());
-    mockSendVideo.mockResolvedValueOnce(undefined as any);
+  it('un-records a lone confirmed video that turns out too large', () =>
+    withBotApi(async (api, bot) => {
+      const url = 'https://example.com/lone';
+      seedHandledUrl(MOCK_USER_ID, 1, url);
+      await seedOversize(video());
 
-    await processJob({} as any, job, 1);
+      await processJob(bot.telegram, confirmedJob({ url }), 1);
 
-    expect(rowCount('handled_urls')).toBe(0);
-  });
+      expect(texts(api)).toEqual(['😞 Video too large to send.']);
+      expect(rowCount('handled_urls')).toBe(0);
+    }));
 
-  it('reports too-large (not silently) when real bytes overshoot the estimate', async () => {
-    // the real bytes overshoot a missing/under estimate, so sendVideo returns
-    // undefined; verify the report routes around the silent progress NoLog
-    mockSendVideo.mockResolvedValueOnce(undefined as any);
-    // a format the refresh moves off, so the drift guard actually fires
-    const job = confirmedJob({
-      chatId: -100,
-      info: { ...confirmedJob().info, format_id: 'parked' },
-    });
+  it('reports too-large in a group when the real bytes overshoot, releasing the parked and the drifted blob', () =>
+    withBotApi(async (api, bot) => {
+      const parked = video({ format_id: 'parked' });
+      const drifted = video({ format_id: 'drifted' });
+      recordBlob(parked);
+      await stubScrape([drifted]);
+      await seedOversize(drifted);
 
-    await expect(processJob({} as any, job, 1)).resolves.toBeUndefined();
+      await expect(
+        processJob(
+          bot.telegram,
+          confirmedJob({
+            chatId: MOCK_GROUP_CHAT.id,
+            chatType: 'group',
+            info: parked,
+          }),
+          1,
+        ),
+      ).resolves.toBeUndefined();
 
-    expect(mockDownloadVideo).toHaveBeenCalled();
-    expect(mockLog.append).toHaveBeenCalledWith(
-      expect.stringContaining('Video too large'),
-    );
-    // sendVideo already discarded the drifted info's oversize bytes; this
-    // release is the drift guard freeing the parked (pre-refresh) identity
-    expect(mockReleaseBlob.mock.calls.map(([i]: any) => i.format_id)).toEqual([
-      'parked',
-    ]);
-  });
+      expect(api.sentMessages).toEqual([
+        expect.objectContaining({
+          chat_id: MOCK_GROUP_CHAT.id,
+          text: '😞 Video too large to send.',
+        }),
+      ]);
+      expect(getBlob(parked)).toBeNull();
+      expect(getBlob(drifted)).toBeNull();
+      expect(await bytesOnDisk(drifted)).toBe(false);
+    }));
 });
 
 describe('job retry classification', () => {
-  beforeEach(() => spyMock(console, 'error'));
-
-  it('a shutdown abort rethrows silently, stashing the log pointer for the re-run', async () => {
-    mockGetInfo.mockRejectedValueOnce(new jobQueue.ShutdownAbort());
-    const job = { ...urlJob };
-    await expect(processJob({} as any, job as any, 1)).rejects.toThrow(
-      'restarting',
-    );
-    expect(mockLog.append).not.toHaveBeenCalled(); // no user-facing report
-    expect(mockReleaseBlob).not.toHaveBeenCalled(); // nothing released
-    // flushed BEFORE the stash: a debounced first send that hasn't fired yet
-    // would otherwise post during the drain and fork a duplicate thread
-    expect(mockLog.flush).toHaveBeenCalled();
-    expect(job.logMessageId).toBe(4242); // the re-run continues this thread
-    expect((job as any).logText).toBe('prior log content');
-  });
-
-  it('re-prints the info block only when the delivered thread lacks it', async () => {
-    // died during the scrape: nothing announced → info must print, and the
-    // key is recorded for persistence (the retry bump re-serializes the job)
-    const j1 = { ...urlJob, url: 'https://example.com/i1', logText: '🧐 <b>Scraping</b> x...' };
-    await processJob({} as any, j1 as any, 2);
-    expect(mockSendInfo).toHaveBeenCalledTimes(1);
-    expect((j1 as any).announcedIds).toEqual(['test:id']);
-
-    jest.clearAllMocks();
-    // announced AND delivered (a thread exists): skip, even though the info
-    // text may sit in an earlier chunk than the stashed last one
-    const j2 = { ...urlJob, url: 'https://example.com/i2', logMessageId: 4242, logText: 'x', announcedIds: ['test:id'] };
-    await processJob({} as any, j2 as any, 2);
-    expect(mockSendInfo).not.toHaveBeenCalled();
-
-    jest.clearAllMocks();
-    // appended but NEVER delivered (every send failed, so no thread was
-    // stashed): the retry posts a fresh thread, which needs the info again
-    const j3 = { ...urlJob, url: 'https://example.com/i3', logMessageId: undefined, announcedIds: ['test:id'] };
-    await processJob({} as any, j3 as any, 2);
-    expect(mockSendInfo).toHaveBeenCalledTimes(1);
-
-  });
-
-  it('rethrows a retryable error, reports ⚠️, and saves the message id for the retry', async () => {
-    mockGetInfo.mockRejectedValueOnce(new Error('network blip'));
-    const job = { ...urlJob };
-    await expect(processJob({} as any, job as any, 1)).rejects.toThrow(
-      'network blip',
-    );
-    expect(lastAppend()).toBe(
-      '\n⚠️ <b>Download failed</b>, retrying (attempt 2 of 3)...\n',
-    );
-    expect(job.logMessageId).toBe(4242);
-    // the content rides along, so the retry continues (not wipes) the message
-    expect(job.logText).toBe('prior log content');
-  });
-
-  it('does not retry a permanent (unsupported-URL) error, reporting 💥', async () => {
-    mockGetInfo.mockRejectedValueOnce(
-      new downloadVideo.YtdlpError(
-        'yt-dlp exited with code 1',
-        'ERROR: Unsupported URL: https://example.com',
-      ),
-    );
-    await expect(
-      processJob({} as any, urlJob as any, 1),
-    ).resolves.toBeUndefined();
-    // the user sees yt-dlp's own ERROR line, not the useless exit code
-    expect(lastAppend()).toBe(
-      '\n💥 <b>Download failed</b>: Unsupported URL: https://example.com',
-    );
-  });
-
-  it('does not retry a permanent Telegram error (bot blocked), reporting 💥', async () => {
-    // classification is what's under test, so any step throwing the 403 will do
-    mockGetInfo.mockRejectedValueOnce(
-      telegramError(403, 'Forbidden: bot was blocked by the user'),
-    );
-    await expect(
-      processJob({} as any, urlJob as any, 1),
-    ).resolves.toBeUndefined(); // no rethrow => no retry
-    expect(lastAppend()).toBe(
-      '\n💥 <b>Download failed</b>: Forbidden: bot was blocked by the user',
-    );
-  });
-
-  it('stops retrying on the final attempt, reporting 💥', async () => {
-    mockGetInfo.mockRejectedValueOnce(new Error('still down'));
-    await expect(
-      processJob({} as any, urlJob as any, 3),
-    ).resolves.toBeUndefined();
-    expect(lastAppend()).toBe('\n💥 <b>Download failed</b>: still down');
-  });
-
-  it('reports a private confirmed-job retry (reasonless) and saves the message id', async () => {
-    mockDownloadVideo.mockRejectedValueOnce(new Error('network fail'));
-    const job = confirmedJob();
-    // edit/resend/not-modified behavior is covered in log-message.test.ts
-    await expect(processJob({} as any, job, 1)).rejects.toThrow('network fail');
-    expect(lastAppend()).toBe(
-      '⚠️ <b>Download failed</b>, retrying (attempt 2 of 3)...\n',
-    );
-    expect(job.logMessageId).toBe(4242);
-  });
-
-  it('says nothing in a group when the reply target was deleted', async () => {
-    mockDownloadVideo.mockRejectedValueOnce(
-      telegramError(400, 'Bad Request: message to be replied not found'),
-    );
-    const job = confirmedJob({ chatId: -100, chatType: 'group' });
-    // permanent, so it resolves (no retry) with no report at all
-    await expect(processJob({} as any, job, 1)).resolves.toBeUndefined();
-    expect(mockLog.append).not.toHaveBeenCalled();
-  });
-
-  it('un-records the originating URL when a confirmed job fails terminally', async () => {
-    // the payload carries the url the record used (info.webpage_url may be a
-    // different alias), so the edit-retry gesture re-opens like a url job's
-    db.query(
-      'INSERT INTO handled_urls (chat_id, message_id, url, created_at) VALUES (?, ?, ?, ?)',
-    ).run(7, 7, 'https://typed.example', Date.now());
-    mockDownloadVideo.mockRejectedValueOnce(
-      new downloadVideo.YtdlpError(
-        'failed',
-        'ERROR: Unsupported URL: https://x',
-      ),
-    );
-    const job = confirmedJob({ url: 'https://typed.example' });
-    await expect(processJob({} as any, job, 1)).resolves.toBeUndefined();
-    expect(rowCount('handled_urls')).toBe(0);
-  });
-
-  it('releases the parked blob even when getInfo re-resolve drifts the format', async () => {
-    // the top-of-body getInfo re-resolve can pick a different format_id, so the
-    // re-resolved info's blob key differs from the parked job.info's. A
-    // terminal failure must release BOTH, or the parked identity's
-    // pre-downloaded blob is stranded until the 24h TTL sweep.
-    const parkedInfo = {
-      filename: 'v.mp4',
-      title: 'T',
-      webpage_url: 'https://drift.example',
-      extractor: 'test',
-      id: 'vid',
-      format_id: 'orig',
-    } as any;
-    // seed a blob under the PARKED identity (no file_id, so isDownloaded is
-    // false and the re-resolve fires)
-    blobStore.recordBlob(parkedInfo);
-    expect(blobStore.getBlob(parkedInfo)).not.toBeNull();
-    // re-resolve returns a DIFFERENT format_id => a different blob key
-    mockGetInfo.mockImplementationOnce(async (_log, url) => ({
-      filename: 'v.mp4',
-      title: 'T',
-      webpage_url: url,
-      extractor: 'test',
-      id: 'vid',
-      format_id: 'drifted',
-    }));
-    mockDownloadVideo.mockRejectedValueOnce(
-      new downloadVideo.YtdlpError(
-        'failed',
-        'ERROR: Unsupported URL: https://drift.example',
-      ),
-    );
-    const job = confirmedJob({ info: parkedInfo });
-    await expect(processJob({} as any, job, 1)).resolves.toBeUndefined();
-    // the original parked blob row is released, not stranded
-    expect(blobStore.getBlob(parkedInfo)).toBeNull();
-  });
-
-  it('releases the parked blob when a drifted send returns too-large', async () => {
-    // same drift, but the download succeeds and sendVideo returns undefined
-    // (real bytes too large). sendVideo released the drifted info's blob; the
-    // parked job.info's fileless blob would strand without the drift release.
-    const parkedInfo = {
-      filename: 'v.mp4',
-      title: 'T',
-      webpage_url: 'https://drift.example',
-      extractor: 'test',
-      id: 'vid',
-      format_id: 'orig',
-    } as any;
-    blobStore.recordBlob(parkedInfo);
-    expect(blobStore.getBlob(parkedInfo)).not.toBeNull();
-    // re-resolve returns a DIFFERENT format_id => a different blob key
-    mockGetInfo.mockImplementationOnce(async (_log, url) => ({
-      filename: 'v.mp4',
-      title: 'T',
-      webpage_url: url,
-      extractor: 'test',
-      id: 'vid',
-      format_id: 'drifted',
-    }));
-    mockSendVideo.mockResolvedValueOnce(undefined as any);
-    const job = confirmedJob({ info: parkedInfo });
-    await expect(processJob({} as any, job, 1)).resolves.toBeUndefined();
-    // the original parked blob row is released, not stranded
-    expect(blobStore.getBlob(parkedInfo)).toBeNull();
-  });
-
-  it('releases the parked blob on a fully successful drifted send', async () => {
-    // same drift, but download and send both SUCCEED. The parked identity's
-    // fileless row must still be freed on the happy path, not only on
-    // failure/too-large.
-    const parkedInfo = {
-      filename: 'v.mp4',
-      title: 'T',
-      webpage_url: 'https://drift.example',
-      extractor: 'test',
-      id: 'vid',
-      format_id: 'orig',
-    } as any;
-    blobStore.recordBlob(parkedInfo);
-    expect(blobStore.getBlob(parkedInfo)).not.toBeNull();
-    // re-resolve returns a DIFFERENT format_id => a different blob key
-    mockGetInfo.mockImplementationOnce(async (_log, url) => ({
-      filename: 'v.mp4',
-      title: 'T',
-      webpage_url: url,
-      extractor: 'test',
-      id: 'vid',
-      format_id: 'drifted',
-    }));
-    const job = confirmedJob({ info: parkedInfo });
-    await expect(processJob({} as any, job, 1)).resolves.toBeUndefined();
-    expect(mockSendVideo).toHaveBeenCalled(); // the send succeeded
-    // the parked blob row is released even though nothing failed
-    expect(blobStore.getBlob(parkedInfo)).toBeNull();
-  });
-
-  it('keeps group retries silent; only the terminal report posts', async () => {
-    mockDownloadVideo.mockRejectedValue(new Error('network fail'));
-    const job = confirmedJob({ chatId: -100, chatType: 'group' });
-    await expect(processJob({} as any, job, 1)).rejects.toThrow('network fail');
-    expect(mockLog.append).not.toHaveBeenCalled(); // no retry play-by-play
-    await expect(processJob({} as any, job, 3)).resolves.toBeUndefined();
-    expect(lastAppend()).toBe(
-      '💥 <b>Download failed</b>: network fail', // the terminal line still lands
-    );
-    mockDownloadVideo.mockResolvedValue('downloaded');
-  });
-});
-
-describe('group terminal-failure feedback (issues #14/#17)', () => {
-  beforeEach(() => {
-    spyMock(console, 'error');
-    // no duration field: these must not route through the long-video gate
-    mockGetInfo.mockImplementation(
-      memoize(
-        mock(async (_log: any, url: string) => ({
-          webpage_url: url,
-          title: 'Test Video',
-          filename: 'video.mp4',
-        })),
-      ),
-    );
-  });
-  const ytdlp = (stderr: string) =>
-    new downloadVideo.YtdlpError('yt-dlp exited with code 1', stderr);
-
-  const groupUrlJob = (url: string) => ({
-    ...urlJob,
-    url,
-    chatId: -100,
-    chatType: 'group',
-  });
-
-  const groupCtx = (url: string) => {
-    const ctx = createMockMessageCtx(false, { chat: groupChat });
-    const msg = (ctx as any).message;
-    msg.text = url;
-    msg.entities = [{ type: 'url', offset: 0, length: url.length }];
-    return ctx;
+  const logMessage = (api: MockBotApi) => {
+    const id = api.sentMessages.findIndex((m) => m.text);
+    return { id, text: api.sentMessages[id]?.text };
   };
 
-  it('gives a not-a-video error exactly one attempt (no retry) in private chat', async () => {
-    const privateJob = { ...urlJob, url: 'https://reddit.com/r/x/comments/y' };
-    mockGetInfo.mockRejectedValueOnce(ytdlp('ERROR: [Reddit] 92dd8: No media found'));
-    await expect(
-      processJob({} as any, privateJob as any, 1),
-    ).resolves.toBeUndefined();
-    expect(lastAppend()).toMatch(/^\n💥 <b>Download failed<\/b>:/);
-    expect(mockLog.append).not.toHaveBeenCalledWith(
-      expect.stringContaining('retrying'),
-    );
+  it('rethrows a shutdown abort silently, stashing the flushed log pointer for the re-run', () =>
+    withBotApi(async (api, bot) => {
+      await serve();
+      await stub({ block: '1' });
+      const job = urlJob();
+      const run = processJob(bot.telegram, job, 1).catch((e) => e);
+      expect(await waitUntil(async () => (await stubSpawns()).length > 0)).toBe(
+        true,
+      );
+      abortDownloads();
+      try {
+        expect((await run).name).toBe('ShutdownAbort');
+      } finally {
+        resetShutdown();
+      }
+
+      const log = logMessage(api);
+      expect(log.text).toBe(`🧐 <b>Scraping</b> ${TEST_URL}...`);
+      expect(job.logMessageId).toBe(log.id);
+      expect(job.logText).toBe(log.text);
+    }));
+
+  it('re-prints the info block only when the delivered thread lacks it', () =>
+    withBotApi(async (api, bot) => {
+      await serve();
+      const infoBlocks = () =>
+        texts(api).filter((t) => t.includes('🎬 <b>Video info:</b>')).length;
+
+      const undelivered = urlJob({ logText: '🧐 <b>Scraping</b> x...' });
+      await processJob(bot.telegram, undelivered, 2);
+      expect(undelivered.infoShown).toBe(true);
+      expect(infoBlocks()).toBe(1);
+
+      const thread = logMessage(api);
+      const j2 = urlJob({
+        logMessageId: thread.id,
+        logText: thread.text,
+        infoShown: true,
+      });
+      await processJob(bot.telegram, j2, 2);
+      expect(api.sentMessages[thread.id]!.text).toBe(thread.text!);
+      expect(infoBlocks()).toBe(1);
+
+      const j3 = urlJob({ logMessageId: undefined, infoShown: true });
+      await processJob(bot.telegram, j3, 2);
+      expect(infoBlocks()).toBe(2);
+      expect(videos(api)).toHaveLength(3);
+    }));
+
+  it('rethrows a retryable error, reports ⚠️, and saves the message pointer for the retry', () =>
+    withBotApi(async (api, bot) => {
+      await failScrape(TRANSIENT_SCRAPE);
+      const job = urlJob();
+      await expect(processJob(bot.telegram, job, 1)).rejects.toThrow(
+        TRANSIENT_SCRAPE_REASON,
+      );
+      const log = logMessage(api);
+      expect(log.text).toEndWith(`\n${retryNotice(2)}`);
+      expect(job.logMessageId).toBe(log.id);
+      expect(job.logText).toBe(log.text);
+    }));
+
+  it('does not retry a permanent (unsupported-URL) error, reporting 💥', () =>
+    withBotApi(async (api, bot) => {
+      await failScrape('ERROR: Unsupported URL: https://example.com');
+      await expect(
+        processJob(bot.telegram, urlJob(), 1),
+      ).resolves.toBeUndefined();
+      expect(logMessage(api).text).toEndWith(
+        `\n${failure('Unsupported URL: https://example.com')}`,
+      );
+    }));
+
+  it('does not retry a permanent Telegram error (bot blocked), reporting 💥', () =>
+    withBotApi(async (api, bot) => {
+      await serve();
+      api.failNext(BLOCKED);
+      await expect(
+        processJob(bot.telegram, urlJob(), 1),
+      ).resolves.toBeUndefined();
+      expect(logMessage(api).text).toEndWith(
+        failure(`403: ${BLOCKED.body.description}`),
+      );
+    }));
+
+  it('stops retrying on the final attempt, reporting 💥', () =>
+    withBotApi(async (api, bot) => {
+      await failScrape(TRANSIENT_SCRAPE);
+      await expect(
+        processJob(bot.telegram, urlJob(), 3),
+      ).resolves.toBeUndefined();
+      expect(logMessage(api).text).toEndWith(failure(TRANSIENT_SCRAPE_REASON));
+    }));
+
+  it('keeps the cached info when only the send fails', () =>
+    withBotApi(async (api, bot) => {
+      await serve();
+      api.failNext(VIDEO_RATE_LIMITED);
+      await processJob(bot.telegram, urlJob(), 3);
+      expect(rowCount('video_info')).toBe(1);
+    }));
+
+  it('evicts the cached info when yt-dlp fails the download', () =>
+    withBotApi(async (_api, bot) => {
+      await stubScrape([video()]);
+      await failDownload(TRANSIENT_DOWNLOAD);
+      await processJob(bot.telegram, urlJob(), 3);
+      expect(rowCount('video_info')).toBe(0);
+    }));
+
+  it('reports a private confirmed-job retry (reasonless) and saves the message id', () =>
+    withBotApi(async (api, bot) => {
+      await stubScrape([video()]);
+      await failDownload(TRANSIENT_DOWNLOAD);
+      const job = confirmedJob();
+      await expect(processJob(bot.telegram, job, 1)).rejects.toThrow(
+        TRANSIENT_DOWNLOAD_REASON,
+      );
+      expect(texts(api)).toEqual([retryNotice(2)]);
+      expect(job.logMessageId).toBe(logMessage(api).id);
+    }));
+
+  it('says nothing in a group when the reply target was deleted', () =>
+    withBotApi(async (api, bot) => {
+      await serve();
+      const job = confirmedJob({
+        chatId: MOCK_GROUP_CHAT.id,
+        chatType: 'group',
+        messageId: GONE_REPLY_ID,
+      });
+      await expect(processJob(bot.telegram, job, 1)).resolves.toBeUndefined();
+      expect(requestsOf(api, 'sendVideo')).toHaveLength(1);
+      expect(api.sentMessages).toEqual([]);
+    }));
+
+  it('un-records the originating URL when a confirmed job fails terminally', () =>
+    withBotApi(async (_api, bot) => {
+      seedHandledUrl(MOCK_USER_ID, 1, 'https://typed.example');
+      await stubScrape([video()]);
+      await failDownload('ERROR: Unsupported URL: https://example.com');
+      await expect(
+        processJob(
+          bot.telegram,
+          confirmedJob({ url: 'https://typed.example' }),
+          1,
+        ),
+      ).resolves.toBeUndefined();
+      expect(rowCount('handled_urls')).toBe(0);
+    }));
+
+  describe('a confirmed job whose re-resolve drifts the format', () => {
+    const parked = video({ format_id: 'orig' });
+    const drifted = video({ format_id: 'drifted' });
+    const park = async () => {
+      recordBlob(parked);
+      await stubScrape([drifted]);
+    };
+
+    it('releases the parked blob when the download fails', () =>
+      withBotApi(async (_api, bot) => {
+        await park();
+        await failDownload('ERROR: Unsupported URL: https://example.com');
+        await expect(
+          processJob(bot.telegram, confirmedJob({ info: parked }), 1),
+        ).resolves.toBeUndefined();
+        expect(getBlob(parked)).toBeNull();
+      }));
+
+    it('releases the parked blob when the send finds the bytes too large', () =>
+      withBotApi(async (api, bot) => {
+        await park();
+        await seedOversize(drifted);
+        await expect(
+          processJob(bot.telegram, confirmedJob({ info: parked }), 1),
+        ).resolves.toBeUndefined();
+        expect(texts(api)).toEqual(['😞 Video too large to send.']);
+        expect(getBlob(parked)).toBeNull();
+      }));
+
+    it('releases the parked blob on a fully successful send', () =>
+      withBotApi(async (api, bot) => {
+        await park();
+        await armDownload();
+        await expect(
+          processJob(bot.telegram, confirmedJob({ info: parked }), 1),
+        ).resolves.toBeUndefined();
+        expect(videos(api)).toHaveLength(1);
+        expect(getBlob(parked)).toBeNull();
+      }));
   });
 
-  it('stays silent on a getInfo failure for a non-whitelisted host', async () => {
-    const ctx = groupCtx('https://news.example.com/article');
-    mockGetInfo.mockRejectedValueOnce(ytdlp('ERROR: Video unavailable'));
-    await handle(ctx as any);
-    expectGroupSilent(ctx);
-  });
+  it('keeps group retries of a confirmed job silent; only the terminal report posts', () =>
+    withBotApi(async (api, bot) => {
+      await stubScrape([video()]);
+      await failDownload(TRANSIENT_DOWNLOAD);
+      const job = confirmedJob({
+        chatId: MOCK_GROUP_CHAT.id,
+        chatType: 'group',
+      });
+      await expect(processJob(bot.telegram, job, 1)).rejects.toThrow(
+        TRANSIENT_DOWNLOAD_REASON,
+      );
+      expect(api.sentMessages).toEqual([]);
+      await expect(processJob(bot.telegram, job, 3)).resolves.toBeUndefined();
+      expect(texts(api)).toEqual([failure(TRANSIENT_DOWNLOAD_REASON)]);
+    }));
+});
 
-  it('reports one 💥 for a terminal non-not-a-video Instagram scrape failure', async () => {
-    mockGetInfo.mockRejectedValueOnce(
-      ytdlp(
+describe('group terminal-failure feedback', () => {
+  const expectOneReport = (api: MockBotApi, linkId: number, reason: string) =>
+    expect(api.sentMessages).toEqual([
+      expect.objectContaining({
+        chat_id: MOCK_GROUP_CHAT.id,
+        text: failure(reason),
+        reply_parameters: { message_id: linkId },
+      }),
+    ]);
+
+  it('gives a not-a-video error exactly one attempt (no retry) in private chat', () =>
+    withBotApi(async (api, bot) => {
+      await failScrape('ERROR: [Reddit] 92dd8: No media found');
+      await expect(
+        processJob(
+          bot.telegram,
+          urlJob({ url: 'https://reddit.com/r/x/comments/y' }),
+          1,
+        ),
+      ).resolves.toBeUndefined();
+      const [log] = texts(api);
+      expect(log).toContain('💥 <b>Download failed</b>:');
+      expect(log).not.toContain('retrying');
+    }));
+
+  it('stays silent on a scrape failure for a non-whitelisted host', () =>
+    withBotApi(async (api) => {
+      await failScrape('ERROR: Video unavailable');
+      await postInGroup(api, 'https://news.example.com/article');
+      expect(api.sentMessages).toEqual([]);
+    }));
+
+  it('reports one 💥 for a terminal non-not-a-video Instagram scrape failure', () =>
+    withBotApi(async (api) => {
+      await failScrape(
         'ERROR: [Instagram] xyz: Requested content is not available, rate-limit reached or login required',
-      ),
-    );
-    await expect(
-      processJob({} as any, groupUrlJob('https://www.instagram.com/p/xyz'), 3),
-    ).resolves.toBeUndefined();
-    expectGroupReport(2);
-  });
+      );
+      const linkId = await postInGroup(api, 'https://www.instagram.com/p/xyz');
+      expect(await scrapes()).toHaveLength(3);
+      expectOneReport(
+        api,
+        linkId,
+        'xyz: Requested content is not available, rate-limit reached or login required',
+      );
+    }));
 
-  it('whitelists a trailing-dot host (reddit.com.) for the terminal report', async () => {
-    mockGetInfo.mockRejectedValueOnce(ytdlp('ERROR: Video unavailable'));
-    await expect(
-      processJob(
-        {} as any,
-        groupUrlJob('https://reddit.com./r/x/comments/y'),
-        1,
-      ),
-    ).resolves.toBeUndefined();
-    expectGroupReport(2);
-  });
+  it('whitelists a trailing-dot host (reddit.com.) for the terminal report', () =>
+    withBotApi(async (api) => {
+      await failScrape('ERROR: Video unavailable');
+      const linkId = await postInGroup(
+        api,
+        'https://reddit.com./r/x/comments/y',
+      );
+      expectOneReport(api, linkId, 'Video unavailable');
+    }));
 
   it.each([
     [
       'https://www.instagram.com/p/DbHhjdBJT9O',
       'ERROR: [Instagram] DbHhjdBJT9O: There is no video in this post',
     ],
-    ['https://www.reddit.com/r/x/comments/y', 'ERROR: [Reddit] 92dd8: No media found'],
-  ])('stays silent for a whitelisted not-a-video (%j)', async (url, stderr) => {
-    const ctx = groupCtx(url);
-    mockGetInfo.mockRejectedValueOnce(ytdlp(stderr));
-    await handle(ctx as any);
-    expectGroupSilent(ctx);
-  });
+    [
+      'https://www.reddit.com/r/x/comments/y',
+      'ERROR: [Reddit] 92dd8: No media found',
+    ],
+  ])('stays silent for a whitelisted not-a-video (%j)', (url, stderr) =>
+    withBotApi(async (api) => {
+      await failScrape(stderr);
+      await postInGroup(api, url);
+      expect(api.sentMessages).toEqual([]);
+    }),
+  );
 
-  it('treats an unparseable URL as not whitelisted (stays silent)', async () => {
-    mockGetInfo.mockRejectedValueOnce(ytdlp('ERROR: Video unavailable'));
-    const job = { ...groupUrlJob('https://') };
-    await expect(processJob({} as any, job as any, 1)).resolves.toBeUndefined();
-    expectNoGroupReport();
-  });
+  it('treats an unparseable URL as not whitelisted (stays silent)', () =>
+    withBotApi(async (api, bot) => {
+      await failScrape('ERROR: Video unavailable');
+      await expect(
+        processJob(bot.telegram, groupUrlJob('https://'), 1),
+      ).resolves.toBeUndefined();
+      expect(api.sentMessages).toEqual([]);
+    }));
 
-  it('reports one 💥 when info resolved then the download fails permanently', async () => {
-    const ctx = groupCtx('https://example.com/video');
-    mockDownloadVideo.mockRejectedValueOnce(ytdlp('ERROR: Video unavailable'));
-    await handle(ctx as any);
-    expectGroupReport(1);
-  });
+  it('reports one 💥 when info resolved then the download fails permanently', () =>
+    withBotApi(async (api) => {
+      await stubScrape([video()]);
+      await failDownload('ERROR: Video unavailable');
+      const linkId = await postInGroup(api);
+      expectOneReport(api, linkId, 'Video unavailable');
+    }));
 
-  it('stays silent when info resolved but the download fails not-a-video', async () => {
-    const ctx = groupCtx('https://example.com/video');
-    mockDownloadVideo.mockRejectedValueOnce(
-      ytdlp('ERROR: Unsupported URL: https://example.com/video/sub'),
-    );
-    await handle(ctx as any);
-    expectGroupSilent(ctx);
-  });
+  it('stays silent when info resolved but the download fails not-a-video', () =>
+    withBotApi(async (api) => {
+      await stubScrape([video()]);
+      await failDownload(
+        'ERROR: Unsupported URL: https://example.com/video/sub',
+      );
+      await postInGroup(api);
+      expect(api.sentMessages).toEqual([]);
+    }));
 
-  it('stays silent through transient retries, then reports one terminal 💥', async () => {
-    const job = groupUrlJob('https://example.com/video');
-    // one reject per processJob call this test drives (attempts 1 and 3), then
-    // the once-queue empties back to the base resolved value: no tail reset, so
-    // no rejecting mock leaks into a later test even if an assertion fails.
-    // Lazy throw, not mockRejectedValueOnce: bun test's runner flags the
-    // eagerly-built queued rejection as an unhandled error across the await
-    // gap between the two processJob calls (observed; plain bun scripts don't)
-    const fail = async () => {
-      throw ytdlp('ERROR: Unable to download webpage: HTTP Error 503');
-    };
-    mockDownloadVideo.mockImplementationOnce(fail).mockImplementationOnce(fail);
-    await expect(processJob({} as any, { ...job }, 1)).rejects.toThrow();
-    expectNoGroupReport();
-    await expect(processJob({} as any, { ...job }, 3)).resolves.toBeUndefined();
-    expect(lastAppend()).toMatch(/^💥 <b>Download failed<\/b>:/);
-  });
+  it('stays silent through transient retries, then reports one terminal 💥', () =>
+    withBotApi(async (api) => {
+      await stubScrape([video()]);
+      await failDownload(TRANSIENT_DOWNLOAD);
+      const linkId = await postInGroup(api);
+      expect(await downloads()).toHaveLength(3);
+      expectOneReport(api, linkId, TRANSIENT_DOWNLOAD_REASON);
+    }));
 
-  it('reports one 💥 when the send itself fails terminally (issue #17)', async () => {
-    const job = groupUrlJob('https://example.com/video');
-    // one reject per processJob call this test drives (attempts 1 and 3), then
-    // the once-queue empties back to the base resolved value: no tail reset, and
-    // no rejecting mock leaks into a later test even if an assertion fails
-    // (lazy throw: see the transient-retries test above)
-    const fail = async () => {
-      throw new Error('fetch failed');
-    };
-    mockSendVideo.mockImplementationOnce(fail).mockImplementationOnce(fail);
-    await expect(processJob({} as any, { ...job }, 1)).rejects.toThrow(
-      'fetch failed',
-    );
-    expectNoGroupReport();
-    await expect(processJob({} as any, { ...job }, 3)).resolves.toBeUndefined();
-    expectGroupReport(2);
-    expect(mockLog.append).toHaveBeenCalledTimes(1);
-  });
+  it('reports one 💥 when the send itself fails on every attempt', () =>
+    withBotApi(async (api) => {
+      await serve();
+      api.failNext(VIDEO_RATE_LIMITED, 3);
+      const linkId = await postInGroup(api);
+      expect(requestsOf(api, 'sendVideo')).toHaveLength(3);
+      expectOneReport(
+        api,
+        linkId,
+        `429: ${VIDEO_RATE_LIMITED.body.description}`,
+      );
+    }));
 
-  it('stays silent on a too-large estimate in a group (no report leaks in)', async () => {
-    const ctx = groupCtx('https://www.instagram.com/p/huge');
-    mockGetInfo.mockResolvedValueOnce({
-      webpage_url: 'https://www.instagram.com/p/huge',
-      title: 'Huge',
-      filename: 'huge.mp4',
-      filesize: 3000 * 1024 * 1024,
-    } as any);
-    await handle(ctx as any);
-    expectGroupSilent(ctx);
-  });
+  it('stays silent on a too-large estimate in a group (no report leaks in)', () =>
+    withBotApi(async (api) => {
+      const url = 'https://www.instagram.com/p/huge';
+      await serve(video({ webpage_url: url, filesize: tooBig }));
+      await postInGroup(api, url);
+      expect(api.sentMessages).toEqual([]);
+    }));
 });
 
-describe('multi-video posts (carousels)', () => {
-  // clearAllMocks does not reset implementations, and this override would
-  // otherwise follow every test appended after this block
-  afterAll(() =>
-    mockGetInfos.mockImplementation(async (log, url, verbose) => [
-      await downloadVideo.getInfo(log, url, verbose),
-    ]),
-  );
+describe('multi-video posts', () => {
   const post = 'https://www.instagram.com/p/carousel';
-  const entries = ['a', 'b', 'c'].map((id) => ({
-    webpage_url: post,
-    title: `Video ${id}`,
-    extractor: 'Instagram',
-    id,
-    filename: `${id}.mp4`,
-  }));
-
-  const carousel = () =>
-    mockGetInfos.mockImplementation(async () => entries as any);
-
-  const sentIds = () =>
-    mockSendVideo.mock.calls.map(([, , info]: any) => info.id);
-
-  it('delivers every video of the post, in order', async () => {
-    carousel();
-    await processJob({} as any, { ...urlJob, url: post } as any, 1);
-    expect(sentIds()).toEqual(['a', 'b', 'c']);
-  });
-
-  it('remembers what it sent, so a retry resumes instead of re-sending', async () => {
-    spyMock(console, 'error');
-    carousel();
-    mockSendVideo.mockImplementationOnce(async () => ({
-      video: { file_id: 'id' },
-    })).mockImplementationOnce(async () => {
-      throw new Error('transient');
-    });
-    const job = { ...urlJob, url: post } as any;
-
-    await processJob({} as any, job, 1).catch(() => {});
-    await processJob({} as any, job, 2);
-
-    expect(sentIds().filter((id: string) => id === 'a')).toEqual(['a']);
-    expect(sentIds().filter((id: string) => id === 'c')).toEqual(['c']);
-    // marking an entry before its outcome is known would skip it here instead
-    expect(sentIds().filter((id: string) => id === 'b')).toEqual(['b', 'b']);
-  });
-
-  it('parks a long video and carries on with the rest of the post', async () => {
-    mockGetInfos.mockImplementation(async () => [
-      { ...entries[0], duration: 30 * 60 },
-      entries[1],
-      entries[2],
-    ] as any);
-    const groupJob = { ...urlJob, url: post, chatId: -100, chatType: 'group' };
-    const tg = { sendMessage: mock(async () => ({ message_id: 1 })) } as any;
-
-    await processJob(tg, groupJob as any, 1);
-    await processJob(tg, groupJob as any, 2);
-
-    // re-parking a settled video would prompt twice
-    expect(tg.sendMessage).toHaveBeenCalledTimes(1);
-    expect(sentIds()).toEqual(['b', 'c']);
-  });
-
-  it('counts a parked confirmation as part of the post having landed', async () => {
-    spyMock(console, 'error');
-    mockGetInfos.mockImplementation(async () => [
-      { ...entries[0], duration: 30 * 60 },
-      entries[1],
-    ] as any);
-    db.query(
-      'INSERT INTO handled_urls (chat_id, message_id, url, created_at) VALUES (?, ?, ?, ?)',
-    ).run(-100, urlJob.messageId, post, Date.now());
-    mockDownloadVideo.mockRejectedValue(
-      new downloadVideo.YtdlpError('failed', 'ERROR: Video unavailable'),
-    );
-    const tg = { sendMessage: mock(async () => ({ message_id: 1 })) } as any;
-    try {
-      await processJob(
-        tg,
-        { ...urlJob, url: post, chatId: -100, chatType: 'group' } as any,
-        jobQueue.MAX_ATTEMPTS,
-      );
-
-      // un-recording would let an edit re-park the confirmation
-      expect(rowCount('handled_urls')).toBe(1);
-    } finally {
-      mockDownloadVideo.mockResolvedValue('downloaded' as any);
-    }
-  });
-
-  it('announces the cap once, not again on every attempt', async () => {
-    spyMock(console, 'error');
-    const many = Array.from({ length: 25 }, (_, i) => ({
-      ...entries[0],
-      id: `v${i}`,
-    }));
-    mockGetInfos.mockImplementation(async () => many as any);
-    mockSendVideo.mockImplementationOnce(async () => {
-      throw new Error('transient');
-    });
-    const job = { ...urlJob, url: post, logMessageId: 7 } as any;
-
-    await processJob({} as any, job, 1).catch(() => {});
-    await processJob({} as any, job, 2);
-
-    expect(
-      mockLog.append.mock.calls.filter(([s]: any) =>
-        String(s).includes('videos here'),
-      ),
-    ).toHaveLength(1);
-  });
-
-  it('sends a confirmed video with no identity after its format drifted', async () => {
-    const parked = {
+  const entries = ['a', 'b', 'c'].map((id) =>
+    video({
       webpage_url: post,
-      title: 'Clip',
-      extractor: 'generic',
-      id: 'master',
-      format_id: 'hls-1080',
-      filename: 'Clip.hls-1080.mp4',
-    };
-    mockGetInfos.mockImplementation(async () => [
-      { ...parked, format_id: 'hls-1200', filename: 'Clip.hls-1200.mp4' },
-    ] as any);
-
-    await processJob({} as any, confirmedJob({ info: parked }), 1);
-
-    expect(
-      mockSendVideo.mock.calls.map(([, , i]: any) => i.filename),
-    ).toEqual(['Clip.hls-1200.mp4']);
-  });
-
-  it('does not re-send an identity-less video whose format drifted on the retry', async () => {
-    spyMock(console, 'error');
-    const page = (fmt: string) =>
-      ['Clip (1)', 'Clip (2)'].map((title) => ({
-        webpage_url: post,
-        title,
-        extractor: 'generic',
-        id: 'master',
-        format_id: fmt,
-        filename: `${title}.${fmt}.mp4`,
-      }));
-    mockGetInfos.mockImplementation(async () => page('hls-1080') as any);
-    mockDownloadVideo.mockImplementationOnce(async () => 'downloaded');
-    mockDownloadVideo.mockImplementationOnce(async () => {
-      throw new downloadVideo.YtdlpError('failed', 'ERROR: HTTP Error 503');
+      title: `Video ${id}`,
+      extractor: 'Instagram',
+      id,
+      filename: `${id}.mp4`,
+    }),
+  );
+  const armLimitStop = () =>
+    stubScrape(entries.slice(0, VIDEOS_TO_DECIDE), {
+      exit: String(MAX_DOWNLOADS_REACHED),
     });
-    const job = { ...urlJob, url: post } as any;
-    try {
-      await processJob({} as any, job, 1).catch(() => {});
-      mockGetInfos.mockImplementation(async () => page('hls-1200') as any);
-      await processJob({} as any, job, 2);
 
-      expect(
-        mockSendVideo.mock.calls.map(([, , i]: any) => i.title),
-      ).toEqual(['Clip (1)', 'Clip (2)']);
-    } finally {
-      mockDownloadVideo.mockResolvedValue('downloaded' as any);
-    }
-  });
-
-  it('tells two videos apart when the extractor gives them the same id', async () => {
-    mockGetInfos.mockImplementation(
-      async () =>
-        [
-          {
-            webpage_url: post,
-            title: 'Clip (1)',
-            extractor: 'generic',
-            id: 'master',
-            filename: 'one.mp4',
-          },
-          {
-            webpage_url: post,
-            title: 'Clip (2)',
-            extractor: 'generic',
-            id: 'master',
-            filename: 'two.mp4',
-          },
-        ] as any,
-    );
-
-    await processJob({} as any, { ...urlJob, url: post } as any, 1);
-
-    expect(mockSendVideo.mock.calls.map(([, , i]: any) => i.filename)).toEqual([
-      'one.mp4',
-      'two.mp4',
-    ]);
-  });
-
-  it('delivers the rest of the post when one video fails', async () => {
-    spyMock(console, 'error');
-    carousel();
-    mockDownloadVideo.mockImplementation(async (_log: any, info: any) => {
-      if (info.id === 'b') {
-        throw new downloadVideo.YtdlpError(
-          'failed',
-          'ERROR: Unsupported URL: https://x',
-        );
-      }
-      return 'downloaded';
-    });
-    try {
-      await processJob(
-        {} as any,
-        { ...urlJob, url: post } as any,
-        jobQueue.MAX_ATTEMPTS,
-      );
-      expect(sentIds()).toEqual(['a', 'c']);
-    } finally {
-      mockDownloadVideo.mockResolvedValue('downloaded' as any);
-    }
-  });
-
-  it('releases the blob of the video that failed, not whichever came last', async () => {
-    spyMock(console, 'error');
-    carousel();
-    mockDownloadVideo.mockImplementation(async (_log: any, info: any) => {
-      if (info.id === 'a') {
-        throw new downloadVideo.YtdlpError('failed', 'ERROR: Video unavailable');
-      }
-      return 'downloaded';
-    });
-    try {
-      await processJob(
-        {} as any,
-        { ...urlJob, url: post } as any,
-        jobQueue.MAX_ATTEMPTS,
-      );
-      expect(mockReleaseBlob.mock.calls.map(([i]: any) => i.id)).toEqual(['a']);
-    } finally {
-      mockDownloadVideo.mockResolvedValue('downloaded' as any);
-    }
-  });
-
-  it('reports a rejection that carries no value at all', async () => {
-    spyMock(console, 'error');
-    carousel();
-    mockDownloadVideo.mockRejectedValueOnce(undefined);
-    try {
-      await expect(
-        processJob({} as any, { ...urlJob, url: post } as any, 1),
-      ).rejects.toBeUndefined();
-    } finally {
-      mockDownloadVideo.mockResolvedValue('downloaded' as any);
-    }
-  });
-
-  it('comes back for a video that could still succeed, whatever failed last', async () => {
-    spyMock(console, 'error');
-    carousel();
-    mockDownloadVideo.mockImplementation(async (_log: any, info: any) => {
-      if (info.id === 'a') {
-        throw new downloadVideo.YtdlpError(
-          'failed',
-          'ERROR: Unable to download webpage: HTTP Error 503',
-        );
-      }
-      if (info.id === 'b') {
-        throw new downloadVideo.YtdlpError('failed', 'ERROR: Video unavailable');
-      }
-      return 'downloaded';
-    });
-    try {
-      // keeping the permanent failure would drop 'a' with no retry
-      await expect(
-        processJob({} as any, { ...urlJob, url: post } as any, 1),
-      ).rejects.toBeDefined();
-    } finally {
-      mockDownloadVideo.mockResolvedValue('downloaded' as any);
-    }
-  });
-
-  it('counts a post-download prompt as part of the post having landed', async () => {
-    spyMock(console, 'error');
-    mockGetInfos.mockImplementation(async () => [entries[0], entries[1]] as any);
-    db.query(
-      'INSERT INTO handled_urls (chat_id, message_id, url, created_at) VALUES (?, ?, ?, ?)',
-    ).run(-100, urlJob.messageId, post, Date.now());
-    mockDownloadVideo.mockImplementation(async (_log: any, info: any) => {
-      if (info.id === 'b') {
-        throw new downloadVideo.YtdlpError('failed', 'ERROR: Video unavailable');
-      }
-      // no scraped duration: only the probe after this download crosses the
-      // gate, so it is the post-download prompt that fires
-      blobStore.recordBlob(info);
-      blobStore.setBlobDuration(info, 30 * 60);
-      return 'downloaded';
-    });
-    const tg = { sendMessage: mock(async () => ({ message_id: 1 })) } as any;
-    try {
-      await processJob(
-        tg,
-        { ...urlJob, url: post, chatId: -100, chatType: 'group' } as any,
-        jobQueue.MAX_ATTEMPTS,
-      );
-
-      expect(tg.sendMessage).toHaveBeenCalled();
-      expect(rowCount('handled_urls')).toBe(1);
-    } finally {
-      mockDownloadVideo.mockResolvedValue('downloaded' as any);
-    }
-  });
-
-  it('comes back for a confirmed entry once the post lists it again', async () => {
-    spyMock(console, 'error');
-    mockGetInfos.mockImplementation(async () => [entries[0]] as any);
-    const job = confirmedJob({ info: entries[2], url: post, partOfPost: true });
-
-    // attempt 1, not the last: the miss has to be retryable, or the eviction
-    // above it buys nothing
-    await expect(processJob({} as any, job, 1)).rejects.toBeDefined();
-
-    mockGetInfos.mockImplementation(async () => entries as any);
-    await processJob({} as any, job, 2);
-
-    expect(sentIds()).toEqual(['c']);
-  });
-
-  it('evicts a post row a confirmed entry cannot name itself', async () => {
-    spyMock(console, 'error');
-    const parked = { ...entries[2], webpage_url: post };
-    mockGetInfos.mockImplementation(async () => [
-      { ...parked, webpage_url: 'https://c' },
-    ] as any);
-    db.query(
-      'INSERT INTO video_info (url, info, webpage_url, created_at) VALUES (?, ?, ?, ?)',
-    ).run(post, '[]', 'https://elsewhere', Date.now());
-    mockDownloadVideo.mockRejectedValue(
-      new downloadVideo.YtdlpError('failed', 'ERROR: Video unavailable'),
-    );
-    try {
-      await processJob(
-        {} as any,
-        confirmedJob({ info: parked, url: post }),
-        jobQueue.MAX_ATTEMPTS,
-      );
-      expect(rowCount('video_info')).toBe(0);
-    } finally {
-      mockDownloadVideo.mockResolvedValue('downloaded' as any);
-    }
-  });
-
-  it('keeps the message recorded when a confirmed entry of a post fails', async () => {
-    spyMock(console, 'error');
-    const job = confirmedJob({ info: entries[2], url: post, partOfPost: true });
-    db.query(
-      'INSERT INTO handled_urls (chat_id, message_id, url, created_at) VALUES (?, ?, ?, ?)',
-    ).run(job.chatId, job.messageId, post, Date.now());
-    mockGetInfos.mockImplementation(async () => entries as any);
-    mockDownloadVideo.mockRejectedValue(
-      new downloadVideo.YtdlpError('failed', 'ERROR: Video unavailable'),
-    );
-    try {
-      await processJob({} as any, job, jobQueue.MAX_ATTEMPTS);
-
-      expect(rowCount('handled_urls')).toBe(1);
-    } finally {
-      mockDownloadVideo.mockResolvedValue('downloaded' as any);
-    }
-  });
-
-  it('keeps the message recorded when a confirmed entry of a post is too large', async () => {
-    mockGetInfos.mockImplementation(async () => entries as any);
-    const job = confirmedJob({ info: entries[2], url: post, partOfPost: true });
-    db.query(
-      'INSERT INTO handled_urls (chat_id, message_id, url, created_at) VALUES (?, ?, ?, ?)',
-    ).run(job.chatId, job.messageId, post, Date.now());
-    mockSendVideo.mockResolvedValueOnce(undefined as any);
-
-    await processJob({} as any, job, 1);
-
-    expect(rowCount('handled_urls')).toBe(1);
-  });
-
-  it('releases every video that downloaded bytes and then failed', async () => {
-    spyMock(console, 'error');
-    carousel();
-    mockSendVideo.mockRejectedValue(telegramError(403, 'Forbidden'));
-    try {
-      await processJob({} as any, { ...urlJob, url: post } as any, 1);
-      expect(mockReleaseBlob.mock.calls.map(([i]: any) => i.id)).toEqual([
-        'a',
-        'b',
-        'c',
+  it('tells a private chat it only sends single-video links, and sends nothing', () =>
+    withBotApi(async (api) => {
+      await armLimitStop();
+      await armDownload();
+      await settle(api, api.sendTextMessageToBot(urlMessage(post)));
+      expect(texts(api)).toEqual([
+        `🧐 <b>Scraping</b> ${post}...\n\n📚 This post has several videos. I only send links with a single video.`,
       ]);
-    } finally {
-      mockSendVideo.mockResolvedValue({ video: { file_id: 'id' } } as any);
-    }
-  });
-
-  it('comes back for a video that could still succeed, whatever failed first', async () => {
-    spyMock(console, 'error');
-    carousel();
-    mockDownloadVideo.mockImplementation(async (_log: any, info: any) => {
-      if (info.id === 'a') {
-        throw new downloadVideo.YtdlpError('failed', 'ERROR: Video unavailable');
-      }
-      if (info.id === 'b') {
-        throw new downloadVideo.YtdlpError(
-          'failed',
-          'ERROR: Unable to download webpage: HTTP Error 503',
-        );
-      }
-      return 'downloaded';
-    });
-    try {
-      await expect(
-        processJob({} as any, { ...urlJob, url: post } as any, 1),
-      ).rejects.toBeDefined();
-    } finally {
-      mockDownloadVideo.mockResolvedValue('downloaded' as any);
-    }
-  });
-
-  it('keeps the message recorded across attempts once a video has landed', async () => {
-    spyMock(console, 'error');
-    carousel();
-    db.query(
-      'INSERT INTO handled_urls (chat_id, message_id, url, created_at) VALUES (?, ?, ?, ?)',
-    ).run(urlJob.chatId, urlJob.messageId, post, Date.now());
-    mockDownloadVideo.mockImplementation(async (_log: any, info: any) => {
-      if (info.id !== 'a') {
-        throw new downloadVideo.YtdlpError('failed', 'ERROR: Video unavailable');
-      }
-      return 'downloaded';
-    });
-    const job = { ...urlJob, url: post } as any;
-    try {
-      await processJob({} as any, job, 1).catch(() => {});
-      await processJob({} as any, job, jobQueue.MAX_ATTEMPTS);
-
-      expect(rowCount('handled_urls')).toBe(1);
-    } finally {
-      mockDownloadVideo.mockResolvedValue('downloaded' as any);
-    }
-  });
-
-  it('leaves the message recorded once part of the post has landed', async () => {
-    spyMock(console, 'error');
-    carousel();
-    db.query(
-      'INSERT INTO handled_urls (chat_id, message_id, url, created_at) VALUES (?, ?, ?, ?)',
-    ).run(urlJob.chatId, urlJob.messageId, post, Date.now());
-    mockDownloadVideo.mockImplementation(async (_log: any, info: any) => {
-      if (info.id === 'c') {
-        throw new downloadVideo.YtdlpError(
-          'failed',
-          'ERROR: Unsupported URL: https://x',
-        );
-      }
-      return 'downloaded';
-    });
-    try {
-      await processJob(
-        {} as any,
-        { ...urlJob, url: post } as any,
-        jobQueue.MAX_ATTEMPTS,
-      );
-
-      // un-recording here would re-send 'a' and 'b' on the next edit
-      expect(rowCount('handled_urls')).toBe(1);
-    } finally {
-      mockDownloadVideo.mockResolvedValue('downloaded' as any);
-    }
-  });
-
-  it('keeps a too-large verdict owed when the thread carrying it never landed', async () => {
-    spyMock(console, 'error');
-    mockGetInfos.mockImplementation(async () => [
-      { ...entries[0], filesize: 3_000_000_000 },
-      entries[1],
-    ] as any);
-    await deadThread(async () => {
-      mockSendVideo.mockImplementationOnce(async () => {
-        throw new Error('transient');
-      });
-      const job = { ...urlJob, url: post } as any;
-
-      await processJob({} as any, job, 1).catch(() => {});
-
-      // marking it would make the retry skip the video without ever having
-      // told the user why
-      expect(job.settledIds ?? []).not.toContain('Instagram:a');
-    });
-  });
-
-  it('says a video is too large once, not again on every attempt', async () => {
-    spyMock(console, 'error');
-    mockGetInfos.mockImplementation(async () => [
-      { ...entries[0], filesize: 3_000_000_000 },
-      entries[1],
-    ] as any);
-    await freshThread(async () => {
-      mockSendVideo.mockImplementationOnce(async () => {
-        throw new Error('transient');
-      });
-      const job = { ...urlJob, url: post } as any;
-
-      await processJob({} as any, job, 1).catch(() => {});
-      await processJob({} as any, job, 2);
-
-      expect(
-        mockLog.append.mock.calls.filter(([s]: any) =>
-          String(s).includes('too large'),
-        ),
-      ).toHaveLength(1);
-    });
-  });
-
-  it('owes nothing more for a video the real bytes made too large', async () => {
-    mockGetInfos.mockImplementation(async () => [entries[0], entries[1]] as any);
-    await freshThread(async () => {
-      mockSendVideo.mockResolvedValueOnce(undefined as any);
-      const job = { ...urlJob, url: post } as any;
-
-      await processJob({} as any, job, 1);
-
-      // leaving it unmarked would re-download the same oversized video, and
-      // repeat the verdict, on every later attempt
-      expect(job.settledIds).toContain('Instagram:a');
-    });
-  });
-
-  it('owes nothing more for an oversized video a group never hears about', async () => {
-    mockGetInfos.mockImplementation(async () => [entries[0], entries[1]] as any);
-    mockSendVideo.mockResolvedValueOnce(undefined as any);
-    const job = { ...urlJob, url: post, chatId: -100, chatType: 'group' } as any;
-
-    await processJob({} as any, job, 1);
-
-    expect(job.settledIds).toContain('Instagram:a');
-  });
-
-  it('keeps an oversized video owed when the thread carrying its verdict never landed', async () => {
-    mockGetInfos.mockImplementation(async () => [entries[0], entries[1]] as any);
-    await deadThread(async () => {
-      mockSendVideo.mockResolvedValueOnce(undefined as any);
-      const job = { ...urlJob, url: post } as any;
-
-      await processJob({} as any, job, 1);
-
-      expect(job.settledIds ?? []).not.toContain('Instagram:a');
-    });
-  });
-
-  it('tags a post-download prompt as part of the post as well', async () => {
-    spyMock(console, 'error');
-    mockGetInfos.mockImplementation(async () => [entries[0], entries[1]] as any);
-    mockDownloadVideo.mockImplementation(async (_log: any, info: any) => {
-      blobStore.recordBlob(info);
-      blobStore.setBlobDuration(info, 30 * 60);
-      return 'downloaded';
-    });
-    const tg = { sendMessage: mock(async () => ({ message_id: 1 })) } as any;
-    try {
-      await processJob(
-        tg,
-        { ...urlJob, url: post, chatId: -100, chatType: 'group' } as any,
-        1,
-      );
-
-      const data: string =
-        tg.sendMessage.mock.calls[0][2].reply_markup.inline_keyboard[0][0]
-          .callback_data;
-      const parked = await pendingDownloads.getPending(
-        data.slice('dl:'.length),
-      );
-      expect(parked!.partOfPost).toBe(true);
-
-      db.query('DELETE FROM pending').run();
-      // an entry the run above never downloaded, so its duration is again
-      // knowable only after the probe
-      mockGetInfos.mockImplementation(async () => [entries[2]] as any);
-      await processJob(
-        tg,
-        { ...urlJob, url: post, chatId: -100, chatType: 'group', messageId: 42 } as any,
-        1,
-      );
-
-      const lone: string =
-        tg.sendMessage.mock.calls.at(-1)![2].reply_markup.inline_keyboard[0][0]
-          .callback_data;
-      expect(
-        (await pendingDownloads.getPending(lone.slice('dl:'.length)))!
-          .partOfPost,
-      ).toBeUndefined();
-    } finally {
-      mockDownloadVideo.mockResolvedValue('downloaded' as any);
-    }
-  });
-
-  it('remembers a video it sent even when the thread never landed', async () => {
-    spyMock(console, 'error');
-    mockGetInfos.mockImplementation(async () => [entries[0], entries[1]] as any);
-    await deadThread(async () => {
-      mockSendVideo.mockImplementationOnce(async () => {
-        throw new Error('transient');
-      });
-      const job = { ...urlJob, url: post } as any;
-
-      await processJob({} as any, job, 1).catch(() => {});
-
-      // the video went out on its own Telegram call, not through the log thread
-      expect(job.settledIds).toContain('Instagram:b');
-    });
-  });
-
-  it('parks a confirmation tagged with whether it is part of a post', async () => {
-    const long = { ...entries[0], duration: 30 * 60 };
-    const groupJob = () =>
-      ({ ...urlJob, url: post, chatId: -100, chatType: 'group' }) as any;
-    const tg = { sendMessage: mock(async () => ({ message_id: 1 })) } as any;
-    const parked = async (call: number) => {
-      const data: string =
-        tg.sendMessage.mock.calls[call][2].reply_markup.inline_keyboard[0][0]
-          .callback_data;
-      return await pendingDownloads.getPending(data.slice('dl:'.length));
-    };
-
-    mockGetInfos.mockImplementation(async () => [long, entries[1]] as any);
-    await processJob(tg, groupJob(), 1);
-    expect((await parked(0))!.partOfPost).toBe(true);
-
-    mockGetInfos.mockImplementation(async () => [long] as any);
-    await processJob(tg, { ...groupJob(), messageId: 42 }, 1);
-    expect((await parked(1))!.partOfPost).toBeUndefined();
-  });
-
-  it('announces the videos a retry reaches for the first time', async () => {
-    spyMock(console, 'error');
-    carousel();
-    // a shutdown mid-post: 'b' is announced and aborted, 'c' is never reached
-    mockDownloadVideo.mockImplementationOnce(async () => 'downloaded');
-    mockDownloadVideo.mockImplementationOnce(async () => {
-      throw new jobQueue.ShutdownAbort();
-    });
-    const job = { ...urlJob, url: post, logMessageId: 9 } as any;
-    try {
-      await processJob({} as any, job, 1).catch(() => {});
-      jest.clearAllMocks();
-      await processJob({} as any, job, 2);
-
-      // only 'c' is new to the chat
-      expect(mockSendInfo).toHaveBeenCalledTimes(1);
-    } finally {
-      mockDownloadVideo.mockResolvedValue('downloaded' as any);
-    }
-  });
-
-  it('evicts the cached post when any entry failed in yt-dlp', async () => {
-    spyMock(console, 'error');
-    mockGetInfos.mockImplementation(async () => [entries[0], entries[1]] as any);
-    seedInfoRow(post, entries[0]);
-    // the send failure outranks the download one, so only the loop knows the
-    // scrape went stale
-    mockSendVideo.mockImplementationOnce(async () => {
-      throw new Error('transient');
-    });
-    mockDownloadVideo.mockImplementation(async (_log: any, info: any) => {
-      if (info.id === 'b') {
-        throw new downloadVideo.YtdlpError(
-          'failed',
-          'ERROR: unable to download video data: HTTP Error 403: Forbidden',
-        );
-      }
-      return 'downloaded';
-    });
-    try {
-      await processJob({} as any, { ...urlJob, url: post } as any, 1).catch(
-        () => {},
-      );
-
-      // keeping it makes every later attempt replay the same expired URLs
-      expect(rowCount('video_info')).toBe(0);
-    } finally {
-      mockDownloadVideo.mockResolvedValue('downloaded' as any);
-    }
-  });
-
-  it('reports the sibling that really failed, not the item with no video', async () => {
-    spyMock(console, 'error');
-    mockGetInfos.mockImplementation(async () => [entries[0], entries[1]] as any);
-    mockDownloadVideo.mockImplementation(async (_log: any, info: any) => {
-      throw new downloadVideo.YtdlpError(
-        'failed',
-        info.id === 'a'
-          ? 'ERROR: [Instagram] x: There is no video in this post'
-          : 'ERROR: Video unavailable',
-      );
-    });
-    try {
-      await processJob(
-        {} as any,
-        { ...urlJob, url: post, chatId: -100, chatType: 'group' } as any,
-        jobQueue.MAX_ATTEMPTS,
-      );
-
-      // letting 'a' speak for the post would leave the group with silence for
-      // a video that failed for a reason worth hearing
-      expect(
-        (logMessage.LogMessage as any).mock.calls.filter(
-          ([, dest]: any) => dest?.replyTo === urlJob.messageId,
-        ),
-      ).toHaveLength(1);
-    } finally {
-      mockDownloadVideo.mockResolvedValue('downloaded' as any);
-    }
-  });
-
-  it('answers a group with one report however many videos fail', async () => {
-    spyMock(console, 'error');
-    carousel();
-    mockDownloadVideo.mockRejectedValue(
-      new downloadVideo.YtdlpError(
-        'failed',
-        'ERROR: Unable to download webpage: HTTP Error 403: Forbidden',
-      ),
-    );
-    try {
-      await processJob(
-        {} as any,
-        { ...urlJob, url: post, chatId: -100, chatType: 'group' } as any,
-        jobQueue.MAX_ATTEMPTS,
-      );
-
-      expect(
-        (logMessage.LogMessage as any).mock.calls.filter(
-          ([, dest]: any) => dest?.replyTo === urlJob.messageId,
-        ),
-      ).toHaveLength(1);
-    } finally {
-      mockDownloadVideo.mockResolvedValue('downloaded' as any);
-    }
-  });
-
-  it('prints an info block for each video it sends', async () => {
-    carousel();
-    await processJob({} as any, { ...urlJob, url: post } as any, 1);
-    expect(mockSendInfo).toHaveBeenCalledTimes(3);
-  });
-
-  it('caps a playlist-sized post at ten videos and says how many it skipped', async () => {
-    const many = Array.from({ length: 25 }, (_, i) => ({
-      ...entries[0],
-      id: `v${i}`,
+      expect(await downloads()).toEqual([]);
+      expect(videos(api)).toEqual([]);
     }));
-    mockGetInfos.mockImplementation(async () => many as any);
 
-    await processJob({} as any, { ...urlJob, url: post } as any, 1);
-
-    expect(sentIds()).toHaveLength(10);
-    expect(mockLog.append).toHaveBeenCalledWith(
-      '\n📚 <b>More than 10 videos here</b>; sending the first 10.',
-    );
-  });
-
-  it('re-announces the cap on a fresh thread the failed attempt never posted', async () => {
-    const many = Array.from({ length: 25 }, (_, i) => ({
-      ...entries[0],
-      id: `v${i}`,
-    }));
-    mockGetInfos.mockImplementation(async () => many as any);
-
-    await processJob(
-      {} as any,
-      { ...urlJob, url: post, capShown: true, logMessageId: undefined } as any,
-      2,
-    );
-
-    expect(mockLog.append).toHaveBeenCalledWith(
-      expect.stringContaining('videos here'),
-    );
-  });
-
-  it('does not announce a cap for a post that was not truncated', async () => {
-    carousel();
-    await processJob({} as any, { ...urlJob, url: post } as any, 1);
-    expect(mockLog.append).not.toHaveBeenCalledWith(
-      expect.stringContaining('videos here'),
-    );
-  });
-
-  it('re-resolves a confirmed entry to its own video, not the first', async () => {
-    carousel();
-    await processJob(
-      {} as any,
-      confirmedJob({ info: { ...entries[2], filename: 'c.mp4' } }),
-      1,
-    );
-    expect(sentIds()).toEqual(['c']);
-  });
-
-  it('sends the confirmed video, not entry 0, when the re-scrape lost it', async () => {
-    spyMock(console, 'error');
-    mockGetInfos.mockImplementation(async () => [entries[0]] as any);
-    seedInfoRow(post, entries[0]);
-
-    await processJob(
-      {} as any,
-      confirmedJob({ info: { ...entries[2], filename: 'c.mp4' } }),
-      jobQueue.MAX_ATTEMPTS,
-    );
-
-    expect(mockSendVideo).not.toHaveBeenCalled();
-    // without the eviction every attempt re-reads the same short list, and so
-    // does every later request for the post until the row's six hours are up
-    expect(rowCount('video_info')).toBe(0);
-  });
-
-  it('evicts a post row an entry cannot name itself when its download fails', async () => {
-    spyMock(console, 'error');
-    // the playlist shape: entries carry their OWN webpage_url, so neither the
-    // row's url nor its webpage_url column is one the entry can name
-    mockGetInfos.mockImplementation(async () => [
-      { ...entries[0], webpage_url: 'https://a' },
-    ] as any);
-    db.query(
-      'INSERT INTO video_info (url, info, webpage_url, created_at) VALUES (?, ?, ?, ?)',
-    ).run(post, '[]', 'https://elsewhere', Date.now());
-    mockDownloadVideo.mockRejectedValue(
-      new downloadVideo.YtdlpError('failed', 'ERROR: Video unavailable'),
-    );
-    try {
-      await processJob(
-        {} as any,
-        { ...urlJob, url: post } as any,
-        jobQueue.MAX_ATTEMPTS,
+  it('lets an edit retry a multi-video link', () =>
+    withBotApi(async (api) => {
+      await armLimitStop();
+      const u = api.sendTextMessageToBot(urlMessage(post));
+      await settle(api, u);
+      await settle(
+        api,
+        api.sendEditedMessageToBot({
+          message_id: u.message!.message_id,
+          ...urlMessage(post),
+        }),
       );
-      expect(rowCount('video_info')).toBe(0);
-    } finally {
-      mockDownloadVideo.mockResolvedValue('downloaded' as any);
-    }
-  });
+      expect(texts(api).filter((t) => t.includes(SEVERAL_VIDEOS))).toHaveLength(
+        2,
+      );
+    }));
+
+  it('stays silent in a group chat, and sends nothing', () =>
+    withBotApi(async (api) => {
+      await armLimitStop();
+      await armDownload();
+      await postInGroup(api, post);
+      expect(await scrapes()).toHaveLength(1);
+      expect(await downloads()).toEqual([]);
+      expect(api.sentMessages).toEqual([]);
+    }));
+
+  it('answers an inline query with the first video', () =>
+    withBotApi(async (api) => {
+      await armLimitStop();
+      await armDownload();
+      await armProbe(10);
+      await settle(api, api.sendInlineQueryToBot(post));
+      expect(await downloads()).toHaveLength(1);
+      expect(getBlob(entries[0]!)?.file_id).toBeTruthy();
+      expect(getBlob(entries[1]!)).toBeNull();
+      expect(api.answeredInlineQueries[0]!.results[0]).toMatchObject({
+        type: 'video',
+        caption: 'Video a',
+      });
+    }));
+
+  it('sends the one video of a post whose other items are photos', () =>
+    withBotApi(async (api) => {
+      await stubScrape([entries[0]!], {
+        exit: '1',
+        stderr:
+          'ERROR: [Instagram] b: No video formats found!\nERROR: [Instagram] c: No video formats found!\n',
+      });
+      await armDownload();
+      await armProbe(30);
+      await settle(api, api.sendTextMessageToBot(urlMessage(post)));
+      expect(videos(api)).toHaveLength(1);
+      expect(getBlob(entries[0]!)?.file_id).toBeTruthy();
+      expect(texts(api).join('\n')).not.toContain('📚');
+    }));
 });

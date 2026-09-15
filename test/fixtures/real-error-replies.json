@@ -1,0 +1,77 @@
+{
+  "description": "Real Telegram Bot API error replies, captured through the local telegram-bot-api server: the query-too-old replies on 2026-09-15 with a bogus query id, the rate limits on 2026-09-30 from bursts of each method to one chat, and the blocked-bot replies on 2026-09-30 after the test account blocked the dev bot.",
+  "replies": {
+    "answerCallbackQuery_query_too_old": {
+      "method": "answerCallbackQuery",
+      "status": 400,
+      "body": {
+        "ok": false,
+        "error_code": 400,
+        "description": "Bad Request: query is too old and response timeout expired or query ID is invalid"
+      }
+    },
+    "answerInlineQuery_query_too_old": {
+      "method": "answerInlineQuery",
+      "status": 400,
+      "body": {
+        "ok": false,
+        "error_code": 400,
+        "description": "Bad Request: query is too old and response timeout expired or query ID is invalid"
+      }
+    },
+    "editMessageText_rate_limited": {
+      "method": "editMessageText",
+      "status": 429,
+      "body": {
+        "ok": false,
+        "error_code": 429,
+        "description": "Too Many Requests: retry after 3",
+        "parameters": {
+          "retry_after": 3
+        }
+      }
+    },
+    "sendMessage_rate_limited": {
+      "method": "sendMessage",
+      "status": 429,
+      "body": {
+        "ok": false,
+        "error_code": 429,
+        "description": "Too Many Requests: retry after 4",
+        "parameters": {
+          "retry_after": 4
+        }
+      }
+    },
+    "sendVideo_rate_limited": {
+      "method": "sendVideo",
+      "status": 429,
+      "body": {
+        "ok": false,
+        "error_code": 429,
+        "description": "Too Many Requests: retry after 11",
+        "parameters": {
+          "retry_after": 11
+        }
+      }
+    },
+    "sendMessage_blocked_by_user": {
+      "method": "sendMessage",
+      "status": 403,
+      "body": {
+        "ok": false,
+        "error_code": 403,
+        "description": "Forbidden: bot was blocked by the user"
+      }
+    },
+    "sendVideo_blocked_by_user": {
+      "method": "sendVideo",
+      "status": 403,
+      "body": {
+        "ok": false,
+        "error_code": 403,
+        "description": "Forbidden: bot was blocked by the user"
+      }
+    }
+  }
+}

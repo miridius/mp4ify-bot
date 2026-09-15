@@ -21,7 +21,7 @@ import * as handlers from '../src/handlers';
 import * as blobStore from '../src/blob-store';
 import * as jobQueue from '../src/job-queue';
 import * as pendingDownloads from '../src/pending-downloads';
-import { rowCount, seedInfoRow, spyMock } from './test-utils';
+import { rowCount, seedHandledUrl, seedInfoRow, spyMock } from './test-utils';
 
 beforeEach(() => jest.clearAllMocks());
 afterAll(() => mock.restore());
@@ -284,6 +284,35 @@ describe('start', async () => {
     expect(exitSpy).toHaveBeenCalledWith(1);
   });
 
+  it('still exits on a polling crash that follows a stop() which threw', async () => {
+    const consoleError = spyMock(console, 'error');
+    const exitSpy = spyOn(process, 'exit').mockImplementation(
+      (() => undefined) as any,
+    );
+    let crash!: (e: Error) => void;
+    (Telegraf.prototype.launch as any).mockImplementationOnce(async function (
+      this: any,
+      ...args: any[]
+    ) {
+      this.polling = {};
+      args.find((a: any) => typeof a === 'function')?.();
+      return new Promise((_, reject) => (crash = reject));
+    });
+    try {
+      const bot = await start('stop-throws-token');
+      expect(() => bot.stop('test')).toThrow();
+      crash(new Error('fatal polling error'));
+      await Bun.sleep(1); // let the launch rejection reach the catch
+      expect(consoleError).toHaveBeenCalledWith(
+        'Bot crashed:',
+        expect.any(Error),
+      );
+      expect(exitSpy).toHaveBeenCalledWith(1);
+    } finally {
+      exitSpy.mockRestore();
+    }
+  });
+
   it('contains handler errors instead of crashing the polling loop', async () => {
     const consoleError = spyMock(console, 'error');
     textMessageHandler.mockImplementationOnce(() =>
@@ -312,13 +341,11 @@ describe('start', async () => {
     // pins the real end-to-end effect: a broken wiring (e.g. a missing import
     // whose ReferenceError the containment catch swallows) can only be caught
     // by asserting the rows are gone, not by watching mocks
-    const { db, resetDb } = await import('../src/db');
+    const { resetDb } = await import('../src/db');
     resetDb();
     const old = Date.now() - 8 * 24 * 60 * 60 * 1000; // past both TTLs
     seedInfoRow('https://stale', {}, old);
-    db.query(
-      'INSERT INTO handled_urls (chat_id, message_id, url, created_at) VALUES (1, 1, ?, ?)',
-    ).run('https://stale', old);
+    seedHandledUrl(1, 1, 'https://stale', old);
 
     await start(botToken);
 

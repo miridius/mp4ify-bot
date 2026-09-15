@@ -5,22 +5,20 @@ import {
   releaseAbandoned,
   releaseBlob,
   setBlobDuration,
-  videoKey,
   withBlobLock,
 } from './blob-store';
+import { INLINE_CACHE_CHAT_ID } from './consts';
 import { db } from './db';
 import {
   calcDuration,
   classifyFailure,
   downloadVideo,
-  getInfo,
+  firstInfo,
   getInfos,
   isDownloaded,
   isPermanentError,
-  MAX_POST_VIDEOS,
   probeDuration,
   removeCachedInfo,
-  removeCachedUrl,
   sendInfo,
   sendVideo,
   tooLargeMessage,
@@ -95,13 +93,20 @@ const stashLog = (job: Job, log: LogMessage) => {
   job.logText = log.text;
 };
 
-// Un-record the originating URL so editing the message retries it: a terminal
-// verdict (a permanent failure, or a too-large gate) re-opens the edit-retry
-// gesture, since yt-dlp may have self-updated or the site/format changed since.
-// Guarded on url (confirmed jobs parked before the field existed lack it).
-const reopenEditRetry = (job: Job, url?: string) => {
-  if (url) deleteHandledStmt.run(job.chatId, job.messageId, url);
+// A terminal verdict stays retryable by editing the message: yt-dlp may have
+// self-updated since, or the site, format, or post changed.
+const reopenEditRetry = (job: Job) => {
+  deleteHandledStmt.run(job.chatId, job.messageId, job.url);
 };
+
+const endWithVerdict = async (log: LogMessage, job: Job, verdict?: string) => {
+  if (verdict) log.append(verdict);
+  await log.flush();
+  reopenEditRetry(job);
+};
+
+export const SEVERAL_VIDEOS =
+  '📚 This post has several videos. I only send links with a single video.';
 
 export const textMessageHandler = async (ctx: MessageContext) => {
   const { text, chat, entities, message_id, from } =
@@ -169,25 +174,40 @@ export const textMessageHandler = async (ctx: MessageContext) => {
   );
 };
 
-// Download then send, serialized under the blob lock so a concurrent job for
-// the same video takes turns instead of racing on the bytes; this is the
-// shared shape of confirmed-job and inline processing. (processUrlJob keeps its own block:
-// it interleaves the post-download long-video gate inside the lock.) The download is
-// unconditional even when the bytes were pre-downloaded: downloadVideo no-ops
-// if the blob is still there and re-downloads if a concurrent cancel/failure
-// released it: see releaseBlob.
-const downloadAndSend = (
+type Sent = Awaited<ReturnType<typeof sendVideo>>;
+
+function downloadAndSend(
   telegram: Telegram,
   log: LogMessage,
   info: VideoInfo,
   verbose: boolean,
   chatId: number,
   replyTo?: number,
-) =>
-  withBlobLock(info, async () => {
+): Promise<Sent>;
+function downloadAndSend(
+  telegram: Telegram,
+  log: LogMessage,
+  info: VideoInfo,
+  verbose: boolean,
+  chatId: number,
+  replyTo: number | undefined,
+  holdBack: (() => Promise<boolean>) | undefined,
+): Promise<Sent | 'held'>;
+function downloadAndSend(
+  telegram: Telegram,
+  log: LogMessage,
+  info: VideoInfo,
+  verbose: boolean,
+  chatId: number,
+  replyTo?: number,
+  holdBack?: () => Promise<boolean>,
+) {
+  return withBlobLock(info, async (): Promise<Sent | 'held'> => {
     console.debug(await downloadVideo(log, info, verbose));
+    if (await holdBack?.()) return 'held';
     return sendVideo(telegram, log, info, chatId, replyTo);
   });
+}
 
 export const processJob = async (
   telegram: Telegram,
@@ -215,19 +235,6 @@ const isAlwaysRespondHost = (url: string): boolean => {
 const isTerminal = (e: unknown, attempt: number, kind?: FailureKind) =>
   isPermanentError(e, kind) || attempt >= MAX_ATTEMPTS;
 
-// A retryable failure outranks a permanent one, or the post's other videos
-// never retry; a not-a-video item draws no group reply at all (see tellGroup),
-// so it must never answer for a sibling that failed for a real reason.
-const speaksFor = (e: unknown) =>
-  !isPermanentError(e) ? 2 : classifyFailure(e) === 'not-a-video' ? 0 : 1;
-
-const markSettled = (job: UrlJob, info: VideoInfo) => {
-  (job.settledIds ??= []).push(videoKey(info));
-};
-const markAnnounced = (job: UrlJob, info: VideoInfo) => {
-  (job.announcedIds ??= []).push(videoKey(info));
-};
-
 const processUrlJob = async (
   telegram: Telegram,
   job: UrlJob,
@@ -237,145 +244,64 @@ const processUrlJob = async (
   // progress logs go to private chats only: see logFor
   const log = logFor(telegram, chatType, logDestFor(job));
   const isGroupChat = chatType !== 'private';
-  // A private thread whose sends all failed has no messageId and carried
-  // nothing, so skipping the video on the retry would lose the verdict in
-  // silence. A group is silent by policy and misses nothing.
-  const verdictReachedChat = () => isGroupChat || log.messageId != null;
-  let reopenWanted = false;
-  const flushReopen = () => {
-    if (reopenWanted && !job.answered) reopenEditRetry(job, url);
-  };
-  let info: VideoInfo | undefined;
-  // whether any ENTRY failed in yt-dlp, which the elected report may not say:
-  // a sibling's send failure can outrank it and still leave stale info cached
-  let scrapeStale = false;
-  const failedEntries: VideoInfo[] = [];
+  let resolved: VideoInfo | undefined;
   try {
-    const all = await getInfos(log, url, verbose);
-    const infos = all.slice(0, MAX_POST_VIDEOS);
-    const many = infos.length > 1 || undefined;
-    if (all.length > infos.length && !(job.capShown && job.logMessageId != null)) {
-      log.append(
-        `\n📚 <b>More than ${infos.length} videos here</b>; sending the first ${infos.length}.`,
-      );
-      job.capShown = true;
+    const infos = await getInfos(log, url, verbose);
+    if (infos.length > 1) {
+      await endWithVerdict(log, job, `\n${SEVERAL_VIDEOS}`);
+      return;
     }
-    if (job.logMessageId == null) job.announcedIds = undefined;
-    let failure: unknown;
-    // undefined is a value a rejection can carry
-    let anyFailed = false;
-    // The queue's bookkeeping, the edit-retry gesture and the one-reply-per-link
-    // policy are all keyed to the URL the message carries, so one job must
-    // deliver every video of the post.
-    for (const entry of infos) {
-      const key = videoKey(entry);
-      if (job.settledIds?.includes(key)) continue;
-      info = entry;
-      try {
-        if (!job.announcedIds?.includes(key)) {
-          await sendInfo(log, info, verbose);
-          markAnnounced(job, entry);
-        }
-        // a long video is often also too big to send; reject from the scraped
-        // estimate before downloading (or offering to download) something we can
-        // never deliver. sendVideo still gates on the real on-disk size for an
-        // estimate that was missing or wrong. (A group's NoLog stays silent here,
-        // matching the group-silence policy above.)
-        const tooLarge = tooLargeToSend(info);
-        if (tooLarge) {
-          log.append(`\n${tooLargeMessage(tooLarge)}`);
-          await log.flush();
-          // estimates are unreliable and formats change, so an edit must be able
-          // to retry this verdict too
-          reopenWanted = true;
-          if (verdictReachedChat()) markSettled(job, info);
-          continue;
-        }
-        // scraped metadata can lack duration; the blob row keeps the ffprobe'd
-        // real one from a previous download only if some past probe SUCCEEDED. A
-        // probe-failed, later-disposed video (only file_id remains) stays unknown
-        // and falls through.
-        // `||`, not `??`: a scraped duration of 0 means "unknown" (the same reason
-        // the post-download backstop re-checks 0), so it too falls through to the
-        // blob row's probed duration
-        const duration = calcDuration(info) || getBlob(info)?.duration;
-        if (isGroupChat && duration && duration > LONG_VIDEO_THRESHOLD_SECS) {
-          await requestConfirmation(telegram, job, info, duration, false, many);
-          job.answered = true;
-          markSettled(job, info);
-          continue;
-        }
-        // set inside the lock when the post-download gate parks a confirmation, so
-        // the too-large un-record below skips that (non-terminal) path
-        let confirmed = false;
-        const current = info;
-        // serialize every byte-touching step for this video (download, probe, send)
-        // so a concurrent job for the same blob takes turns with us: it reuses our
-        // result or re-downloads cleanly, instead of racing us on the bytes
-        const sent = await withBlobLock(current, async () => {
-          console.debug(await downloadVideo(log, current, verbose));
-          if (isGroupChat) {
-            // The real duration, probed and stored during the download just above
-            // (or during the first download, when this one was a cache hit). A
-            // null row value with bytes present (a crash landed between recording
-            // the blob and storing the duration, or that probe failed once) is
-            // re-probed here while the bytes are still on disk.
-            const blob = getBlob(current);
-            let actualDuration = blob?.duration;
-            if (!actualDuration && blob && !blob.file_id) {
-              actualDuration = await probeDuration(blob.path);
-              if (actualDuration) setBlobDuration(current, actualDuration);
-            }
-            if (actualDuration && actualDuration > LONG_VIDEO_THRESHOLD_SECS) {
-              // Enrich the parked payload too, so the confirmed job sends the
-              // video with its real duration metadata. The probed duration is
-              // already net of removed sponsor segments, so the chapters must go
-              // or calcDuration would subtract them a second time.
-              const infoWithDuration = {
-                ...current,
-                duration: actualDuration,
-                sponsorblock_chapters: undefined,
-              };
-              await requestConfirmation(
-                telegram,
-                job,
-                infoWithDuration,
-                actualDuration,
-                true,
-                many,
-              );
-              confirmed = true;
-              return;
-            }
-          }
-          return sendVideo(telegram, log, current, chatId, messageId);
-        });
-        // sendVideo returns undefined when the real on-disk bytes exceeded the
-        // limit (a missing/under estimate slipped past tooLargeToSend above); it
-        // already discarded them. Ask for the gesture like a terminal verdict.
-        // The confirmation path (confirmed) is not a too-large one.
-        if (!sent && !confirmed) {
-          // flush so verdictReachedChat below sees the landed thread's id
-          await log.flush();
-          reopenWanted = true;
-        }
-        if (sent || confirmed) job.answered = true;
-        if (sent || confirmed || verdictReachedChat()) {
-          markSettled(job, current);
-        }
-      } catch (e) {
-        // shutdown is not this post's failure: it must reach the queue whole
-        if (e instanceof ShutdownAbort) throw e;
-        failedEntries.push(entry);
-        scrapeStale ||= e instanceof YtdlpError;
-        if (!anyFailed || speaksFor(e) > speaksFor(failure)) {
-          failure = e;
-          anyFailed = true;
-        }
+    const info = infos[0]!;
+    resolved = info;
+    const infoReachedChat = job.infoShown && job.logMessageId != null;
+    if (!infoReachedChat) await sendInfo(log, info, verbose);
+    job.infoShown = true;
+    const tooLarge = tooLargeToSend(info);
+    if (tooLarge) {
+      await endWithVerdict(log, job, `\n${tooLargeMessage(tooLarge)}`);
+      return;
+    }
+    const duration = calcDuration(info) || getBlob(info)?.duration;
+    if (isGroupChat && duration && duration > LONG_VIDEO_THRESHOLD_SECS) {
+      await requestConfirmation(telegram, job, info, duration);
+      return;
+    }
+    const parkIfLong = async () => {
+      const blob = getBlob(info);
+      let actualDuration = blob?.duration;
+      if (!actualDuration && blob && !blob.file_id) {
+        actualDuration = await probeDuration(blob.path);
+        if (actualDuration) setBlobDuration(info, actualDuration);
       }
-    }
-    if (anyFailed) throw failure;
-    flushReopen();
+      if (!actualDuration || actualDuration <= LONG_VIDEO_THRESHOLD_SECS) {
+        return false;
+      }
+      const infoWithDuration = {
+        ...info,
+        duration: actualDuration,
+        // The probed duration already excludes removed sponsor segments;
+        // calcDuration would subtract them again.
+        sponsorblock_chapters: undefined,
+      };
+      await requestConfirmation(
+        telegram,
+        job,
+        infoWithDuration,
+        actualDuration,
+        true,
+      );
+      return true;
+    };
+    const sent = await downloadAndSend(
+      telegram,
+      log,
+      info,
+      verbose,
+      chatId,
+      messageId,
+      isGroupChat ? parkIfLong : undefined,
+    );
+    if (!sent) await endWithVerdict(log, job);
   } catch (e: any) {
     // not a failure: no report, no eviction, no release; stash the log
     // pointer for the re-run (see ShutdownAbort). Flush first: a debounced
@@ -386,22 +312,16 @@ const processUrlJob = async (
       stashLog(job, log);
       throw e;
     }
-    // a failed download often means the cached info's signed media URLs have
-    // expired: evict so the retry (or the next request) re-scrapes. Scoped to
-    // yt-dlp failures: a post whose videos only failed to SEND still has good
-    // info, and keeping it maps the retry to the same blob key and reuses the
-    // bytes.
-    if (info && (scrapeStale || e instanceof YtdlpError))
-      removeCachedInfo(info, url);
+    if (resolved && e instanceof YtdlpError) removeCachedInfo(resolved);
     const kind = classifyFailure(e);
     const terminal = isTerminal(e, attempt, kind);
     // product policy: a not-a-video post (photo/article) never draws a group
     // reply, whatever the host
     const tellGroup =
-      chatType !== 'private' &&
+      isGroupChat &&
       terminal &&
       kind !== 'not-a-video' &&
-      (info != null || isAlwaysRespondHost(url));
+      (resolved != null || isAlwaysRespondHost(url));
     const reportLog = tellGroup
       ? new LogMessage(telegram, logDestFor(job))
       : log;
@@ -416,9 +336,8 @@ const processUrlJob = async (
     // reached only on a terminal failure (reportJobFailure rethrows retryable
     // ones, whose retry reuses the blob; a parked confirmation returned above).
     // Release the bytes this dead job downloaded.
-    for (const f of failedEntries) await releaseAbandoned(f);
-    reopenWanted = true;
-    flushReopen();
+    if (resolved) await releaseAbandoned(resolved);
+    reopenEditRetry(job);
   }
 };
 
@@ -438,28 +357,14 @@ const processConfirmedJob = async (
   // is already known-sendable. A real-bytes overshoot of a missing/under
   // estimate is the only surprise left: caught after the send below.
   try {
-    // The payload pins the info snapshot the user confirmed, but its embedded
-    // signed media URLs expire in hours; a confirm clicked later than that
-    // would replay them into guaranteed 403s for every attempt. When there is
-    // no blob yet (nothing downloaded to reuse), re-resolve through getInfos:
-    // fresh within its TTL is a cheap DB hit, stale re-scrapes live URLs.
-    // (Re-checked per attempt; a doomed replay evicts its row below, so the
-    // NEXT attempt's getInfos re-scrapes. No unconditional retry refresh: a
-    // retry whose blob survived, the common transient-send case, must reuse
-    // its cached file_id rather than gamble on a fresh scrape.)
-    if (info.webpage_url && !(await isDownloaded(info))) {
-      const fresh = await getInfos(log, info.webpage_url, verbose);
-      const want = videoKey(info);
-      const resolved = fresh.find((i) => videoKey(i) === want);
-      if (!resolved) {
-        removeCachedUrl(info.webpage_url);
-        throw new Error('that video is no longer in the post');
-      }
-      info = resolved;
+    // The parked payload's info carries signed media URLs that go stale (see
+    // INFO_TTL_MS).
+    if (!(await isDownloaded(info))) {
+      info = await firstInfo(log, info.webpage_url, verbose);
     }
     // the re-resolve can drift the key (e.g. a different format_id), stranding
-    // the parked identity's (fileless) row; released here once so every outcome
-    // path is covered (plain success, too-large, and the terminal catch below)
+    // the parked identity's (fileless) row; released here once so every path
+    // past this point is covered
     if (blobKey(job.info) !== blobKey(info)) await releaseAbandoned(job.info);
     // the failure report below runs OUTSIDE downloadAndSend's blob lock so it
     // can't block a sibling job on a Telegram round-trip
@@ -471,32 +376,17 @@ const processConfirmedJob = async (
       chatId,
       messageId,
     );
-    // sendVideo returns undefined only when the real bytes exceeded the limit
-    // (the estimate was missing/under); it already discarded them, so just tell
-    // the user. The confirm was an explicit action, so it earns a reply even in
-    // a group: unlike a plain group url job, which stays silent (group-silence)
-    // and so leaves this report to the private/inline paths.
-    if (!sent) {
-      const r = report();
-      r.append(tooLargeMessage());
-      await r.flush();
-      if (!job.partOfPost) reopenEditRetry(job, job.url);
-    }
+    if (!sent) await endWithVerdict(report(), job, tooLargeMessage());
   } catch (e: any) {
     // a shutdown abort is not a failure; see processUrlJob's twin guard
     if (e instanceof ShutdownAbort) throw e;
-    // evict likely-expired cached info so the NEXT request re-scrapes; this
-    // job's own retries can't benefit (the payload pins its info snapshot)
-    if (e instanceof YtdlpError) removeCachedInfo(info, job.url);
+    if (e instanceof YtdlpError) removeCachedInfo(info);
     const terminal = isTerminal(e, attempt);
     await reportJobFailure(job, report(), e, attempt, terminal);
     // terminal failure (retryable ones rethrew above and will reuse the blob):
     // release what this dead job owns
     await releaseAbandoned(info);
-    // un-record the originating message's URL so editing it retries, exactly
-    // like a terminal url job (the payload carries the url the record used;
-    // info.webpage_url may be a different alias)
-    if (!job.partOfPost) reopenEditRetry(job, job.url);
+    reopenEditRetry(job);
   }
 };
 
@@ -547,16 +437,12 @@ const formatDuration = (secs: number) => {
   return s ? `${m}m ${s}s` : `${m}m`;
 };
 
-// `duration` is passed in, not recomputed from info: the caller may have
-// resolved it from the blob row (metadata had none) or from a fresh probe, and
-// re-deriving it here would re-subtract sponsor time from an already-net value
 const requestConfirmation = async (
   telegram: Telegram,
   job: UrlJob,
   info: VideoInfo,
   duration: number,
   postDownload: boolean = false,
-  partOfPost: true | undefined = undefined,
 ) => {
   const id = await addPending({
     info,
@@ -567,7 +453,6 @@ const requestConfirmation = async (
     chatType: job.chatType,
     userId: job.fromId,
     postDownload,
-    partOfPost,
   });
 
   try {
@@ -735,8 +620,8 @@ const handleInlineQuery = async (ctx: InlineQueryContext) => {
     url = ensureScheme(url);
 
     const log = new NoLog();
-    info = await getInfo(log, url, false);
-    url = info.webpage_url || url;
+    info = await firstInfo(log, url);
+    url = info.webpage_url;
     // inline is for small clips: if the scraped size already exceeds the send
     // limit, reject up front rather than download something we can never send
     const tooLarge = tooLargeToSend(info);
@@ -744,8 +629,13 @@ const handleInlineQuery = async (ctx: InlineQueryContext) => {
       await answerTooLarge(ctx, tooLarge);
       return;
     }
-    // TODO: make the cache chat id configurable
-    const msg = await downloadAndSend(ctx.telegram, log, info, false, -4640446184);
+    const msg = await downloadAndSend(
+      ctx.telegram,
+      log,
+      info,
+      false,
+      INLINE_CACHE_CHAT_ID,
+    );
     // sendVideo returns undefined only when the real bytes exceeded the limit
     // (the estimate above was missing/under): tell the user, don't answer blank
     if (!msg) {
