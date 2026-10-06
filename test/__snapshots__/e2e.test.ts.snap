@@ -126,7 +126,7 @@ exports[`message handler downloads https://www.reddit.com/r/nextfuckinglevel/s/i
 <b>duration</b>: 10 sec
 <b>size</b>: <n> MB
 <b>resolution</b>: 480x600
-<b>video codec</b>: avc1.4D401F @ <n> kbps
+<b>video codec</b>: avc1.4d401f @ <n> kbps
 <b>audio codec</b>: mp4a.40.2 @ <n> kbps
 
 ⬇️ <b>Downloading...</b>
@@ -171,7 +171,7 @@ exports[`message handler downloads https://www.reddit.com/r/nextfuckinglevel/s/i
 <b>duration</b>: 10 sec
 <b>size</b>: <n> MB
 <b>resolution</b>: 480x600
-<b>video codec</b>: avc1.4D401F @ <n> kbps
+<b>video codec</b>: avc1.4d401f @ <n> kbps
 <b>audio codec</b>: mp4a.40.2 @ <n> kbps"
 ,
   },
@@ -212,7 +212,7 @@ exports[`message handler downloads https://www.reddit.com/r/nextfuckinglevel/s/i
 <b>duration</b>: 10 sec
 <b>size</b>: <n> MB
 <b>resolution</b>: 480x600
-<b>video codec</b>: avc1.4D401F @ <n> kbps
+<b>video codec</b>: avc1.4d401f @ <n> kbps
 <b>audio codec</b>: mp4a.40.2 @ <n> kbps"
 ,
   },
@@ -254,7 +254,7 @@ exports[`message handler downloads https://www.reddit.com/r/nextfuckinglevel/com
 <b>duration</b>: 10 sec
 <b>size</b>: <n> MB
 <b>resolution</b>: 480x600
-<b>video codec</b>: avc1.4D401F @ <n> kbps
+<b>video codec</b>: avc1.4d401f @ <n> kbps
 <b>audio codec</b>: mp4a.40.2 @ <n> kbps
 
 ⬇️ <b>Downloading...</b>
@@ -299,7 +299,7 @@ exports[`message handler downloads https://www.reddit.com/r/nextfuckinglevel/com
 <b>duration</b>: 10 sec
 <b>size</b>: <n> MB
 <b>resolution</b>: 480x600
-<b>video codec</b>: avc1.4D401F @ <n> kbps
+<b>video codec</b>: avc1.4d401f @ <n> kbps
 <b>audio codec</b>: mp4a.40.2 @ <n> kbps"
 ,
   },
@@ -340,7 +340,7 @@ exports[`message handler downloads https://www.reddit.com/r/nextfuckinglevel/com
 <b>duration</b>: 10 sec
 <b>size</b>: <n> MB
 <b>resolution</b>: 480x600
-<b>video codec</b>: avc1.4D401F @ <n> kbps
+<b>video codec</b>: avc1.4d401f @ <n> kbps
 <b>audio codec</b>: mp4a.40.2 @ <n> kbps"
 ,
   },
