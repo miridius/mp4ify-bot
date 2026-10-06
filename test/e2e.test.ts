@@ -93,9 +93,11 @@ const clearDiskCache = async () => {
 // changes format ids in filenames, sizes, bitrates, and, because the blob is
 // keyed by extractor:id:format, the format segment of the blob path and the
 // file_id the mock derives from it: all without any change in bot behavior.
-// Scrub those (the stable extractor:id of the path stays as real signal). NOT
-// scrubbed (also real signal, still snapshot-breaking on a format change): codec
-// profile strings, resolution, and duration.
+// Scrub those (the stable extractor:id of the path stays as real signal).
+// Sites report the same codec id in varying case (YouTube run to run, Reddit
+// across HLS and DASH formats), so codec ids are compared lowercased. Left
+// intact as real signal (still snapshot-breaking on a format change): codec
+// profile strings apart from case, resolution, and duration.
 const scrub = (messages: unknown) =>
   JSON.parse(
     JSON.stringify(messages)
@@ -103,7 +105,8 @@ const scrub = (messages: unknown) =>
       .replaceAll(/(\/storage\/blobs\/[^:"]+:[^:"]+:)[^"]+(\.\w+")/g, '$1<formats>$2')
       .replaceAll(/("video":")(?!file:)[0-9a-z]+(")/g, '$1<file_id>$2')
       .replaceAll(/\d+(\.\d+)? MB/g, '<n> MB')
-      .replaceAll(/@ \d+(\.\d+)? kbps/g, '@ <n> kbps'),
+      .replaceAll(/@ \d+(\.\d+)? kbps/g, '@ <n> kbps')
+      .replaceAll(/codec<\/b>: [^\s\\]+/g, (codec) => codec.toLowerCase()),
   );
 
 const clearInMemoryCache = () => {
