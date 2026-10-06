@@ -20,7 +20,6 @@ import {
   readdir,
   rm,
   stat,
-  truncate,
 } from 'fs/promises';
 import {
   blobPath,
@@ -33,10 +32,20 @@ import { STAGING_DIR } from '../src/consts';
 import { db, resetDb } from '../src/db';
 import { githubMock } from './simulate-bot-api';
 import {
+  bytesOnDisk,
+  resetStub,
   rowCount,
+  seedBytes,
   seedInfoRow,
+  seedOversize,
   spyMock,
+  STUB_DIR,
+  stub,
+  stubArgs,
+  stubScrape,
+  stubSpawns,
   telegramError,
+  unblockStub,
   waitUntil,
   withFailingWrite,
 } from './test-utils';
@@ -44,34 +53,22 @@ import {
   abortDownloads,
   classifyFailure,
   downloadVideo,
-  getInfo,
+  firstInfo,
   getInfos,
   isPermanentError,
   liveYtdlpSize,
+  MAX_DOWNLOADS_REACHED,
   probeDuration,
   removeCachedInfo,
-  removeCachedUrl,
   resetShutdown,
   sendInfo,
   sendVideo,
   updateYtdlp,
+  VIDEOS_TO_DECIDE,
   YtdlpError,
 } from '../src/download-video';
 
 const VIDEO_DIR = '/storage/test-videos/';
-
-// control files for the test/bin stub executables (on PATH via Dockerfile.dev)
-const STUB_DIR = '/tmp/stub';
-const stub = (files: Record<string, string>) =>
-  Promise.all(
-    Object.entries(files).map(([k, v]) => Bun.write(`${STUB_DIR}/${k}`, v)),
-  );
-const stubArgs = async () =>
-  (
-    await Bun.file(`${STUB_DIR}/args`)
-      .text()
-      .catch(() => '')
-  ).trim();
 
 afterAll(async () => {
   await rm(STUB_DIR, { recursive: true, force: true });
@@ -83,8 +80,7 @@ beforeEach(async () => {
   resetDb();
   getInfos.cache.clear();
   downloadVideo.cache.clear();
-  await rm(STUB_DIR, { recursive: true, force: true });
-  await mkdir(STUB_DIR, { recursive: true });
+  await resetStub();
   await rm(VIDEO_DIR, { recursive: true, force: true });
   await mkdir(VIDEO_DIR, { recursive: true });
   await rm('/storage/blobs', { recursive: true, force: true });
@@ -347,8 +343,15 @@ describe('probeDuration', () => {
   });
 });
 
-describe('getInfo', () => {
+describe('getInfos', () => {
   const url = 'https://test.invalid/getinfo';
+  const twoVideos = ['v1', 'v2'].map((id) => ({
+    ...VideoInfo,
+    id,
+    webpage_url: url,
+  }));
+  const stopAtLimit = (extra: Record<string, string> = {}) =>
+    stubScrape(twoVideos, { exit: String(MAX_DOWNLOADS_REACHED), ...extra });
   const urlInfo = { ...VideoInfo, webpage_url: url };
   const infoStr = JSON.stringify(urlInfo);
 
@@ -363,9 +366,9 @@ describe('getInfo', () => {
   it('returns cached info from the DB without scraping', async () => {
     seedInfoRow(url, { filename: 'cached.mp4' });
 
-    const info = await getInfo(log as any, url);
+    const [info] = await getInfos(log as any, url);
 
-    expect(info.filename).toBe('cached.mp4');
+    expect(info!.filename).toBe('cached.mp4');
     expect(await stubArgs()).toBe(''); // no scrape
     expect(mockAppend).not.toHaveBeenCalled();
   });
@@ -373,19 +376,19 @@ describe('getInfo', () => {
   it('bypasses the cache for a verbose request so its output is streamed', async () => {
     seedInfoRow(url, { filename: 'cached.mp4' });
 
-    const info = await getInfo(log as any, url, true); // verbose
+    const infos = await getInfos(log as any, url, true);
 
-    expect(info).toEqual(urlInfo); // freshly scraped, not the cached row
-    expect(await stubArgs()).toEndWith(`yt-dlp ${url} --verbose --dump-json --no-playlist --playlist-end 50`);
+    expect(infos).toEqual([urlInfo]);
+    expect(await stubArgs()).toEndWith(
+      `yt-dlp ${url} --verbose --dump-json --no-playlist --playlist-end 50 --max-downloads ${VIDEOS_TO_DECIDE}`,
+    );
   });
 
   it('scrapes and caches when not in the DB', async () => {
-    const info = await getInfo(log as any, url);
-
-    expect(info).toEqual(urlInfo);
+    expect(await getInfos(log as any, url)).toEqual([urlInfo]);
     expect(appendedText()).toBe(`\u{1f9d0} <b>Scraping</b> ${url}...`);
     expect(await stubArgs()).toEndWith(
-      `yt-dlp ${url} --no-warnings --dump-json --no-playlist --playlist-end 50`,
+      `yt-dlp ${url} --no-warnings --dump-json --no-playlist --playlist-end 50 --max-downloads ${VIDEOS_TO_DECIDE}`,
     );
     expect(JSON.parse(infoRow(url)!.info)).toEqual([urlInfo]);
   });
@@ -395,26 +398,24 @@ describe('getInfo', () => {
     const canonInfo = { ...VideoInfo, webpage_url: canon };
     await stub({ stdout: JSON.stringify(canonInfo) });
 
-    const info = await getInfo(log as any, url); // request an alias
-    expect(info.webpage_url).toBe(canon);
+    const [info] = await getInfos(log as any, url);
+    expect(info!.webpage_url).toBe(canon);
     expect(infoCount()).toBe(2); // alias + canonical, no duplicate
 
     // a later request for the canonical hits the DB, not the scraper
     getInfos.cache.clear(); // drop the in-memory memo to force a DB read
     await stub({ stdout: 'not valid json: must not be scraped' });
-    const again = await getInfo(log as any, canon);
-    expect(again.webpage_url).toBe(canon);
+    const [again] = await getInfos(log as any, canon);
+    expect(again!.webpage_url).toBe(canon);
     expect(infoCount()).toBe(2);
   });
 
   it('ignores a stale row (expired signed URLs) and re-scrapes over it', async () => {
-    // a row past the TTL: its embedded media URLs have expired, so replaying
-    // it would fail the download; getInfo must scrape fresh and UPSERT over it
     seedInfoRow(url, { filename: 'stale.mp4' }, Date.now() - 7 * 60 * 60 * 1000); // 7h > the 6h TTL
 
-    const info = await getInfo(log as any, url);
+    const [info] = await getInfos(log as any, url);
 
-    expect(info.filename).toBe(VideoInfo.filename); // the fresh scrape
+    expect(info!.filename).toBe(VideoInfo.filename);
     expect(infoRow(url)!.info).toBe(JSON.stringify([urlInfo])); // row refreshed
   });
 
@@ -448,17 +449,6 @@ describe('getInfo', () => {
     expect(await getInfos(log as any, url)).toEqual(entries);
   });
 
-  it('returns the FIRST entry from getInfo', async () => {
-    await stub({
-      stdout: [
-        JSON.stringify({ ...VideoInfo, id: 'first', webpage_url: url }),
-        JSON.stringify({ ...VideoInfo, id: 'second', webpage_url: url }),
-      ].join('\n'),
-    });
-
-    expect((await getInfo(log as any, url)).id).toBe('first');
-  });
-
   it('aliases a multi-entry post to the URL all its entries share', async () => {
     const canon = 'https://test.invalid/post';
     const entries = ['a', 'b'].map((id) => ({
@@ -486,36 +476,6 @@ describe('getInfo', () => {
     await stub({ exit: '0', stdout: 'not valid json: must not be scraped' });
 
     expect(await getInfos(log as any, url)).toEqual([video]);
-  });
-
-  it('removeCachedUrl drops a row an entry could not name itself', async () => {
-    await stub({
-      stdout: [
-        JSON.stringify({ ...VideoInfo, id: '1', webpage_url: 'https://a' }),
-        JSON.stringify({ ...VideoInfo, id: '2', webpage_url: 'https://b' }),
-      ].join('\n'),
-    });
-    await getInfos(log as any, url);
-    expect(infoCount()).toBe(1);
-
-    removeCachedUrl(url);
-
-    expect(infoCount()).toBe(0);
-  });
-
-  it('removeCachedInfo evicts a playlist row by the requested url', async () => {
-    const entry = { ...VideoInfo, id: '2', webpage_url: 'https://b' };
-    await stub({
-      stdout: [
-        JSON.stringify({ ...VideoInfo, id: '1', webpage_url: 'https://a' }),
-        JSON.stringify(entry),
-      ].join('\n'),
-    });
-    await getInfos(log as any, url);
-
-    removeCachedInfo(entry, url);
-
-    expect(infoCount()).toBe(0);
   });
 
   it('does not salvage a run whose items failed for any other reason', async () => {
@@ -676,7 +636,7 @@ describe('getInfo', () => {
       expect((await scrape).name).toBe('ShutdownAbort');
     } finally {
       resetShutdown();
-      await rm(`${STUB_DIR}/block`, { force: true });
+      await unblockStub();
     }
   });
 
@@ -709,6 +669,36 @@ describe('getInfo', () => {
     });
 
     expect(await getInfos(log as any, url)).toEqual([video]);
+  });
+
+  it('counts only the videos of a post that mixes photos and videos', async () => {
+    await stopAtLimit({
+      stderr:
+        'ERROR: [Instagram] photo1: No video formats found!\n' +
+        'ERROR: [Instagram] photo2: No video formats found!\n',
+    });
+
+    expect(await getInfos(log as any, url)).toEqual(twoVideos);
+  });
+
+  it('keeps the videos a run stopped at the download limit resolved', async () => {
+    await stopAtLimit();
+
+    expect(await getInfos(log as any, url)).toEqual(twoVideos);
+  });
+
+  it('firstInfo gives the first video of a multi-video post', async () => {
+    await stopAtLimit();
+
+    expect(await firstInfo(log as any, url)).toEqual(twoVideos[0]!);
+  });
+
+  it('keeps the videos of a limit-stopped run whose other items failed', async () => {
+    await stopAtLimit({
+      stderr: 'ERROR: [youtube] v0: Private video. Sign in if you\'ve been granted access to this video\n',
+    });
+
+    expect(await getInfos(log as any, url)).toEqual(twoVideos);
   });
 
   it('rethrows when a failing scrape resolved nothing', async () => {
@@ -755,7 +745,7 @@ describe('getInfo', () => {
     seedInfoRow(url, entry);
     seedInfoRow(canonical, entry);
 
-    removeCachedInfo(entry as any, url);
+    removeCachedInfo(entry as any);
 
     // the alias row alone would leave the canonical one replaying the same
     // expired signed URLs for the rest of its TTL
@@ -777,11 +767,9 @@ describe('getInfo', () => {
     await stub({
       exit: '1',
       stderr: 'boom',
-      // an empty stdout is what makes this throw: a failing run that still
-      // dumped an entry gets salvaged
       stdout: '',
     });
-    await expect(getInfo(log as any, url)).rejects.toBeInstanceOf(YtdlpError);
+    await expect(getInfos(log as any, url)).rejects.toBeInstanceOf(YtdlpError);
     expect(liveYtdlpSize()).toBe(0);
   });
 
@@ -789,10 +777,10 @@ describe('getInfo', () => {
     const canon = 'https://test.invalid/canonical2';
     const canonInfo = { ...VideoInfo, webpage_url: canon };
     await stub({ stdout: JSON.stringify(canonInfo) });
-    const info = await getInfo(log as any, url);
+    const [info] = await getInfos(log as any, url);
     expect(infoCount()).toBe(2);
 
-    removeCachedInfo(info);
+    removeCachedInfo(info!);
 
     expect(infoCount()).toBe(0); // both rows share the webpage_url
   });
@@ -803,16 +791,16 @@ describe('yt-dlp concurrency', () => {
     const urls = [0, 1, 2, 3, 4].map((i) => `https://test.invalid/cap/${i}`);
     await stub({ stdout: JSON.stringify(VideoInfo), block: '1' });
 
-    const all = Promise.all(urls.map((u) => getInfo(log as any, u)));
+    const all = Promise.all(urls.map((u) => getInfos(log as any, u)));
     const spawned = async () =>
-      (await stubArgs()).split('\n').filter(Boolean).length;
+      (await stubSpawns()).length;
     await waitUntil(async () => (await spawned()) >= 3);
     await Bun.sleep(150); // give a 4th process the chance to (wrongly) spawn
     expect(await spawned()).toBe(3);
 
-    await rm(`${STUB_DIR}/block`);
+    await unblockStub();
     await all;
-    expect((await stubArgs()).split('\n').filter(Boolean)).toHaveLength(5);
+    expect((await stubSpawns())).toHaveLength(5);
   });
 });
 
@@ -938,10 +926,10 @@ describe('downloadVideo', () => {
         id: 'other',
       }).catch((e) => e);
       expect(refused.name).toBe('ShutdownAbort');
-      expect((await stubArgs()).split('\n').filter(Boolean)).toHaveLength(1);
+      expect((await stubSpawns())).toHaveLength(1);
     } finally {
       resetShutdown();
-      await rm(`${STUB_DIR}/block`, { force: true });
+      await unblockStub();
     }
   });
 
@@ -1033,8 +1021,8 @@ describe('downloadVideo', () => {
     ).toHaveLength(2);
     expect(getBlob(a as any)).not.toBeNull();
     expect(getBlob(b as any)).not.toBeNull();
-    expect(await Bun.file(blobPath(a as any)).exists()).toBe(true);
-    expect(await Bun.file(blobPath(b as any)).exists()).toBe(true);
+    expect(await bytesOnDisk(a as any)).toBe(true);
+    expect(await bytesOnDisk(b as any)).toBe(true);
   });
 
   it("returns 'already downloaded' when the blob has a file_id", async () => {
@@ -1046,8 +1034,7 @@ describe('downloadVideo', () => {
   });
 
   it("returns 'already downloaded' when the blob bytes are on disk", async () => {
-    seedBlob();
-    await Bun.write(blobPath(VideoInfo), 'video bytes');
+    await seedBytes(VideoInfo);
     expect(await downloadVideo(log as any, VideoInfo)).toBe(
       'already downloaded',
     );
@@ -1356,8 +1343,7 @@ describe('sendVideo', () => {
   const cachedFileId = () => getBlob(VideoInfo)?.file_id;
 
   it('uploads the bytes, caches the file_id, and deletes the upload', async () => {
-    seedBlob();
-    await Bun.write(blobPath(VideoInfo), 'video bytes');
+    await seedBytes(VideoInfo);
 
     const msg = await sendVideo(telegram, log as any, VideoInfo, 123);
 
@@ -1368,7 +1354,7 @@ describe('sendVideo', () => {
     );
     expect(msg!.video.file_id).toBe('id');
     expect(cachedFileId()).toBe('id');
-    expect(await Bun.file(blobPath(VideoInfo)).exists()).toBe(false); // upload deleted
+    expect(await bytesOnDisk(VideoInfo)).toBe(false);
   });
 
   it('resends by file_id without touching the bytes', async () => {
@@ -1384,9 +1370,7 @@ describe('sendVideo', () => {
   });
 
   it('drops the bytes when the video is too large (never sent)', async () => {
-    seedBlob();
-    await Bun.write(blobPath(VideoInfo), ''); // allocate, then grow sparsely
-    await truncate(blobPath(VideoInfo), 2001 * 1024 * 1024);
+    await seedOversize(VideoInfo);
 
     expect(
       await sendVideo(telegram, log as any, VideoInfo, 123),
@@ -1395,7 +1379,7 @@ describe('sendVideo', () => {
     expect(mockSendVideo).not.toHaveBeenCalled();
     // releaseBlob dropped it: bytes unlinked and the blob row gone, so the
     // multi-GB file doesn't leak forever (the job completes without a catch)
-    expect(await Bun.file(blobPath(VideoInfo)).exists()).toBe(false);
+    expect(await bytesOnDisk(VideoInfo)).toBe(false);
     expect(rowCount('blobs')).toBe(0);
   });
 
@@ -1406,8 +1390,7 @@ describe('sendVideo', () => {
   });
 
   it('does not reject when post-send cleanup fails (so the job will not re-send)', async () => {
-    seedBlob();
-    await Bun.write(blobPath(VideoInfo), 'video bytes');
+    await seedBytes(VideoInfo);
     const consoleError = spyMock(console, 'error');
     // caching the file_id (a real UPDATE on the real blobs table) throws,
     // exercising the genuine cleanup-catch path
@@ -1420,13 +1403,12 @@ describe('sendVideo', () => {
         expect.stringContaining('Post-send cleanup failed'),
         expect.any(Error),
       );
-      expect(await Bun.file(blobPath(VideoInfo)).exists()).toBe(true); // bytes kept
+      expect(await bytesOnDisk(VideoInfo)).toBe(true);
     });
   });
 
   it('sends the video as a reply message if requested', async () => {
-    seedBlob();
-    await Bun.write(blobPath(VideoInfo), 'video bytes');
+    await seedBytes(VideoInfo);
 
     await sendVideo(telegram, log as any, VideoInfo, 123, 42);
 
@@ -1475,12 +1457,11 @@ describe('sendVideo dead file_id recovery', () => {
 
 describe('releaseBlob at the download layer', () => {
   it('releases the bytes; a later downloadVideo re-downloads (no stale memo)', async () => {
-    recordBlob(VideoInfo);
-    await Bun.write(blobPath(VideoInfo), 'bytes');
+    await seedBytes(VideoInfo, 'bytes');
 
     await releaseBlob(VideoInfo);
 
-    expect(await Bun.file(blobPath(VideoInfo)).exists()).toBe(false);
+    expect(await bytesOnDisk(VideoInfo)).toBe(false);
     expect(rowCount('blobs')).toBe(0);
     // the download coalescer holds in-flight entries only, so there is no
     // settled memo left to replay a stale "already downloaded" from

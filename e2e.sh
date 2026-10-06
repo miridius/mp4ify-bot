@@ -1,8 +1,9 @@
 #!/bin/sh
 # Usage: ./e2e.sh [full] [-u]
 #   full  also test rate-limit-prone sites (youtube rejects more than a few
-#         hits per hour) and the slow multi-video cases. Used by the deploy
-#         gate (prod.sh); the pre-push hook runs the reduced set.
+#         hits per hour) and the multi-video case (one more scrape of
+#         instagram, which rate-limits too). Used by the deploy gate
+#         (prod.sh); the pre-push hook runs the reduced set.
 #   -u    refresh snapshots. Implies full: `bun test -u` deletes snapshots of
 #         tests it didn't run, so a reduced -u run would silently prune the
 #         full-mode snapshots.

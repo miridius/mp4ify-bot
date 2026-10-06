@@ -14,10 +14,15 @@ import {
   startJobQueue,
   stopJobQueue,
   type Job,
-  type UrlJob,
 } from '../src/job-queue';
 import { addPending, getPending } from '../src/pending-downloads';
-import { rowCount, spyMock, waitUntil, withFailingWrite } from './test-utils';
+import {
+  rowCount,
+  seedHandledUrl,
+  spyMock,
+  waitUntil,
+  withFailingWrite,
+} from './test-utils';
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -285,12 +290,7 @@ it("rolls a guard's writes back when the enqueue insert fails", async () => {
     await expect(
       enqueueJob(
         job(),
-        () =>
-          db
-            .query(
-              'INSERT INTO handled_urls (chat_id, message_id, url, created_at) VALUES (1, 2, ?, ?)',
-            )
-            .run('https://x', Date.now()).changes > 0,
+        () => seedHandledUrl(1, 2, 'https://x').changes > 0,
       ),
     ).rejects.toThrow('ENOSPC');
   });
@@ -374,16 +374,14 @@ it('carries a processor mutation forward to the retry', async () => {
   expect(seen).toEqual([undefined, 99]); // the retry saw the persisted mutation
 });
 
-it('carries a delivered-videos mutation forward to the retry', async () => {
-  // a multi-video post records what it sent before anything else on the job
-  // moves, so a retry that lost it would send those videos a second time
+it('carries an infoShown mutation forward to the retry', async () => {
   spyMock(console, 'error');
-  const seen: (string[] | undefined)[] = [];
+  const seen: (boolean | undefined)[] = [];
   let n = 0;
   const processor = mock(async (j: Job) => {
-    seen.push((j as UrlJob).settledIds);
+    seen.push((j as any).infoShown);
     if (n++ === 0) {
-      (j as UrlJob).settledIds = ['sent'];
+      (j as any).infoShown = true;
       throw new Error('transient');
     }
   });
@@ -392,7 +390,7 @@ it('carries a delivered-videos mutation forward to the retry', async () => {
   await enqueueJob(job());
 
   await waitUntil(jobsIdle);
-  expect(seen).toEqual([undefined, ['sent']]);
+  expect(seen).toEqual([undefined, true]);
 });
 
 it('clears a pending retry backoff on stop (the row recovers next boot)', async () => {
@@ -442,7 +440,8 @@ it('re-runs an interrupted job on recovery (at-least-once)', async () => {
 
 it('adoptJob moves a parked confirmation into the queue and runs it', async () => {
   const id = await addPending({
-    info: { filename: 'v.mp4', title: 'T' },
+    info: { filename: 'v.mp4', title: 'T', webpage_url: 'https://v' },
+    url: 'https://v',
     verbose: false,
     messageId: 2,
     chatId: 1,

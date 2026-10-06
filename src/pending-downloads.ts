@@ -4,10 +4,8 @@ import type { ConfirmedJob } from './job-queue';
 
 export const LONG_VIDEO_THRESHOLD_SECS = 20 * 60;
 
-// An unanswered confirmation is abandoned after this long: a pre-download
-// pending is already doomed past the info TTL (its payload's signed URLs
-// expired), and a postDownload one pins its blob's bytes on disk for as long
-// as the row lives, so ignored prompts would otherwise fill the volume.
+// A postDownload pending pins its blob's bytes on disk for as long as the row
+// lives, so ignored prompts would otherwise fill the volume.
 export const PENDING_TTL_MS = 1000 * 60 * 60 * 6;
 const staleRowIdsStmt = db.query<{ id: string }, [number]>(
   'SELECT id FROM pending WHERE created_at <= ?',

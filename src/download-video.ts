@@ -19,7 +19,7 @@ import { ShutdownAbort } from './job-queue';
 import { LogMessage } from './log-message';
 import { coalesce, limit, telegramDesc } from './utils';
 
-const MAX_FILE_SIZE_BYTES = 2000 * 1024 * 1024; // 2000 MB
+export const MAX_FILE_SIZE_BYTES = 2000 * 1024 * 1024;
 const DOWNLOAD_TIMEOUT_SECS = 300;
 // cap the stderr we keep for error classification: a long/verbose download
 // streams a lot, and we only need the tail (yt-dlp prints its ERROR last)
@@ -51,9 +51,8 @@ export class YtdlpError extends Error {
     // killed by a signal (timeout/OOM) rather than exiting with a code
     readonly signalled = false,
     stdout = '',
+    readonly exitCode: number | null = null,
   ) {
-    // yt-dlp's own ERROR: line says WHY it failed; the exit code alone helps
-    // nobody, so it's only the fallback.
     // A signal kill keeps its message: the timeout is the real story there,
     // and any ERROR line in a killed process's output is a stale partial.
     const lines = signalled ? [] : errorLines(stderr);
@@ -160,7 +159,7 @@ export type VideoInfo = {
   format_id?: string;
   ext?: string;
   description?: string;
-  webpage_url?: string;
+  webpage_url: string;
   duration?: number;
   width?: number;
   height?: number;
@@ -475,6 +474,7 @@ const execYtdlp = limit(
         stderr,
         proc.signalCode != null,
         stdout,
+        proc.exitCode,
       );
 
     return stdout;
@@ -493,7 +493,7 @@ const selectInfoStmt = db.query<{ info: string }, [string, number]>(
 );
 const insertInfoStmt = db.query<
   null,
-  [string, string, string | null, number]
+  [string, string, string, number]
 >(
   `INSERT INTO video_info (url, info, webpage_url, created_at) VALUES (?, ?, ?, ?)
    ON CONFLICT(url) DO UPDATE SET info = excluded.info, webpage_url = excluded.webpage_url, created_at = excluded.created_at`,
@@ -506,12 +506,14 @@ const sweepInfoStmt = db.query<null, [number]>(
 export const sweepStaleInfo = () =>
   sweepInfoStmt.run(Date.now() - INFO_TTL_MS);
 
-// a playlist or channel URL resolves to the same multi-entry shape as a post,
-// but runs to thousands of entries
-export const MAX_POST_VIDEOS = 10;
-// yt-dlp spends a playlist index on a carousel's photos too, so a bound at the
-// delivery cap would hide videos behind them
+// Bounds a playlist or channel whose entries keep failing. A carousel spends a
+// playlist index on each photo too, so a bound near a post's size could stop
+// before its second video and let a multi-video post pass as single-video.
 const MAX_SCRAPE_ITEMS = 50;
+// yt-dlp counts only entries that resolve, so a failing photo item never
+// counts toward this
+export const VIDEOS_TO_DECIDE = 2;
+export const MAX_DOWNLOADS_REACHED = 101;
 
 const onlyPhotoItemsFailed = (e: YtdlpError) => {
   const lines = errorLines(e.stderr);
@@ -557,32 +559,31 @@ export const getInfos = coalesce(
         '--no-playlist',
         '--playlist-end',
         String(MAX_SCRAPE_ITEMS),
+        '--max-downloads',
+        String(VIDEOS_TO_DECIDE),
       );
     } catch (e) {
-      // A carousel mixing photos with videos fails on every photo item, so the
-      // run exits non-zero even though it resolved the videos we came for. A
-      // signal kill (a timeout) is different: its output stops mid-post, and
-      // possibly mid-line, so there is nothing trustworthy to salvage.
-      if (
-        !(e instanceof YtdlpError) ||
-        e.signalled ||
-        !e.stdout.trim() ||
-        !onlyPhotoItemsFailed(e)
-      ) {
-        throw e;
-      }
+      // yt-dlp exits non-zero after resolving the videos we came for when
+      // --max-downloads stops it, or when a carousel mixing photos with videos
+      // fails on every photo item. A signal kill (a timeout) is different: its
+      // output stops mid-post, and possibly mid-line, so there is nothing
+      // trustworthy to salvage.
+      const salvageable =
+        e instanceof YtdlpError &&
+        !e.signalled &&
+        e.stdout.trim() !== '' &&
+        (e.exitCode === MAX_DOWNLOADS_REACHED || onlyPhotoItemsFailed(e));
+      if (!salvageable) throw e;
       out = e.stdout;
     }
     const infos = parseEntries(out);
     if (!infos.length) throw new Error('yt-dlp found no video at that URL');
 
     for (const info of infos) info.webpage_url ||= url;
-    const canonical = infos[0]!.webpage_url!;
+    const canonical = infos[0]!.webpage_url;
     const namesAll = infos.every((i) => i.webpage_url === canonical);
     const str = JSON.stringify(infos);
     const now = Date.now();
-    // A salvaged list that really did stop short is dropped by removeCachedUrl
-    // when a job cannot find its entry in it.
     tx(() => {
       insertInfoStmt.run(url, str, canonical, now);
       if (namesAll && canonical !== url) {
@@ -594,27 +595,18 @@ export const getInfos = coalesce(
   (_log, url, verbose) => !verbose && url,
 );
 
-export const getInfo = async (
+export const firstInfo = async (
   log: LogMessage,
   url: string,
-  verbose: boolean = false,
+  verbose = false,
 ): Promise<VideoInfo> => (await getInfos(log, url, verbose))[0]!;
 
-// Evict a video's cached info (the url row and its canonical alias share one
-// webpage_url) after a download failure: the likely cause is the expired signed
-// URLs above, so on the retry (or the next request) getInfo must re-scrape
-// rather than replay the same doomed row.
-const deleteInfoStmt = db.query<null, [string, string]>(
-  `DELETE FROM video_info WHERE webpage_url = ? OR url = ?`,
+const deleteInfoStmt = db.query<null, [string]>(
+  `DELETE FROM video_info WHERE webpage_url = ?`,
 );
-// `url` is the request that produced the row: a playlist's entries carry their
-// own webpage_url, so the entry alone cannot name the row it came from.
-export const removeCachedInfo = (info: VideoInfo, url?: string) => {
-  const key = info.webpage_url || url;
-  if (key) deleteInfoStmt.run(key, url ?? key);
+export const removeCachedInfo = (info: VideoInfo) => {
+  deleteInfoStmt.run(info.webpage_url);
 };
-
-export const removeCachedUrl = (url: string) => deleteInfoStmt.run(url, url);
 
 const logFormats = ({ formats }: any) =>
   // log all formats for debugging purposes

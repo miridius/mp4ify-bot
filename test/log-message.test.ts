@@ -463,8 +463,6 @@ describe('LogMessage', () => {
 
 describe('logFor', () => {
   it('gives groups a silent NoLog and private chats a real LogMessage', () => {
-    // THE group-silence policy site: handlers.test exercises it only through
-    // a mock that mirrors this mapping, so the real mapping pins here
     const tg = makeTg();
     expect(logFor(tg, 'group', dest)).toBeInstanceOf(NoLog);
     expect(logFor(tg, 'supergroup', dest)).toBeInstanceOf(NoLog);

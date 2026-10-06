@@ -12,7 +12,6 @@ import {
   BLOB_TTL_MS,
   blobKey,
   blobPath,
-  videoKey,
   getBlob,
   recordBlob,
   releaseBlob,
@@ -22,7 +21,7 @@ import {
   withBlobLock,
 } from '../src/blob-store';
 import { db, resetDb } from '../src/db';
-import { spyMock } from './test-utils';
+import { bytesOnDisk, seedBytes, spyMock } from './test-utils';
 
 const info = (overrides: Record<string, unknown> = {}) =>
   ({
@@ -50,44 +49,17 @@ describe('blobKey / blobPath', () => {
     expect(blobKey(info())).not.toBe(blobKey(info({ format_id: '22' })));
   });
 
-  it('keys a video without its format, so a re-scrape that drifts still matches', () => {
-    expect(videoKey(info())).toBe(videoKey(info({ format_id: '22' })));
-    expect(blobKey(info())).not.toBe(blobKey(info({ format_id: '22' })));
-  });
-
-  it('separates two identity-less videos of one page by title', () => {
-    const page = (title: string, format_id: string) =>
-      info({
-        extractor: 'generic',
-        id: 'master',
-        title,
-        format_id,
-        filename: `/x/${title}.${format_id}.mp4`,
-        webpage_url: 'https://p',
-      });
-    expect(videoKey(page('Clip (1)', 'a'))).not.toBe(
-      videoKey(page('Clip (2)', 'a')),
-    );
-    expect(videoKey(page('Clip (1)', 'a'))).toBe(videoKey(page('Clip (1)', 'b')));
-  });
-
-  it('separates same-titled identity-less videos by their ids', () => {
-    const clip = (id: string) =>
-      info({ extractor: 'generic', id, title: 'Clip', webpage_url: 'https://p' });
-    expect(videoKey(clip('v1'))).not.toBe(videoKey(clip('v2')));
-  });
-
-  it('separates same-titled identity-less videos of different pages', () => {
-    const clip = (webpage_url: string) =>
-      info({ extractor: 'generic', id: 'master', title: 'Clip', webpage_url });
-    expect(videoKey(clip('https://p1'))).not.toBe(videoKey(clip('https://p2')));
-  });
-
-  it('falls back to the filename when the identity is missing', () => {
-    const i = { filename: '/storage/x/foo.mp4', title: 'T' } as any;
-    expect(blobKey(i)).toBe('/storage/x/foo.mp4');
+  it('falls back to the URL-salted filename when the identity is missing', () => {
+    const i = {
+      filename: '/storage/x/foo.mp4',
+      title: 'T',
+      webpage_url: 'https://a',
+    } as any;
+    expect(blobKey(i)).toBe('/storage/x/foo.mp4:https://a');
     // the path escapes the key's '/' so it can't act as a directory separator
-    expect(blobPath(i)).toBe('/storage/blobs/%2Fstorage%2Fx%2Ffoo.mp4.mp4');
+    expect(blobPath(i)).toBe(
+      '/storage/blobs/%2Fstorage%2Fx%2Ffoo.mp4:https:%2F%2Fa.mp4',
+    );
   });
 
   it('treats the generic extractor as identity-less (URL-salted fallback)', () => {
@@ -176,23 +148,21 @@ const seedPendingRef = (i: any = info()) =>
 describe('releaseBlob', () => {
 
   it('unlinks the bytes and drops the row when nothing references it', async () => {
-    recordBlob(info());
-    await Bun.write(blobPath(info()), 'bytes');
+    await seedBytes(info(), 'bytes');
 
     await releaseBlob(info());
 
-    expect(await Bun.file(blobPath(info())).exists()).toBe(false);
+    expect(await bytesOnDisk(info())).toBe(false);
     expect(getBlob(info())).toBeNull();
   });
 
   it('keeps the bytes while a parked confirmation references it', async () => {
-    recordBlob(info());
-    await Bun.write(blobPath(info()), 'bytes');
+    await seedBytes(info(), 'bytes');
     seedPendingRef();
 
     await releaseBlob(info());
 
-    expect(await Bun.file(blobPath(info())).exists()).toBe(true);
+    expect(await bytesOnDisk(info())).toBe(true);
     expect(getBlob(info())).not.toBeNull();
   });
 
@@ -277,17 +247,14 @@ describe('sweepOrphanBlobs', () => {
     // a leaked sidecar (crash beat the download finally)
     await Bun.write('/storage/blobs/leaked.mp4.json', '{}');
     // redundant bytes (crash between setBlobFileId and the unlink)
-    recordBlob(info({ id: 'uploaded' }));
-    await Bun.write(blobPath(info({ id: 'uploaded' })), 'x');
+    await seedBytes(info({ id: 'uploaded' }), 'x');
     setBlobFileId(info({ id: 'uploaded' }), 'fid');
     // a live, not-yet-sent blob must survive
-    recordBlob(info({ id: 'live' }));
-    await Bun.write(blobPath(info({ id: 'live' })), 'x');
+    await seedBytes(info({ id: 'live' }), 'x');
     // a leaked row (its releaser crashed or its key era ended): file_id-null
     // and past the TTL, so the sweep reclaims row and bytes; nothing else can
     const leakedInfo = info({ id: 'leaked-row' });
-    recordBlob(leakedInfo);
-    await Bun.write(blobPath(leakedInfo), 'x');
+    await seedBytes(leakedInfo, 'x');
     ageBlob(leakedInfo);
 
     await sweepOrphanBlobs();
@@ -295,23 +262,22 @@ describe('sweepOrphanBlobs', () => {
     expect(await Bun.file('/storage/blobs/orphan.mp4').exists()).toBe(false);
     expect(await Bun.file('/storage/blobs/leaked.mp4.json').exists()).toBe(false);
     expect(
-      await Bun.file(blobPath(info({ id: 'uploaded' }))).exists(),
+      await bytesOnDisk(info({ id: 'uploaded' })),
     ).toBe(false);
-    expect(await Bun.file(blobPath(info({ id: 'live' }))).exists()).toBe(true);
-    expect(await Bun.file(blobPath(leakedInfo)).exists()).toBe(false);
+    expect(await bytesOnDisk(info({ id: 'live' }))).toBe(true);
+    expect(await bytesOnDisk(leakedInfo)).toBe(false);
     expect(getBlob(leakedInfo)).toBeNull();
   });
 
   it('keeps a stale-aged blob a parked confirmation still pins', async () => {
     const pinned = info({ id: 'pinned-old' });
-    recordBlob(pinned);
-    await Bun.write(blobPath(pinned), 'x');
+    await seedBytes(pinned, 'x');
     ageBlob(pinned);
     seedPendingRef(pinned);
 
     await sweepOrphanBlobs();
 
     expect(getBlob(pinned)).not.toBeNull();
-    expect(await Bun.file(blobPath(pinned)).exists()).toBe(true);
+    expect(await bytesOnDisk(pinned)).toBe(true);
   });
 });

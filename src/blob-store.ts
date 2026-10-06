@@ -29,17 +29,7 @@ const hasVideoIdentity = (info: VideoInfo): boolean =>
 export const blobKey = (info: VideoInfo): string =>
   hasVideoIdentity(info)
     ? `${info.extractor}:${info.id}:${info.format_id ?? ''}`
-    : info.webpage_url
-      ? `${info.filename}:${info.webpage_url}`
-      : info.filename;
-
-// The fallback cannot reuse blobKey's filename, which carries the format id (see
-// yt-dlp.conf's --output); yt-dlp suffixes " (N)" to the titles of one page's
-// entries, so title still separates them.
-export const videoKey = (info: VideoInfo): string =>
-  hasVideoIdentity(info)
-    ? `${info.extractor}:${info.id}`
-    : `${info.title}:${info.id ?? ''}:${info.webpage_url ?? ''}`;
+    : `${info.filename}:${info.webpage_url}`;
 
 const extOf = (info: VideoInfo) => {
   const e =

@@ -1,25 +1,8 @@
 import { mock, spyOn } from 'bun:test';
+import { mkdir, rm, truncate } from 'fs/promises';
+import { blobPath, recordBlob } from '../src/blob-store';
 import { db } from '../src/db';
-import type { CallbackQueryContext, MessageContext } from '../src/types';
-
-// Test-only memoize: production code uses coalesce + durable caches; mock
-// implementations still want classic memoization (e.g. handlers.test's
-// getInfo mock returning one stable object per URL).
-export const memoize = <F extends (...args: any[]) => any>(
-  f: F,
-  key: (...args: Parameters<F>) => string | false = (...args) =>
-    JSON.stringify(args),
-): F & { cache: Map<string, ReturnType<F>> } => {
-  const cache: Map<string, ReturnType<F>> = new Map();
-  const memoized = ((...args: Parameters<F>): ReturnType<F> => {
-    const k = key(...args);
-    if (!k) return f(...args);
-    if (!cache.has(k)) cache.set(k, f(...args));
-    return cache.get(k)!;
-  }) as F & { cache: Map<string, ReturnType<F>> };
-  memoized.cache = cache;
-  return memoized;
-};
+import { MAX_FILE_SIZE_BYTES, type VideoInfo } from '../src/download-video';
 
 export const spyMock: typeof spyOn = (obj, k) =>
   spyOn(obj, k).mockImplementation(mock() as any);
@@ -56,7 +39,7 @@ export const withFailingWrite = async (
 // the error shape telegraf surfaces for a bot-api rejection; the contract
 // isPermanentError/telegramDesc/errDesc parse, so tests must not hand-drift it
 export const telegramError = (code: number, description: string) =>
-  Object.assign(new Error(description), {
+  Object.assign(new Error(`${code}: ${description}`), {
     response: { error_code: code, description },
   });
 
@@ -64,19 +47,16 @@ export const telegramError = (code: number, description: string) =>
 // (webpage_url denormalized into its own column, mirroring insertInfoStmt)
 export const seedInfoRow = (
   url: string,
-  info: unknown,
+  info: Partial<VideoInfo>,
   createdAt = Date.now(),
-) =>
-  db
+) => {
+  const stored = { webpage_url: url, ...info };
+  return db
     .query(
       'INSERT INTO video_info (url, info, webpage_url, created_at) VALUES (?, ?, ?, ?)',
     )
-    .run(
-      url,
-      JSON.stringify([info]),
-      (info as any)?.webpage_url ?? null,
-      createdAt,
-    );
+    .run(url, JSON.stringify([stored]), stored.webpage_url, createdAt);
+};
 
 /**
  * Sleeps until `fn()` returns truthy or `timeout` millis (default: 4000) have
@@ -86,61 +66,66 @@ export const seedInfoRow = (
  */
 export const waitUntil = async (fn: () => any, timeout = 4000) => {
   const end = Date.now() + timeout;
-  while (Date.now() < end && !(await fn())) await Bun.sleep(100);
+  while (Date.now() < end && !(await fn())) await Bun.sleep(10);
   return !!(await fn());
 };
 
-let nextMsgId = 100;
-
-// Helper to create a mock MessageContext
-export const createMockMessageCtx = (
-  isEdit: boolean,
-  overrides?: { chat?: any; from?: any },
-): MessageContext => {
-  const chat = overrides?.chat ?? { id: 123, type: 'private' };
-  const from = overrides?.from ?? { id: 123, is_bot: false };
-  return {
-    [isEdit ? 'editedMessage' : 'message']: {
-      text: 'https://example.com',
-      entities: [{ type: 'url', offset: 0, length: 19 }],
-      message_id: 1,
-      from,
-      chat,
-    },
-    chat,
-    telegram: {
-      sendVideo: mock(),
-      sendMessage: mock(async (_chatId: number, text: string) => ({
-        text,
-        chat,
-        message_id: nextMsgId++,
-      })),
-    },
-  } as any;
+// control files for the test/bin stub executables (on PATH via Dockerfile.dev)
+export const STUB_DIR = '/tmp/stub';
+// `dir` may be a per-phase subdir: while download/ (yt-dlp --load-info-json
+// calls) or ffprobe/ exists, that stub reads all its control files from it;
+// args always log to STUB_DIR
+export const stub = (files: Record<string, string>, dir = STUB_DIR) =>
+  Promise.all(
+    Object.entries(files).map(([k, v]) => Bun.write(`${dir}/${k}`, v)),
+  );
+export const stubArgs = async () =>
+  (
+    await Bun.file(`${STUB_DIR}/args`)
+      .text()
+      .catch(() => '')
+  ).trim();
+export const stubSpawns = async () =>
+  (await stubArgs()).split('\n').filter(Boolean);
+export const stubScrape = (
+  infos: object[],
+  extra: Record<string, string> = {},
+) =>
+  stub({
+    stdout: infos.map((i) => JSON.stringify(i)).join('\n') + '\n',
+    ...extra,
+  });
+export const unblockStub = () => rm(`${STUB_DIR}/block`, { force: true });
+export const resetStub = async () => {
+  await rm(STUB_DIR, { recursive: true, force: true });
+  await mkdir(STUB_DIR, { recursive: true });
 };
 
-// Helper to create a mock CallbackQueryContext
-export const createMockCallbackCtx = (
-  data: string,
-  userId: number = 123,
-): CallbackQueryContext =>
-  ({
-    callbackQuery: {
-      id: '12345',
-      from: { id: userId, is_bot: false, first_name: 'Test' },
-      message: {
-        message_id: 50,
-        from: { id: 999, is_bot: true },
-        chat: { id: userId, type: 'private' },
-        text: 'Download this video?',
-      },
-      chat_instance: String(userId),
-      data,
-    },
-    from: { id: userId, is_bot: false },
-    // confirmed-job failures report through a (mocked) LogMessage, so the
-    // callback ctx's telegram is only ever passed through, never called
-    telegram: {},
-    answerCbQuery: mock(async () => {}),
-    deleteMessage: mock(async () => {}),
-  }) as any;
+export const urlMessage = (url: string) => ({
+  text: url,
+  entities: [{ offset: 0, length: url.length, type: 'url' as const }],
+  link_preview_options: { is_disabled: true },
+});
+
+export const seedHandledUrl = (
+  chatId: number,
+  messageId: number,
+  url: string,
+  createdAt = Date.now(),
+) =>
+  db
+    .query(
+      'INSERT INTO handled_urls (chat_id, message_id, url, created_at) VALUES (?, ?, ?, ?)',
+    )
+    .run(chatId, messageId, url, createdAt);
+
+export const seedBytes = async (info: VideoInfo, bytes = 'video bytes') => {
+  await Bun.write(blobPath(info), bytes);
+  recordBlob(info);
+};
+export const seedOversize = async (info: VideoInfo) => {
+  await Bun.write(blobPath(info), '');
+  await truncate(blobPath(info), MAX_FILE_SIZE_BYTES + 1024 * 1024);
+  recordBlob(info);
+};
+export const bytesOnDisk = (info: VideoInfo) => Bun.file(blobPath(info)).exists();

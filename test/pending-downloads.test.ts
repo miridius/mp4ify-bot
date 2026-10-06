@@ -15,6 +15,7 @@ import {
 const makePending = (overrides: Partial<PendingDownload> = {}) =>
   ({
     info: { webpage_url: 'https://example.com' },
+    url: 'https://example.com',
     verbose: false,
     messageId: 1,
     chatId: -100,

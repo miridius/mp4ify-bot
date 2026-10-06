@@ -6,8 +6,15 @@ if (process.stderr && process.stderr.fd === undefined) {
 
 import { faker } from '@faker-js/faker';
 import { mock, spyOn } from 'bun:test';
+import type { Telegraf } from 'telegraf';
 import type { Message, Update } from 'telegraf/types';
-import { apiRoot } from '../src/consts';
+import { apiRoot, INLINE_CACHE_CHAT_ID } from '../src/consts';
+import errorReplies from './fixtures/real-error-replies.json';
+import payloads from './fixtures/real-payloads.json';
+import sendChats from './fixtures/real-send-chats.json';
+
+export const REAL_ERRORS = errorReplies.replies;
+type CapturedReply = { method: string; status: number; body: object };
 
 // TODO: what if we use real bot token and let it send real messages, and we
 // just record them & their responses? (could even re-use them?)
@@ -24,14 +31,15 @@ const okResp = (result: any, description?: string) =>
     JSON.stringify({ ok: true, result, ...(description && { description }) }),
   );
 
-const errResp = (description: string) =>
-  new Response(JSON.stringify({ ok: false, error_code: 400, description }), {
-    status: 400,
+export const errResp = (description: string, error_code = 400) =>
+  new Response(JSON.stringify({ ok: false, error_code, description }), {
+    status: error_code,
   });
 
 // the id of the simulated private chat / user, so a test that pre-seeds a job
 // (before the api exists) can address messages to the right chat
 export const MOCK_USER_ID = 1337;
+export const MOCK_GROUP_CHAT = payloads.payloads.group_plain_text.message.chat;
 
 export class MockBotApi {
   private user = {
@@ -54,13 +62,27 @@ export class MockBotApi {
     reply_markup?: any;
   }[] = [];
   public answeredCallbacks: { callback_query_id: string; text?: string }[] = [];
+  public answeredInlineQueries: { inline_query_id: string; results: any[] }[] =
+    [];
+  public requests: { method: string; data: any }[] = [];
+  // telegraf requests the next batch only after handling the previous one, so
+  // an update is fully handled once a getUpdates offset has passed its id
+  public handledOffset = 0;
+  private faults = new Map<
+    string,
+    { reply: CapturedReply; remaining: number }
+  >();
   private date = 0;
   // chats the bot may send to, mapped to the chat object the real server echoes
   // back on a send; an unknown chat_id gets its "chat not found"
   private knownChats = new Map<
     number,
     { id: number; type: string; [k: string]: any }
-  >([[MOCK_USER_ID, { ...this.user, type: 'private' }]]);
+  >([
+    [MOCK_USER_ID, { ...this.user, type: 'private' }],
+    [MOCK_GROUP_CHAT.id, MOCK_GROUP_CHAT],
+    [INLINE_CACHE_CHAT_ID, sendChats.chats.inline_cache_group],
+  ]);
   private pathPrefix: string;
   private updates: Update[] = [];
   private watchers: Array<() => void> = [];
@@ -72,6 +94,8 @@ export class MockBotApi {
     console.debug('simulating bot api with token:', this.botToken);
   }
 
+  // updates pushed back to back reach the bot in one getUpdates batch, whose
+  // updates telegraf handles concurrently
   sendUpdateToBot(partialUpdate: Omit<Update, 'update_id'>) {
     const update = {
       update_id: this.updates.length,
@@ -79,6 +103,33 @@ export class MockBotApi {
     } as Update;
     this.updates.push(update);
     this.flush();
+    return update;
+  }
+
+  addChat(chat: { id: number; type: string; [k: string]: any }) {
+    this.knownChats.set(chat.id, chat);
+  }
+
+  async call(
+    method: string,
+    data: object,
+    signal?: AbortSignal,
+  ): Promise<Response> {
+    const resp = this.handle(new URL(`${apiRoot}${this.pathPrefix}${method}`), {
+      method: 'POST',
+      body: JSON.stringify(data),
+      signal,
+    });
+    if (!resp) throw new Error(`the mock did not route ${method}`);
+    return resp;
+  }
+
+  private fromUser() {
+    return { ...this.user, is_bot: false, language_code: 'en' };
+  }
+
+  failNext(reply: CapturedReply, times = 1) {
+    this.faults.set(reply.method, { reply, remaining: times });
   }
 
   flush() {
@@ -94,15 +145,15 @@ export class MockBotApi {
     chatOverride?: { id: number; title?: string; type: string },
   ) {
     const chat = chatOverride ?? { ...this.user, type: 'private' };
-    if (chatOverride) this.knownChats.set(chatOverride.id, chatOverride);
+    if (chatOverride) this.addChat(chatOverride);
     const message = {
       message_id: this.updates.length,
-      from: { ...this.user, is_bot: false, language_code: 'en' },
+      from: this.fromUser(),
       chat,
       date: this.date++,
       ...partialMsg,
     } as Message.TextMessage;
-    this.sendUpdateToBot({ message });
+    return this.sendUpdateToBot({ message });
   }
 
   sendEditedMessageToBot(
@@ -112,13 +163,25 @@ export class MockBotApi {
     > & { message_id: number },
   ) {
     const message = {
-      from: { ...this.user, is_bot: false, language_code: 'en' },
+      from: this.fromUser(),
       chat: { ...this.user, type: 'private' },
       date: this.date++,
       edit_date: this.date++,
       ...partialMsg,
     } as Message.TextMessage;
-    this.sendUpdateToBot({ edited_message: message });
+    return this.sendUpdateToBot({ edited_message: message });
+  }
+
+  sendInlineQueryToBot(query: string) {
+    return this.sendUpdateToBot({
+      inline_query: {
+        id: String(this.date++),
+        from: this.fromUser(),
+        chat_type: 'sender',
+        query,
+        offset: '',
+      },
+    });
   }
 
   handle(url: URL, opts: RequestInit = {}) {
@@ -132,13 +195,20 @@ export class MockBotApi {
       const command = pathname.slice(this.pathPrefix.length);
       const data = JSON.parse(body as string);
       console.debug('mocking:', command);
+      if (command !== 'getUpdates') this.requests.push({ method: command, data });
+      const fault = this.faults.get(command);
+      if (fault && fault.remaining-- > 0) {
+        return new Response(JSON.stringify(fault.reply.body), {
+          status: fault.reply.status,
+        });
+      }
       switch (command) {
         case 'getMe':
           return this.getMe(data);
         case 'deleteWebhook':
           return this.deleteWebhook(data);
         case 'getUpdates':
-          return this.getUpdates(data);
+          return this.getUpdates(data, opts.signal);
         case 'sendMessage':
           return this.sendMessage(data);
         case 'editMessageText':
@@ -149,6 +219,9 @@ export class MockBotApi {
           return this.sendVideo(data);
         case 'answerCallbackQuery':
           return this.answerCallbackQuery(data);
+        case 'answerInlineQuery':
+          this.answeredInlineQueries.push(data);
+          return okResp(true);
         default:
           throw new Error('not yet implemented: ' + command);
       }
@@ -170,31 +243,46 @@ export class MockBotApi {
     return okResp(true, 'Webhook is already deleted');
   }
 
-  private async getUpdates({
-    timeout = 0,
-    offset = 0,
-    limit = 100,
-  }: {
-    timeout?: number;
-    offset?: number;
-    limit?: number;
-    allowed_updates?: any[];
-  }): Promise<Response> {
-    const updates =
-      offset == 0 && this.updates.length <= limit
-        ? this.updates
-        : this.updates.slice(offset, offset + limit);
-    if (updates.length || !timeout) {
-      return okResp(updates);
-    } else {
-      // wait for either timeout or for there to be a new update
-      await Promise.race([
-        new Promise((resolve) => this.watchers.push(() => resolve(null))),
-        Bun.sleep(timeout * 1000),
-      ]);
-      // return whatever updates there now are (if any)
-      return this.getUpdates({ timeout: 0, offset, limit });
+  private async getUpdates(
+    {
+      timeout = 0,
+      offset = 0,
+      limit = 100,
+    }: {
+      timeout?: number;
+      offset?: number;
+      limit?: number;
+      allowed_updates?: any[];
+    },
+    signal?: AbortSignal | null,
+  ): Promise<Response> {
+    if (signal?.aborted) throw signal.reason;
+    this.handledOffset = Math.max(this.handledOffset, offset);
+    if (!this.batch(offset, limit).length && timeout) {
+      let wake = () => {};
+      let onAbort = () => {};
+      let timer: Timer | undefined;
+      try {
+        await new Promise<void>((resolve, reject) => {
+          wake = resolve;
+          this.watchers.push(wake);
+          timer = setTimeout(resolve, timeout * 1000);
+          onAbort = () => reject(signal?.reason);
+          signal?.addEventListener('abort', onAbort, { once: true });
+        });
+      } finally {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
+        this.watchers = this.watchers.filter((w) => w !== wake);
+      }
     }
+    return okResp(this.batch(offset, limit));
+  }
+
+  private batch(offset: number, limit: number) {
+    return offset == 0 && this.updates.length <= limit
+      ? this.updates
+      : this.updates.slice(offset, offset + limit);
   }
 
   private chatFor(id: number) {
@@ -317,17 +405,20 @@ export class MockBotApi {
   ) {
     const from = userOverride
       ? { ...userOverride, is_bot: false, first_name: 'Other' }
-      : { ...this.user, is_bot: false, language_code: 'en' };
-    this.sendUpdateToBot({
+      : this.fromUser();
+    const clicked = this.sentMessages[messageId];
+    if (!clicked) throw new Error(`the bot sent no message ${messageId}`);
+    return this.sendUpdateToBot({
       callback_query: {
         id: String(this.date++),
         from,
         message: {
           message_id: messageId,
           from: this.bot,
-          chat: { ...this.user, type: 'private' },
+          chat: this.chatFor(clicked.chat_id),
           date: this.date++,
-          text: 'Download this video?',
+          text: clicked.text,
+          ...(clicked.reply_markup && { reply_markup: clicked.reply_markup }),
         },
         chat_instance: String(this.user.id),
         data,
@@ -420,6 +511,7 @@ export const githubMock = {
   // the tag_name the mocked API reports; null → the call fails (HTTP 500)
   latestTag: 'TEST-LATEST' as string | null,
 };
+export const runtimeFetch = globalThis.fetch;
 globalThis.fetch = (async (input: any) => {
   const href =
     typeof input === 'string' ? input : (input?.url ?? String(input));
@@ -433,7 +525,10 @@ globalThis.fetch = (async (input: any) => {
   throw new Error(`unmocked fetch in test: ${href}`);
 }) as typeof fetch;
 
-export type TestFn = (api: MockBotApi) => void | Promise<void>;
+export type TestFn = (
+  api: MockBotApi,
+  bot: Telegraf,
+) => void | Promise<void>;
 
 export const withBotApi = async (fn: TestFn) => {
   const api = new MockBotApi();
@@ -446,23 +541,26 @@ export const withBotApi = async (fn: TestFn) => {
   ) => {
     console.error(`suppressed process.exit(${code}) during tests`);
   }) as any);
+  const { waitUntil } = await import('./test-utils');
   let testError: unknown;
   let threw = false;
   let drained = true;
+  let pollingStopped = true;
+  let exitedOnStop = false;
   try {
     // NOTE: it's very important that the tests do not import the bot until
     // after the mocks are set up, else it doesn't use the mocked fetch.
-    // Also stub the yt-dlp self-update so starting the bot doesn't spawn it.
-    const downloadVideo = await import('../src/download-video');
-    spyOn(downloadVideo, 'updateYtdlp').mockImplementation(async () => {});
-    const { start } = await import('../src/bot');
-    const bot = await start(api.botToken);
+    const botModule = await import('../src/bot');
+    const bot = await botModule.start(api.botToken);
     try {
-      await fn(api);
+      await fn(api, bot);
     } finally {
+      const exitsBefore = exitSpy.mock.calls.length;
       bot.stop('test finished');
-      api.flush();
-      await Bun.sleep(100);
+      let ended = false;
+      void botModule.pollingEnded().then(() => (ended = true));
+      pollingStopped = await waitUntil(() => ended, 10_000);
+      exitedOnStop = exitSpy.mock.calls.length > exitsBefore;
     }
   } catch (e) {
     testError = e;
@@ -477,7 +575,6 @@ export const withBotApi = async (fn: TestFn) => {
     const { resetJobQueue, jobsIdle, stopJobQueue } = await import(
       '../src/job-queue'
     );
-    const { waitUntil } = await import('./test-utils');
     drained = await waitUntil(jobsIdle, 10_000);
     stopJobQueue();
     mockBotApis.delete(api);
@@ -493,5 +590,13 @@ export const withBotApi = async (fn: TestFn) => {
     throw new Error(
       'jobs did not drain within 10s after the test: a job hung or never completed',
     );
+  }
+  if (!pollingStopped) {
+    throw new Error(
+      'telegraf polling did not stop within 10s after the test: a later poll could steal the next test\'s updates',
+    );
+  }
+  if (exitedOnStop) {
+    throw new Error('stopping the bot exited the process as a polling crash');
   }
 };

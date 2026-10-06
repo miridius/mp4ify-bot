@@ -10,10 +10,11 @@ const TEXT_MSG_OPTS = {
 const DEBOUNCE_MS = 150;
 
 // inter-pass backoff before a doFlush retry pass (see the loop below)
-let retryPassDelayMs = 500;
+const RETRY_PASS_DELAY_MS = 500;
+let retryPassDelayMs = RETRY_PASS_DELAY_MS;
 // test-only: shrink it to 0 so suites don't sleep real seconds across passes
 // (mirrors setRetryBaseMs in job-queue)
-export const setRetryPassDelayMs = (ms: number) => {
+export const setRetryPassDelayMs = (ms = RETRY_PASS_DELAY_MS) => {
   retryPassDelayMs = ms;
 };
 

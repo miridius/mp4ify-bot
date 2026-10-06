@@ -98,6 +98,9 @@ const contain = async (label: string, sweep: () => unknown) => {
   }
 };
 
+let polling: Promise<void> = Promise.resolve();
+export const pollingEnded = () => polling;
+
 export const start = async (botToken: string) => {
   // boot-only storage reconciliation, BEFORE the queue starts (nothing else
   // is touching the dirs yet)
@@ -171,12 +174,26 @@ export const start = async (botToken: string) => {
   // which exists before launch.
   await startJobQueue((job, attempt) => processJob(bot.telegram, job, attempt));
 
-  // launch() only settles when polling stops, so don't await it; a
-  // rejection means polling died fatally: exit so docker restarts us
+  let stopRequested = false;
+  const stopPolling = bot.stop.bind(bot);
+  bot.stop = (reason?: string) => {
+    stopPolling(reason);
+    // only after stop() returns: a throwing stop() leaves polling running, and
+    // launch()'s rejection always lands in a later microtask
+    stopRequested = true;
+  };
+
+  // launch() only settles when polling stops
   await new Promise<void>((onLaunch) => {
-    bot.launch(onLaunch).catch((e) => {
+    polling = bot.launch(onLaunch).catch((e) => {
+      // stop() aborts the parked getUpdates, and telegraf's token redaction
+      // then throws assigning the abort error's read-only message
+      if (stopRequested) {
+        console.debug('Polling ended after stop:', e);
+        return;
+      }
       console.error('Bot crashed:', e);
-      process.exit(1);
+      process.exit(1); // docker restarts us
     });
   });
   // onLaunch fires before telegraf assigns its polling field, and stop()

@@ -21,21 +21,7 @@ export type UrlJob = JobBase & {
   kind: 'url';
   url: string;
   fromId: number;
-  // the videos of a multi-video post this job is done with (sent, or ruled out
-  // by a gate), by videoKey, so a retry picks up where it stopped
-  settledIds?: string[];
-  // and the ones whose info block already reached the chat, so a retry does
-  // not print it again for a video it announced but could not deliver
-  announcedIds?: string[];
-  // whether the post has answered the message at all: a video sent, or a
-  // confirmation prompt parked. Either is a promise the edit-retry gesture
-  // must not undo by re-running the whole post.
-  answered?: true;
-  // whether the "more than N videos here" notice already reached the chat, so
-  // a retry's continued thread doesn't print it twice (its text may sit in an
-  // earlier chunk than the one logText carries, so string-matching logText
-  // can't answer this)
-  capShown?: boolean;
+  infoShown?: boolean;
 };
 
 export type ConfirmedJob = JobBase & {
@@ -43,14 +29,8 @@ export type ConfirmedJob = JobBase & {
   info: VideoInfo;
   postDownload: boolean;
   // the normalized URL the originating message recorded in handled_urls
-  // (info.webpage_url may be a different alias), so a terminal failure can
-  // un-record it and re-open the edit-retry gesture. Optional: rows parked
-  // before this field existed lack it and just skip the un-record.
-  url?: string;
-  // this video is one of several in its post, so the message's record belongs
-  // to the job delivering them all: un-recording it here would re-deliver the
-  // ones that already landed
-  partOfPost?: true;
+  // (info.webpage_url may be a different alias)
+  url: string;
 };
 
 export type Job = UrlJob | ConfirmedJob;
@@ -277,29 +257,18 @@ const run = async (id: number) => {
     return;
   }
   const attempt = row.attempts + 1;
-  // The processor mutates its job through exactly these stash fields (e.g.
-  // logMessageId so the retry edits one message); those mutations must
-  // survive into the next run. Snapshotting them (cheap) lets the catch skip
-  // re-serializing a ConfirmedJob's multi-MB dump-json payload when nothing
-  // changed (the common group-job case, whose NoLog stashes nothing).
-  const before = {
-    logMessageId: job.logMessageId,
-    logText: job.logText,
-    capShown: (job as UrlJob).capShown,
-    settled: (job as UrlJob).settledIds?.length,
-    announced: (job as UrlJob).announcedIds?.length,
-    answered: (job as UrlJob).answered,
-  };
+  // the processor reassigns top-level job fields only, so a shallow copy sees
+  // every change
+  const before: Record<string, unknown> = { ...job };
   try {
     await processor!(job, attempt);
   } catch (e) {
-    const dirty =
-      before.logMessageId !== job.logMessageId ||
-      before.logText !== job.logText ||
-      before.capShown !== (job as UrlJob).capShown ||
-      before.settled !== (job as UrlJob).settledIds?.length ||
-      before.announced !== (job as UrlJob).announcedIds?.length ||
-      before.answered !== (job as UrlJob).answered;
+    const after: Record<string, unknown> = job;
+    // skip re-serializing an unchanged job: a ConfirmedJob payload holds a
+    // multi-MB dump-json
+    const dirty = Object.keys({ ...before, ...after }).some(
+      (k) => before[k] !== after[k],
+    );
     const persistJob = (attempts: number) =>
       dirty
         ? bumpAttemptsStmt.run(attempts, JSON.stringify(job), id)
