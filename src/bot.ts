@@ -18,7 +18,7 @@ import {
   sweepHandledUrls,
   textMessageHandler,
 } from './handlers';
-import { sweepOrphanBlobs } from './blob-store';
+import { assertBlobDirUsable, sweepOrphanBlobs } from './blob-store';
 import { jobsIdle, startJobQueue, stopJobQueue } from './job-queue';
 import { sweepStalePending } from './pending-downloads';
 
@@ -105,6 +105,10 @@ export const start = async (botToken: string) => {
   // boot-only storage reconciliation, BEFORE the queue starts (nothing else
   // is touching the dirs yet)
   await contain('sweepLegacyStorage', sweepLegacyStorage);
+  // uncontained: an unusable blob dir should stop the boot, not fail every
+  // download after its transfer. After the legacy sweep, which removes
+  // /storage entries it does not recognize (a nested BLOB_DIR's parent)
+  await assertBlobDirUsable();
   await contain('sweepOrphanBlobs', sweepOrphanBlobs);
 
   // keep yt-dlp fresh: extractors break as sites change out from under us

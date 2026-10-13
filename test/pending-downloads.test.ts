@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'bun:test';
-import { getBlob, recordBlob, withBlobLock } from '../src/blob-store';
+import { getBlob, withBlobLock } from '../src/blob-store';
 import { db, resetDb } from '../src/db';
 import {
   addPending,
@@ -9,6 +9,7 @@ import {
   takePending,
   type PendingDownload,
 } from '../src/pending-downloads';
+import { recordMp4Blob } from './test-utils';
 
 // addPending stamps kind: 'confirmed' on write, so the parked pending row is a
 // ready-to-run confirmed job plus the requester id
@@ -74,7 +75,7 @@ describe('sweepStalePending', () => {
 
   it('drops abandoned rows and releases the blob a postDownload one pinned', async () => {
     const info = mkInfo('sweepme');
-    recordBlob(info);
+    recordMp4Blob(info);
     const id = await addPending(makePending({ info, postDownload: true }));
     age(id, PENDING_TTL_MS + 1000);
 
@@ -96,8 +97,8 @@ describe('sweepStalePending', () => {
     // then a no-op and the blob the claimant now owns must NOT be released.
     // Hold row A's blob lock to park the sweep in that window, then take B.
     const [infoA, infoB] = [mkInfo('a'), mkInfo('b')];
-    recordBlob(infoA);
-    recordBlob(infoB);
+    recordMp4Blob(infoA);
+    recordMp4Blob(infoB);
     // insertion order drives the sweep's row order (full-table scan): A first
     const idA = await addPending(makePending({ info: infoA, postDownload: true }));
     const idB = await addPending(makePending({ info: infoB, postDownload: true }));

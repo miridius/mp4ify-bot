@@ -2,6 +2,7 @@
 // test/bin/ contains stub yt-dlp/ffprobe executables driven by control files
 // in /tmp/stub (Bun.spawn snapshots the env at startup, so env vars can't
 // reach the child). Only the Telegram client (an unowned boundary) is mocked.
+import { dirname } from 'path';
 import {
   afterAll,
   afterEach,
@@ -22,17 +23,19 @@ import {
   stat,
 } from 'fs/promises';
 import {
-  blobPath,
   getBlob,
-  recordBlob,
   releaseBlob,
+  setBlobDuration,
   setBlobFileId,
 } from '../src/blob-store';
 import { STAGING_DIR } from '../src/consts';
+import { YTDLP_CONFIG_ARGS } from '../src/ytdlp-config';
 import { db, resetDb } from '../src/db';
 import { githubMock } from './simulate-bot-api';
 import {
   bytesOnDisk,
+  mp4BlobPath,
+  recordMp4Blob,
   resetStub,
   rowCount,
   seedBytes,
@@ -380,7 +383,7 @@ describe('getInfos', () => {
 
     expect(infos).toEqual([urlInfo]);
     expect(await stubArgs()).toEndWith(
-      `yt-dlp ${url} --verbose --dump-json --no-playlist --playlist-end 50 --max-downloads ${VIDEOS_TO_DECIDE}`,
+      `yt-dlp ${url} --verbose ${YTDLP_CONFIG_ARGS.join(' ')} --dump-json --no-playlist --playlist-end 50 --max-downloads ${VIDEOS_TO_DECIDE}`,
     );
   });
 
@@ -388,7 +391,7 @@ describe('getInfos', () => {
     expect(await getInfos(log as any, url)).toEqual([urlInfo]);
     expect(appendedText()).toBe(`\u{1f9d0} <b>Scraping</b> ${url}...`);
     expect(await stubArgs()).toEndWith(
-      `yt-dlp ${url} --no-warnings --dump-json --no-playlist --playlist-end 50 --max-downloads ${VIDEOS_TO_DECIDE}`,
+      `yt-dlp ${url} --no-warnings ${YTDLP_CONFIG_ARGS.join(' ')} --dump-json --no-playlist --playlist-end 50 --max-downloads ${VIDEOS_TO_DECIDE}`,
     );
     expect(JSON.parse(infoRow(url)!.info)).toEqual([urlInfo]);
   });
@@ -905,13 +908,17 @@ describe('sendInfo', () => {
 // seed a blob row for VideoInfo through the real store helpers, so the seed
 // can't drift from what the code under test reads
 const seedBlob = (fileId: string | null = null) => {
-  recordBlob(VideoInfo);
+  recordMp4Blob(VideoInfo);
   if (fileId) setBlobFileId(VideoInfo, fileId);
 };
 
-describe('downloadVideo', () => {
-  const infoJson = `${blobPath(VideoInfo)}.json`;
+const stagingHome = (args: string) => {
+  const m = args.match(/--paths home:(\S+)/);
+  expect(m).not.toBeNull();
+  return m![1]!;
+};
 
+describe('downloadVideo', () => {
   it('abortDownloads kills a live yt-dlp and surfaces ShutdownAbort; new spawns refuse', async () => {
     await stub({ block: '1', outfile: VideoInfo.filename });
     const inflight = downloadVideo(log as any, VideoInfo).catch((e) => e);
@@ -1048,18 +1055,19 @@ describe('downloadVideo', () => {
 
     const [ytdlpLine, probeLine] = (await stubArgs()).split('\n');
     // a per-download staging home under STAGING_DIR, then the temp info json
-    expect(ytdlpLine).toContain(`--paths home:${STAGING_DIR}/`);
-    expect(ytdlpLine).toEndWith(`--load-info-json ${infoJson}`);
+    const home = stagingHome(ytdlpLine!);
+    expect(home).toStartWith(`${STAGING_DIR}/`);
+    expect(ytdlpLine).toContain('-o video.%(ext)s');
+    expect(ytdlpLine).toEndWith(`--load-info-json ${home}/info.json`);
+    expect(ytdlpLine).toContain(YTDLP_CONFIG_ARGS.join(' '));
     // the real duration is probed right after the move, while the bytes are
     // guaranteed present (here the stub's stdout isn't numeric, so none stored)
     expect(probeLine).toContain('ffprobe');
-    expect(probeLine).toContain(blobPath(VideoInfo));
+    expect(probeLine).toContain(mp4BlobPath(VideoInfo));
     expect(appendedText()).toContain('\u2b07\ufe0f <b>Downloading...</b>');
     // bytes moved to the identity-keyed path; a blob row records them
-    expect(await Bun.file(blobPath(VideoInfo)).text()).toBe('video bytes\n');
-    expect(getBlob(VideoInfo)?.path).toBe(blobPath(VideoInfo));
-    expect(await Bun.file(infoJson).exists()).toBe(false); // temp cleaned up
-    // the per-download staging home is cleaned up with the download
+    expect(await Bun.file(mp4BlobPath(VideoInfo)).text()).toBe('video bytes\n');
+    expect(getBlob(VideoInfo)?.path).toBe(mp4BlobPath(VideoInfo));
     expect(await readdir(STAGING_DIR).catch(() => [])).toEqual([]);
   });
 
@@ -1072,8 +1080,57 @@ describe('downloadVideo', () => {
 
     expect(await downloadVideo(log as any, VideoInfo)).toBe('downloaded ok');
 
-    expect(await Bun.file(blobPath(VideoInfo)).text()).toBe('video bytes\n');
-    expect(getBlob(VideoInfo)?.path).toBe(blobPath(VideoInfo));
+    expect(await Bun.file(mp4BlobPath(VideoInfo)).text()).toBe('video bytes\n');
+    expect(getBlob(VideoInfo)?.path).toBe(mp4BlobPath(VideoInfo));
+  });
+
+  // deletes the blob dir, so it runs only on the test container's default one
+  // (the dev container sets BLOB_DIR)
+  it.if(!Bun.env.BLOB_DIR)('creates the blob dir when it is missing', async () => {
+    await rm(dirname(mp4BlobPath(VideoInfo)), { recursive: true, force: true });
+    await stub({ outfile: VideoInfo.filename });
+
+    await downloadVideo(log as any, VideoInfo);
+
+    expect(await Bun.file(mp4BlobPath(VideoInfo)).text()).toBe('video bytes\n');
+  });
+
+  it('names the blob by the extension yt-dlp actually produced', async () => {
+    // -t mp4 remuxes a single-file webm selection into mp4
+    const webm = { ...VideoInfo, filename: `${VIDEO_DIR}file.webm` };
+    await stub({ outfile: `${VIDEO_DIR}video.mp4` });
+
+    await downloadVideo(log as any, webm);
+
+    expect(getBlob(webm)?.path).toBe(mp4BlobPath(webm));
+    expect(await Bun.file(mp4BlobPath(webm)).text()).toBe('video bytes\n');
+  });
+
+  it('keeps a recorded download when the staging cleanup fails', async () => {
+    await stub({ block: '1', stdout: 'downloaded ok', outfile: VideoInfo.filename });
+    const inflight = downloadVideo(log as any, VideoInfo);
+    await waitUntil(async () => (await stubArgs()) !== ''); // yt-dlp is running
+    // an entry in a read-only dir can't be unlinked, so the cleanup's rm fails
+    const home = stagingHome(await stubArgs());
+    const locked = `${home}/locked`;
+    await mkdir(locked);
+    await Bun.write(`${locked}/frag.part`, '');
+    await chmod(locked, 0o555);
+    const consoleError = spyMock(console, 'error');
+    try {
+      await unblockStub();
+      expect(await inflight).toBe('downloaded ok');
+      expect(getBlob(VideoInfo)?.path).toBe(mp4BlobPath(VideoInfo));
+      expect(await Bun.file(mp4BlobPath(VideoInfo)).text()).toBe('video bytes\n');
+      expect(consoleError).toHaveBeenCalledWith(
+        'download cleanup failed:',
+        expect.anything(),
+      );
+    } finally {
+      consoleError.mockRestore();
+      await chmod(locked, 0o755);
+      await rm(home, { recursive: true, force: true });
+    }
   });
 
   it('stores the probed duration on the blob row', async () => {
@@ -1112,6 +1169,17 @@ describe('downloadVideo', () => {
     expect(err.stderr).toContain('Unsupported URL'); // trailing error survived
     expect(err.stderr.startsWith('progress line')).toBe(true); // trimmed at a line start
     expect(isPermanentError(err)).toBe(true);
+  });
+
+  // guarded like the blob-dir test above: deletes STAGING_DIR
+  it.if(!Bun.env.STAGING_DIR)('removes the partials a failed download leaves in its staging home', async () => {
+    await rm(STAGING_DIR, { recursive: true, force: true });
+    await stub({ exit: '1', stderr: 'ERROR: HTTP Error 503\n' });
+    await expect(downloadVideo(log as any, VideoInfo)).rejects.toBeInstanceOf(
+      YtdlpError,
+    );
+    // STAGING_DIR exists only because the run created its home there
+    expect(await readdir(STAGING_DIR)).toEqual([]);
   });
 
   it('classifies a transient yt-dlp failure (5xx) as retryable', async () => {
@@ -1266,6 +1334,17 @@ describe('isPermanentError', () => {
 });
 
 describe('classifyFailure', () => {
+  it('classifies a Reddit login wall as unavailable', () => {
+    expect(
+      classifyFailure(
+        new YtdlpError(
+          'failed',
+          'ERROR: [Reddit] 1l68isw: Account authentication is required. Use --cookies-from-browser or --cookies for the authentication. See  https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp  for how to manually pass cookies',
+        ),
+      ),
+    ).toBe('unavailable');
+  });
+
   it('classifies an Instagram empty-media response as unavailable', () => {
     expect(
       classifyFailure(
@@ -1349,12 +1428,25 @@ describe('sendVideo', () => {
 
     expect(mockSendVideo).toHaveBeenCalledWith(
       123,
-      Bun.pathToFileURL(blobPath(VideoInfo)).href,
+      Bun.pathToFileURL(mp4BlobPath(VideoInfo)).href,
       expect.objectContaining({ width: 100, height: 100, duration: 10 }),
     );
     expect(msg!.video.file_id).toBe('id');
     expect(cachedFileId()).toBe('id');
     expect(await bytesOnDisk(VideoInfo)).toBe(false);
+  });
+
+  it('sends the probed duration over the scraped one', async () => {
+    await seedBytes(VideoInfo);
+    setBlobDuration(VideoInfo, 7);
+
+    await sendVideo(telegram, log as any, VideoInfo, 123);
+
+    expect(mockSendVideo).toHaveBeenCalledWith(
+      123,
+      expect.any(String),
+      expect.objectContaining({ duration: 7 }),
+    );
   });
 
   it('resends by file_id without touching the bytes', async () => {
@@ -1469,7 +1561,7 @@ describe('releaseBlob at the download layer', () => {
   });
 
   it('keeps an uploaded blob (file_id is its resend cache)', async () => {
-    recordBlob(VideoInfo);
+    recordMp4Blob(VideoInfo);
     setBlobFileId(VideoInfo, 'fid');
 
     await releaseBlob(VideoInfo);

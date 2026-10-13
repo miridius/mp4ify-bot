@@ -1,11 +1,13 @@
 import { copyFile, readdir, realpath, rename, rm, stat } from 'fs/promises';
-import { basename } from 'path';
+import { basename, extname } from 'path';
 import type { Telegram } from 'telegraf';
 import type { Message } from 'telegraf/types';
 import {
   blobKey,
   blobPath,
+  type BlobRow,
   clearBlobFileId,
+  ensureBlobDir,
   getBlob,
   recordBlob,
   releaseBlob,
@@ -18,6 +20,7 @@ import { unlinkQuiet } from './fs-utils';
 import { ShutdownAbort } from './job-queue';
 import { LogMessage } from './log-message';
 import { coalesce, limit, telegramDesc } from './utils';
+import { YTDLP_CONFIG_ARGS } from './ytdlp-config';
 
 export const MAX_FILE_SIZE_BYTES = 2000 * 1024 * 1024;
 const DOWNLOAD_TIMEOUT_SECS = 300;
@@ -107,6 +110,8 @@ const PERMANENT_PATTERNS = [
   /has been removed/i,
   /members[- ]only/i,
   /sign in to confirm your age/i,
+  // Reddit's login wall for this server's IP: retrying can't get past it
+  /account authentication is required/i,
   // scoped to the *webpage* fetch: a webpage 403/404/410 means the URL is gone
   // or the site refuses us, but a mid-download segment 403 stays transient
   /unable to download webpage: http error (403|404|410)\b/i,
@@ -153,11 +158,10 @@ export type VideoInfo = {
   filename: string;
   title: string;
   // yt-dlp's stable per-video identity (from --dump-json); keys the blob
-  // (see blobKey); `ext` names the blob file
+  // (see blobKey)
   extractor?: string;
   id?: string;
   format_id?: string;
-  ext?: string;
   description?: string;
   webpage_url: string;
   duration?: number;
@@ -392,6 +396,7 @@ const execYtdlp = limit(
       'yt-dlp',
       url,
       verbose ? '--verbose' : '--no-warnings',
+      ...YTDLP_CONFIG_ARGS,
       ...extraArgs,
     ];
     console.debug(command.join(' '));
@@ -664,8 +669,11 @@ const skippedTime = ({ sponsorblock_chapters }: VideoInfo) =>
     .map(({ start_time, end_time }) => end_time - start_time)
     .reduce((sum, time) => sum + time, 0) || 0;
 
-export const calcDuration = (info: VideoInfo) =>
+const calcDuration = (info: VideoInfo) =>
   info.duration && Math.round(info.duration - skippedTime(info));
+
+export const knownDuration = (info: VideoInfo, blob = getBlob(info)) =>
+  blob?.duration || calcDuration(info);
 
 export const probeDuration = async (
   filename: string,
@@ -757,22 +765,24 @@ export const sendInfo = async (
   logInfo('audio codec', acodec && `${acodec} ${abr ? `@ ${abr} kbps` : ''}`);
 };
 
+const blobUsable = async (blob: BlobRow) =>
+  !!blob.file_id || (await exists(blob.path));
+
 export const isDownloaded = async (info: VideoInfo): Promise<boolean> => {
   const blob = getBlob(info);
-  if (!blob) return false;
-  return !!blob.file_id || (await exists(blob.path));
+  return !!blob && (await blobUsable(blob));
 };
 
-// The produced file is wherever yt-dlp put it under the download's private
-// staging home: locate it rather than trusting info.filename, whose embedded
-// path was computed at scrape time under whatever home THAT era's config used
-// (replaying it would break on any config change).
+// yt-dlp settles the extension only at download time (-t mp4 may remux or
+// merge into a container other than the scrape's ext)
 const findProduced = async (dir: string): Promise<string> => {
   const files: string[] = [];
-  for (const name of await readdir(dir, { recursive: true })) {
+  for (const name of await readdir(dir)) {
     // some options write metadata/partial sidecars into the home path
     if (name.endsWith('.json') || name.endsWith('.part')) continue;
     const p = `${dir}/${name}`;
+    // stat: d_type is DT_UNKNOWN on some filesystems, so Dirent.isFile() can
+    // be false for a file
     if ((await stat(p)).isFile()) files.push(p);
   }
   if (files.length !== 1) {
@@ -794,27 +804,29 @@ export const downloadVideo = coalesce(
       return 'already downloaded';
     }
     log.append(`\n⬇️ <b>Downloading...</b>`);
-    const path = blobPath(info);
-    // yt-dlp wants the scraped info on disk for --load-info-json; the DB holds
-    // it now, so stage a temp copy next to the blob (overwrite-safe, cleaned up)
-    const infoJson = `${path}.json`;
-    await Bun.write(infoJson, JSON.stringify(info));
-    // A unique staging home per download: two DIFFERENT videos can share a
-    // title-derived template path, so a shared home would let concurrent
-    // downloads clobber each other's output file
+    // unique per download: every download's output is the same fixed name
+    // (-o below), so a shared home would let concurrent downloads clobber
+    // each other's file
     const staging = `${STAGING_DIR}/${crypto.randomUUID()}`;
+    const infoJson = `${staging}/info.json`;
     try {
+      await Bun.write(infoJson, JSON.stringify(info));
       const out = await execYtdlp(
         log,
         '',
         verbose,
         '--paths',
         `home:${staging}`,
+        '-o',
+        'video.%(ext)s',
         '--load-info-json',
         infoJson,
       );
-      await rename(await findProduced(staging), path);
-      recordBlob(info);
+      const produced = await findProduced(staging);
+      const path = blobPath(info, extname(produced));
+      await ensureBlobDir();
+      await rename(produced, path);
+      recordBlob(info, path);
       // probe the real duration while the bytes are guaranteed present and
       // store it on the row: scraped metadata can lack duration, and once the
       // bytes are disposed after upload there is nothing left to measure.
@@ -823,8 +835,10 @@ export const downloadVideo = coalesce(
       if (duration) setBlobDuration(info, duration);
       return out;
     } finally {
-      await rm(staging, { recursive: true, force: true });
-      await unlinkQuiet(infoJson);
+      // the boot sweep clears a leftover staging dir
+      await rm(staging, { recursive: true, force: true }).catch((e) =>
+        console.error('download cleanup failed:', e),
+      );
     }
   },
   (_log, info, verbose) => !verbose && blobKey(info),
@@ -845,15 +859,15 @@ export const sendVideo = async (
   replyToMessageId?: number,
 ): Promise<Message.VideoMessage | undefined> => {
   const { width, height } = info;
-  const duration = calcDuration(info);
   const blob = getBlob(info);
-  const fileId = blob?.file_id || undefined;
-  const path = blob?.path ?? blobPath(info);
+  if (!blob || !(await blobUsable(blob))) {
+    throw new Error('ERROR: yt-dlp output file not found');
+  }
+  const duration = knownDuration(info, blob);
+  const fileId = blob.file_id || undefined;
+  const { path } = blob;
 
   if (!fileId) {
-    if (!(await exists(path))) {
-      throw new Error('ERROR: yt-dlp output file not found');
-    }
     const size = (await stat(path)).size;
 
     if (size > MAX_FILE_SIZE_BYTES) {

@@ -27,7 +27,7 @@ describe('migrations', () => {
     insert.run('generic:video:0', '/storage/blobs/g.mp4', Date.now());
     insert.run('yt:abc:137', '/storage/blobs/y.mp4', Date.now());
 
-    migrate(db);
+    migrate(db, 3); // stop on the fix: a later migration empties the table
 
     const keys = db
       .query('SELECT key FROM blobs ORDER BY key')
@@ -72,5 +72,19 @@ describe('migrations', () => {
     expect(db.query('SELECT COUNT(*) c FROM video_info').get()).toEqual({
       c: 0,
     });
+  });
+
+  it('drops every blob cached before downloads loaded yt-dlp.conf', () => {
+    const db = new Database(':memory:');
+    migrate(db, 6);
+    const insert = db.query(
+      'INSERT INTO blobs (key, path, file_id, created_at) VALUES (?, ?, ?, ?)',
+    );
+    insert.run('youtube:abc:137+140', '/storage/blobs/a.mp4', 'sent-webm', Date.now());
+    insert.run('youtube:def:137+140', '/storage/blobs/d.mp4', null, Date.now());
+
+    migrate(db);
+
+    expect(db.query('SELECT COUNT(*) c FROM blobs').get()).toEqual({ c: 0 });
   });
 });

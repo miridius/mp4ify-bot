@@ -28,6 +28,7 @@ exports[`message handler downloads https://www.instagram.com/reel/DKbYQgeoL3F/?i
   {
     "chat_id": 1337,
     "disable_notification": true,
+    "duration": 12,
     "reply_parameters": {
       "message_id": 0,
     },
@@ -61,6 +62,7 @@ exports[`message handler downloads https://www.instagram.com/reel/DKbYQgeoL3F/?i
   {
     "chat_id": 1337,
     "disable_notification": true,
+    "duration": 12,
     "reply_parameters": {
       "message_id": 1,
     },
@@ -94,6 +96,7 @@ exports[`message handler downloads https://www.instagram.com/reel/DKbYQgeoL3F/?i
   {
     "chat_id": 1337,
     "disable_notification": true,
+    "duration": 12,
     "reply_parameters": {
       "message_id": 2,
     },
@@ -484,6 +487,134 @@ exports[`message handler downloads http://youtube.com/shorts/0COu-qMC18Y: disk c
     "supports_streaming": true,
     "video": "<file_id>",
     "width": 1080,
+  },
+]
+`;
+
+exports[`message handler downloads https://youtu.be/T3eBoD8H3Xg: download 1`] = `
+[
+  {
+    "chat_id": 1337,
+    "disable_notification": true,
+    "link_preview_options": {
+      "is_disabled": true,
+    },
+    "parse_mode": "HTML",
+    "reply_parameters": {
+      "message_id": 0,
+    },
+    "text": 
+"🧐 <b>Scraping</b> https://youtu.be/T3eBoD8H3Xg...
+
+🎬 <b>Video info:</b>
+
+<b>URL</b>: https://www.youtube.com/watch?v=T3eBoD8H3Xg
+<b>filename</b>: Warum_tanzen_alle_in_TikTok-Videos_l_WOOZLE_GOOZLE-[T3eBoD8H3Xg].<formats>.mp4
+<b>duration</b>: 125 sec
+<b>size</b>: <n> MB
+<b>resolution</b>: 1920x1080
+<b>video codec</b>: avc1.640028 
+<b>audio codec</b>: mp4a.40.2 
+
+⬇️ <b>Downloading...</b>
+
+🚀 <b>Uploading (<n> MB)...</b>"
+,
+  },
+  {
+    "chat_id": 1337,
+    "disable_notification": true,
+    "duration": 125,
+    "height": 1080,
+    "reply_parameters": {
+      "message_id": 0,
+    },
+    "reply_to_message_id": 0,
+    "supports_streaming": true,
+    "video": "file:///storage/blobs/youtube:T3eBoD8H3Xg:<formats>.mp4",
+    "width": 1920,
+  },
+]
+`;
+
+exports[`message handler downloads https://youtu.be/T3eBoD8H3Xg: mem cache 1`] = `
+[
+  {
+    "chat_id": 1337,
+    "disable_notification": true,
+    "link_preview_options": {
+      "is_disabled": true,
+    },
+    "parse_mode": "HTML",
+    "reply_parameters": {
+      "message_id": 1,
+    },
+    "text": 
+"
+🎬 <b>Video info:</b>
+
+<b>URL</b>: https://www.youtube.com/watch?v=T3eBoD8H3Xg
+<b>filename</b>: Warum_tanzen_alle_in_TikTok-Videos_l_WOOZLE_GOOZLE-[T3eBoD8H3Xg].<formats>.mp4
+<b>duration</b>: 125 sec
+<b>size</b>: <n> MB
+<b>resolution</b>: 1920x1080
+<b>video codec</b>: avc1.640028 
+<b>audio codec</b>: mp4a.40.2 "
+,
+  },
+  {
+    "chat_id": 1337,
+    "disable_notification": true,
+    "duration": 125,
+    "height": 1080,
+    "reply_parameters": {
+      "message_id": 1,
+    },
+    "reply_to_message_id": 1,
+    "supports_streaming": true,
+    "video": "<file_id>",
+    "width": 1920,
+  },
+]
+`;
+
+exports[`message handler downloads https://youtu.be/T3eBoD8H3Xg: disk cache 1`] = `
+[
+  {
+    "chat_id": 1337,
+    "disable_notification": true,
+    "link_preview_options": {
+      "is_disabled": true,
+    },
+    "parse_mode": "HTML",
+    "reply_parameters": {
+      "message_id": 2,
+    },
+    "text": 
+"
+🎬 <b>Video info:</b>
+
+<b>URL</b>: https://www.youtube.com/watch?v=T3eBoD8H3Xg
+<b>filename</b>: Warum_tanzen_alle_in_TikTok-Videos_l_WOOZLE_GOOZLE-[T3eBoD8H3Xg].<formats>.mp4
+<b>duration</b>: 125 sec
+<b>size</b>: <n> MB
+<b>resolution</b>: 1920x1080
+<b>video codec</b>: avc1.640028 
+<b>audio codec</b>: mp4a.40.2 "
+,
+  },
+  {
+    "chat_id": 1337,
+    "disable_notification": true,
+    "duration": 125,
+    "height": 1080,
+    "reply_parameters": {
+      "message_id": 2,
+    },
+    "reply_to_message_id": 2,
+    "supports_streaming": true,
+    "video": "<file_id>",
+    "width": 1920,
   },
 ]
 `;

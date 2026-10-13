@@ -85,6 +85,10 @@ export const MIGRATIONS: string[] = [
   // `info` holds the JSON array of a post's video entries; rows predating that
   // hold one bare object. A six-hour cache, so drop them instead of converting.
   `DELETE FROM video_info;`,
+  // blobs cached before downloads loaded yt-dlp.conf lack -t mp4, and an
+  // uploaded row's file_id would keep re-sending them; a missing row just
+  // re-downloads
+  `DELETE FROM blobs;`,
 ];
 
 // Exported so the migration tests replay THIS loop against a scratch DB (a

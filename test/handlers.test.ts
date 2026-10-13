@@ -8,12 +8,7 @@ import {
   mock,
 } from 'bun:test';
 import { rm } from 'fs/promises';
-import {
-  getBlob,
-  recordBlob,
-  setBlobDuration,
-  setBlobFileId,
-} from '../src/blob-store';
+import { getBlob, setBlobDuration, setBlobFileId } from '../src/blob-store';
 import { db, resetDb } from '../src/db';
 import payloads from './fixtures/real-payloads.json';
 import {
@@ -42,6 +37,7 @@ import {
 } from './simulate-bot-api';
 import {
   bytesOnDisk,
+  recordMp4Blob,
   resetStub,
   rowCount,
   seedBytes,
@@ -83,7 +79,6 @@ const video = (over: Partial<VideoInfo> = {}): VideoInfo => ({
   extractor: 'test',
   id: 'id',
   filename: 'video.mp4',
-  ext: 'mp4',
   ...over,
 });
 
@@ -797,7 +792,7 @@ describe('confirmation for long videos (>20 min) in groups', () => {
 
   it('gates on the stored duration BEFORE download when metadata lacks one (uploaded blob, bytes gone)', () =>
     withBotApi(async (api) => {
-      recordBlob(video());
+      recordMp4Blob(video());
       setBlobDuration(video(), LONG);
       setBlobFileId(video(), 'uploaded-file-id');
       await serve();
@@ -1017,7 +1012,7 @@ describe('post-download duration check in groups', () => {
   it('asks before downloading when the duration is 0 and a past probe stored >20 min', () =>
     withBotApi(async (api) => {
       await serve(video({ duration: 0 }));
-      recordBlob(video());
+      recordMp4Blob(video());
       setBlobDuration(video(), LONG);
       await promptFor(api);
       expect(await downloads()).toEqual([]);
@@ -1032,10 +1027,11 @@ describe('post-download duration check in groups', () => {
       expect(videos(api)).toEqual([]);
     }));
 
-  it('parks the probed duration without the sponsor chapters it already excludes', () =>
+  it('sends the probed duration on confirm without subtracting the sponsor chapters again', () =>
     withBotApi(async (api) => {
       await serve(
         video({
+          duration: 10 * 60,
           sponsorblock_chapters: [
             {
               start_time: 0,
@@ -1048,13 +1044,9 @@ describe('post-download duration check in groups', () => {
         }),
       );
       await armProbe(LONG);
-      await promptFor(api);
-      const { payload } = db.query('SELECT payload FROM pending').get() as {
-        payload: string;
-      };
-      const parked = JSON.parse(payload).info;
-      expect(parked.duration).toBe(LONG);
-      expect(parked.sponsorblock_chapters).toBeUndefined();
+      const p = await promptFor(api);
+      await click(api, p.promptId, p.yes);
+      expect(videos(api).map((m) => m.duration)).toEqual([LONG]);
     }));
 
   it('downloads and uploads when the duration is unknown and ffprobe finds <=20 min', () =>
@@ -1128,7 +1120,7 @@ describe('confirmed job stale-info refresh', () => {
   it('reuses an existing blob without re-resolving', () =>
     withBotApi(async (api, bot) => {
       const info = video({ id: 'has-blob' });
-      recordBlob(info);
+      recordMp4Blob(info);
       setBlobFileId(info, 'cached-file-id');
       api.fileIds.set('cached-file-id', '/storage/earlier-upload.mp4');
 
@@ -1169,7 +1161,7 @@ describe('confirmed job oversize report', () => {
     withBotApi(async (api, bot) => {
       const parked = video({ format_id: 'parked' });
       const drifted = video({ format_id: 'drifted' });
-      recordBlob(parked);
+      recordMp4Blob(parked);
       await stubScrape([drifted]);
       await seedOversize(drifted);
 
@@ -1357,7 +1349,7 @@ describe('job retry classification', () => {
     const parked = video({ format_id: 'orig' });
     const drifted = video({ format_id: 'drifted' });
     const park = async () => {
-      recordBlob(parked);
+      recordMp4Blob(parked);
       await stubScrape([drifted]);
     };
 

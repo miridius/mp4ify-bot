@@ -10,13 +10,13 @@ import {
 import { INLINE_CACHE_CHAT_ID } from './consts';
 import { db } from './db';
 import {
-  calcDuration,
   classifyFailure,
   downloadVideo,
   firstInfo,
   getInfos,
   isDownloaded,
   isPermanentError,
+  knownDuration,
   probeDuration,
   removeCachedInfo,
   sendInfo,
@@ -261,8 +261,8 @@ const processUrlJob = async (
       await endWithVerdict(log, job, `\n${tooLargeMessage(tooLarge)}`);
       return;
     }
-    const duration = calcDuration(info) || getBlob(info)?.duration;
-    if (isGroupChat && duration && duration > LONG_VIDEO_THRESHOLD_SECS) {
+    const duration = isGroupChat ? knownDuration(info) : undefined;
+    if (duration && duration > LONG_VIDEO_THRESHOLD_SECS) {
       await requestConfirmation(telegram, job, info, duration);
       return;
     }
@@ -276,20 +276,7 @@ const processUrlJob = async (
       if (!actualDuration || actualDuration <= LONG_VIDEO_THRESHOLD_SECS) {
         return false;
       }
-      const infoWithDuration = {
-        ...info,
-        duration: actualDuration,
-        // The probed duration already excludes removed sponsor segments;
-        // calcDuration would subtract them again.
-        sponsorblock_chapters: undefined,
-      };
-      await requestConfirmation(
-        telegram,
-        job,
-        infoWithDuration,
-        actualDuration,
-        true,
-      );
+      await requestConfirmation(telegram, job, info, actualDuration, true);
       return true;
     };
     const sent = await downloadAndSend(
