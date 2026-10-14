@@ -1,4 +1,4 @@
-import { mkdir, readdir } from 'fs/promises';
+import { access, constants, mkdir, readdir } from 'fs/promises';
 import { db, tx } from './db';
 import type { VideoInfo } from './download-video';
 import { unlinkQuiet } from './fs-utils';
@@ -10,7 +10,12 @@ import { keyedLock } from './utils';
 // (which share the /storage volume) keep separate stores (like DB_PATH in db.ts).
 const envDir = Bun.env.BLOB_DIR || '/storage/blobs/';
 const BLOB_DIR = envDir.endsWith('/') ? envDir : `${envDir}/`;
-await mkdir(BLOB_DIR, { recursive: true });
+export const ensureBlobDir = () => mkdir(BLOB_DIR, { recursive: true });
+// rename into the dir needs write and search
+export const assertBlobDirUsable = async () => {
+  await ensureBlobDir();
+  await access(BLOB_DIR, constants.W_OK | constants.X_OK);
+};
 
 // the generic extractor's id is just the URL basename: two hosts' /video.mp4
 // both yield id 'video'
@@ -31,13 +36,6 @@ export const blobKey = (info: VideoInfo): string =>
     ? `${info.extractor}:${info.id}:${info.format_id ?? ''}`
     : `${info.filename}:${info.webpage_url}`;
 
-const extOf = (info: VideoInfo) => {
-  const e =
-    info.ext ||
-    (info.filename.includes('.') ? info.filename.split('.').pop() : '');
-  return e ? `.${e}` : '';
-};
-
 // cut to at most maxBytes of UTF-8 without leaving a split code point: a cut
 // mid-codepoint decodes to a trailing U+FFFD, which we drop; that also keeps
 // the result within maxBytes (the dropped partial bytes don't re-expand).
@@ -53,40 +51,36 @@ const truncateBytes = (s: string, maxBytes: number): string => {
 // filesystem concerns here so blobKey stays a clean DB key:
 //  - percent-escape '/' (the one character hostile to the path), '%' first so a
 //    literal '%' can't forge an escape (a no-op for real identities);
-//  - bound it to ext4's 255-byte NAME_MAX, leaving room for the `.json` sidecar
-//    (blobPath + ".json"). A real name is far under; a pathological one (the
-//    generic extractor's URL-as-id, the filename fallback, or a junk extension)
-//    is truncated and tagged with a short hash of the full key, so two long keys
-//    sharing a prefix still land on distinct files.
+//  - bound it to ext4's 255-byte NAME_MAX. A real name is far under; a
+//    pathological one (the generic extractor's URL-as-id, the filename
+//    fallback, or a junk extension) is truncated and tagged with a short hash
+//    of the full key, so two long keys sharing a prefix still land on
+//    distinct files.
 const NAME_MAX = 255;
 const blobName = (key: string, ext: string): string => {
   const stem = key.replaceAll('%', '%25').replaceAll('/', '%2F');
-  // the extension gets the same escape (a hostile ext with '/' would otherwise
-  // path-traverse out of BLOB_DIR) and a clamp so a pathological one can't
-  // crowd out the whole budget and leave the name unbounded
-  const safeExt = truncateBytes(
-    ext.replaceAll('%', '%25').replaceAll('/', '%2F'),
-    16,
-  );
-  const budget = NAME_MAX - Buffer.byteLength(safeExt) - '.json'.length;
+  const safeExt = truncateBytes(ext, 16);
+  const budget = NAME_MAX - Buffer.byteLength(safeExt);
   if (Buffer.byteLength(stem) <= budget) return stem + safeExt;
   const tag = `~${Bun.hash(stem).toString(36)}`;
   return truncateBytes(stem, budget - tag.length) + tag + safeExt;
 };
 
-export const blobPath = (info: VideoInfo): string =>
-  `${BLOB_DIR}${blobName(blobKey(info), extOf(info))}`;
+export const blobPath = (info: VideoInfo, ext: string): string =>
+  `${BLOB_DIR}${blobName(blobKey(info), ext)}`;
 
-type BlobRow = { path: string; file_id: string | null; duration: number | null };
+export type BlobRow = { path: string; file_id: string | null; duration: number | null };
 const selectBlobStmt = db.query<BlobRow, [string]>(
   'SELECT path, file_id, duration FROM blobs WHERE key = ?',
 );
 // the DO UPDATE refreshes created_at: it is the age the boot sweep reclaims
-// un-uploaded blobs by, and a re-download restarts that clock
+// un-uploaded blobs by, and a re-download restarts that clock. duration
+// resets because SponsorBlock segments accrue over time, so the new file can
+// be shorter.
 const upsertBlobStmt = db.query<null, [string, string, number]>(
   `INSERT INTO blobs (key, path, created_at) VALUES (?, ?, ?)
    ON CONFLICT(key) DO UPDATE
-   SET path = excluded.path, created_at = excluded.created_at`,
+   SET path = excluded.path, created_at = excluded.created_at, duration = NULL`,
 );
 const setFileIdStmt = db.query<null, [string, string]>(
   'UPDATE blobs SET file_id = ? WHERE key = ?',
@@ -106,8 +100,8 @@ export const getBlob = (info: VideoInfo): BlobRow | null =>
   selectBlobStmt.get(blobKey(info));
 
 // record freshly-downloaded bytes (overwrites any stale row for the key)
-export const recordBlob = (info: VideoInfo) =>
-  upsertBlobStmt.run(blobKey(info), blobPath(info), Date.now());
+export const recordBlob = (info: VideoInfo, path: string) =>
+  upsertBlobStmt.run(blobKey(info), path, Date.now());
 
 // cache the telegram file_id after a first upload; the bytes can then be dropped
 export const setBlobFileId = (info: VideoInfo, fileId: string) =>
@@ -172,9 +166,7 @@ export const sweepOrphanBlobs = async () => {
       .filter((r) => r.file_id == null)
       .map((r) => r.path),
   );
-  for (const name of await readdir(BLOB_DIR).catch(() => [] as string[])) {
-    // leaked .json sidecars (a crash beat downloadVideo's finally) are never
-    // in `keep` either, so they sweep too
+  for (const name of await readdir(BLOB_DIR)) {
     const path = `${BLOB_DIR}${name}`;
     if (!keep.has(path)) await unlinkQuiet(path);
   }

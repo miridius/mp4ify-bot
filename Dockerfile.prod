@@ -17,6 +17,9 @@ RUN apt-get update && \
 
 ENV PATH="/opt/yt-dlp:$PATH"
 
+# JS runtime for yt-dlp's YouTube challenges, see Dockerfile.dev
+COPY --from=denoland/deno:bin /deno /usr/local/bin/deno
+
 RUN mkdir /storage && chmod 777 /storage
 
 ENV NODE_ENV=production

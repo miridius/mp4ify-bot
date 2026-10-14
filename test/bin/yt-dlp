@@ -23,21 +23,27 @@ if [ -f "$d/stderr" ]; then
     cat "$d/stderr" >&2
   fi
 fi
+# POSIX leaves pattern removal on $* unspecified (bash applies it per
+# argument, so a pattern spanning two args never matches): strip a joined copy
+args="$*"
+case "$args" in
+  *"--paths home:"*) home=${args#*--paths home:}; home=${home%% *};;
+  *) home='';;
+esac
+# the real binary writes partials under home (its default temp path), renames
+# them into the output on success, and leaves them when killed or failing
+[ -n "$home" ] && mkdir -p "$home" && : > "$home/video.mp4.part"
 # the real binary streams entries as it resolves them, so a kill lands on a
 # run that has already emitted some
 [ -f "$d/stdout" ] && cat "$d/stdout"
 [ -f "$d/signal" ] && kill "-$(cat "$d/signal")" $$
-# simulate producing the downloaded file at the path named in the outfile
-# control, honoring a `--paths home:<dir>` arg the way the real binary does
-# (the output lands under that dir)
-case "$*" in
-  *"--paths home:"*) home=${*#*--paths home:}; home=${home%% *};;
-  *) home='';;
-esac
 if [ -f "$d/outfile" ]; then
   of=$(cat "$d/outfile")
+  # the real binary names the output by -o's template, keeping the format's ext
+  case "$args" in *" -o "*) t=${args#* -o }; t=${t%% *}; of="${t%".%(ext)s"}.${of##*.}";; esac
   [ -n "$home" ] && of="$home/$(basename "$of")"
   mkdir -p "$(dirname "$of")"
+  [ -n "$home" ] && rm -f "$home/video.mp4.part"
   echo "video bytes" > "$of"
   # simulate a metadata sidecar (e.g. --write-info-json) landing next to the
   # video in the staging home, which findProduced must ignore

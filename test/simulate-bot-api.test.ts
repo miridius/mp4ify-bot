@@ -1,3 +1,4 @@
+import { rm } from 'fs/promises';
 import {
   afterAll,
   beforeEach,
@@ -9,9 +10,11 @@ import {
   spyOn,
 } from 'bun:test';
 import {
+  ffmpeg,
   GONE_REPLY_ID,
   MOCK_USER_ID,
   MockBotApi,
+  probeCodecs,
   REAL_ERRORS,
   withBotApi,
 } from './simulate-bot-api';
@@ -164,6 +167,38 @@ describe('MockBotApi', () => {
     const json = await resp.json();
     expect(json.ok).toBe(true);
     expect(json.result.video.file_name).toBe('/tmp/real.mp4');
+  });
+
+  it('records the codecs of an uploaded file when probeUploads is on', async () => {
+    // rotated, like a phone-shot reel: ffprobe reports display-matrix side
+    // data for it, which some output writers print beside the codec name
+    const plain = '/tmp/probe-plain.mp4';
+    const path = '/tmp/probe-upload.mp4';
+    try {
+      ffmpeg(
+        '-f', 'lavfi', '-i', 'testsrc=d=1', '-f', 'lavfi', '-i', 'sine=d=1',
+        '-c:v', 'libx264', '-c:a', 'aac', '-shortest', plain,
+      );
+      ffmpeg('-display_rotation', '90', '-i', plain, '-c', 'copy', path);
+      api.probeUploads = true;
+      const resp = await api.call('sendVideo', {
+        chat_id: api['user'].id,
+        video: Bun.pathToFileURL(path),
+        width: 1,
+        height: 1,
+        duration: 1,
+      });
+      expect((await resp.json()).ok).toBe(true);
+      expect(api.uploadedCodecs).toEqual([['aac', 'h264']]);
+    } finally {
+      await Promise.all([plain, path].map((p) => rm(p, { force: true })));
+    }
+  });
+
+  it('probeCodecs reports a failed probe in place of the codecs', async () => {
+    expect(await probeCodecs('/tmp/no-such-video.mp4')).toEqual([
+      expect.stringMatching(/^ffprobe exit 1: .*No such file/),
+    ]);
   });
 
   it('handle sendVideo returns error if file is empty', async () => {

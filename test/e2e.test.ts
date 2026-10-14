@@ -31,6 +31,7 @@ import {
   urlMessage,
   waitUntil,
 } from './test-utils';
+import { MADE_FOR_KIDS_VIDEO } from './ytdlp-live';
 
 beforeEach(() => jest.clearAllMocks());
 afterAll(() => mock.restore());
@@ -38,7 +39,7 @@ spyMock(console, 'debug');
 spyMock(console, 'table');
 
 // e2e tests:
-// 1. url each from youtube, insta, reddit
+// 1. url each from youtube, insta, reddit (reddit skipped while blocked)
 // 2. use real yt-dlp, but use fixtures for calls to bot-api
 // 3. test message and in-line
 // 4. test video id cache
@@ -70,15 +71,28 @@ const expectSilenceOrRateLimitReport = (api: MockBotApi) => {
   return true;
 };
 
-const testUrls = [
-  'https://www.instagram.com/reel/DKbYQgeoL3F/?igsh=MTh4MnpnYm9hdjJ5OA==',
+// Reddit answers this server's IP with "Account authentication is required"
+// for every post: flip once Reddit downloads work again
+const REDDIT_REACHABLE = false;
+const redditUrls = [
   // alias url
   'https://www.reddit.com/r/nextfuckinglevel/s/iGEii0a7V6',
   // canonical url for same video
   'https://www.reddit.com/r/nextfuckinglevel/comments/1l68isw/mix_of_coolness_agility_technique_power_and_a/?share_id=ejTJZnh_f4BZuzlnfcOUo',
-  // only in full mode - see e2e.sh for the modes and why
-  ...(Bun.env.TEST_E2E_FULL ? ['http://youtube.com/shorts/0COu-qMC18Y'] : []),
 ];
+const testUrls = [
+  'https://www.instagram.com/reel/DKbYQgeoL3F/?igsh=MTh4MnpnYm9hdjJ5OA==',
+  // only in full mode - see e2e.sh for the modes and why
+  ...(Bun.env.TEST_E2E_FULL
+    ? [
+        'http://youtube.com/shorts/0COu-qMC18Y',
+        MADE_FOR_KIDS_VIDEO,
+      ]
+    : []),
+];
+// the made-for-kids video is 2 minutes of 1080p
+const firstDownloadMs = (url: string) =>
+  url === MADE_FOR_KIDS_VIDEO ? 60_000 : 25_000;
 
 const clearDiskCache = async () => {
   resetDb(); // the durable cache lives in DB tables: clear its tables...
@@ -125,39 +139,48 @@ describe.if(!!Bun.env.TEST_E2E)('message handler', async () => {
       expect(api.sentMessages).toMatchInlineSnapshot(`[]`);
     }));
 
-  it.each(testUrls)(
-    'downloads %s',
-    (url) =>
-      withBotApi(async (api) => {
-        const waitForVideo = (ms: number) =>
-          waitUntil(
-            () =>
-              api.sentMessages.length > 1 ||
-              api.sentMessages.some(isFailureReport),
-            ms,
-          );
+  const downloads = (url: string) =>
+    withBotApi(async (api) => {
+      api.probeUploads = true;
+      const waitForVideo = (ms: number) =>
+        waitUntil(
+          () =>
+            api.sentMessages.length > 1 ||
+            api.sentMessages.some(isFailureReport),
+          ms,
+        );
 
-        // initial download
-        clearInMemoryCache();
-        api.sendTextMessageToBot(urlMessage(url));
-        await waitForVideo(25_000);
-        expect(scrub(api.sentMessages)).toMatchSnapshot('download');
+      // initial download
+      clearInMemoryCache();
+      api.sendTextMessageToBot(urlMessage(url));
+      await waitForVideo(firstDownloadMs(url));
+      expect(scrub(api.sentMessages)).toMatchSnapshot('download');
+      // the scrape's metadata can say h264 while the download picks other formats
+      const videos = api.sentMessages.filter((m) => m.video);
+      expect(videos.length).toBeGreaterThan(0);
+      const uploads = videos.filter((m) => m.video!.startsWith('file:'));
+      // every test URL has audio, so a lone h264 stream is a lost audio track
+      expect(api.uploadedCodecs).toEqual(
+        Array(uploads.length).fill(['aac', 'h264']),
+      );
 
-        // in memory cache
-        api.sentMessages.length = 0;
-        api.sendTextMessageToBot(urlMessage(url));
-        await waitForVideo(5_000);
-        expect(scrub(api.sentMessages)).toMatchSnapshot('mem cache');
+      // in memory cache
+      api.sentMessages.length = 0;
+      api.sendTextMessageToBot(urlMessage(url));
+      await waitForVideo(5_000);
+      expect(scrub(api.sentMessages)).toMatchSnapshot('mem cache');
 
-        // disk cache
-        clearInMemoryCache();
-        api.sentMessages.length = 0;
-        api.sendTextMessageToBot(urlMessage(url));
-        await waitForVideo(5_000);
-        expect(scrub(api.sentMessages)).toMatchSnapshot('disk cache');
-      }),
-    40_000,
-  );
+      // disk cache
+      clearInMemoryCache();
+      api.sentMessages.length = 0;
+      api.sendTextMessageToBot(urlMessage(url));
+      await waitForVideo(5_000);
+      expect(scrub(api.sentMessages)).toMatchSnapshot('disk cache');
+    });
+  it.each(testUrls)('downloads %s', downloads, 90_000);
+  for (const url of redditUrls) {
+    (REDDIT_REACHABLE ? it : it.skip)(`downloads ${url}`, () => downloads(url), 90_000);
+  }
 
   it.each([
     // a lone photo

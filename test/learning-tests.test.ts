@@ -10,15 +10,26 @@
  * If a test passes against fixtures but fails against live services,
  * the external API has changed and we need to update fixtures + mocks.
  */
-import { beforeEach, describe, expect, it } from 'bun:test';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'bun:test';
+import { mkdtemp, readdir, rm } from 'fs/promises';
+import { tmpdir } from 'os';
+import { YTDLP_CONFIG_ARGS } from '../src/ytdlp-config';
 import payloads from './fixtures/real-payloads.json';
 import sendChats from './fixtures/real-send-chats.json';
 import durationFixtures from './fixtures/video-info-duration.json';
 import {
+  fetchInfo,
+  MADE_FOR_KIDS_VIDEO,
+  ytdlp,
+  ytdlpWith,
+} from './ytdlp-live';
+import {
+  ffmpeg,
   errResp,
   MOCK_GROUP_CHAT,
   MOCK_USER_ID,
   MockBotApi,
+  probeCodecs,
   REAL_ERRORS,
   runtimeFetch,
 } from './simulate-bot-api';
@@ -384,16 +395,7 @@ describeIntegration('yt-dlp duration reporting (live)', () => {
   it.each(entries)(
     '%s matches fixture from real yt-dlp',
     async (service, fixture) => {
-      const proc = Bun.spawn(
-        ['yt-dlp', fixture.url, '--no-warnings', '--dump-json', '--no-check-certificates'],
-        { stderr: 'pipe', timeout: 60000 },
-      );
-      const stdout = await new Response(proc.stdout).text();
-      const stderr = await new Response(proc.stderr).text();
-      if (!stdout.trim()) {
-        throw new Error(`yt-dlp returned no output for ${service}: ${stderr.trim()}`);
-      }
-      const info = JSON.parse(stdout);
+      const info = await fetchInfo(fixture.url);
       assertDurationInfo(info);
 
       // Verify fixture matches reality
@@ -411,4 +413,67 @@ describeIntegration('yt-dlp duration reporting (live)', () => {
     },
     120000,
   );
+});
+
+describeIntegration('yt-dlp.conf applied to scrape and download (live)', () => {
+  it('YouTube withholds a made-for-kids video from a run with no JS runtime', async () => {
+    await expect(
+      ytdlp(MADE_FOR_KIDS_VIDEO, '--dump-json', '--no-js-runtimes'),
+    ).rejects.toThrow('This video is not available');
+  }, 120000);
+
+  it('a long title overruns NAME_MAX under the conf template but not under a short -o', async () => {
+    const dir = await mkdtemp(`${tmpdir()}/learning-`);
+    try {
+      const src = `${dir}/${'a'.repeat(245)}.webm`;
+      ffmpeg('-f', 'lavfi', '-i', 'testsrc=d=1', '-c:v', 'libvpx-vp9', src);
+      const infoJson = `${dir}/info.json`;
+      // the generic extractor's id is the file's basename too: shorten it to
+      // a real id's length, so only the title is long
+      const info = JSON.parse(await ytdlp(`file://${src}`, '--enable-file-urls', '--dump-json'));
+      await Bun.write(infoJson, JSON.stringify({ ...info, id: 'dQw4w9WgXcQ' }));
+      const download = (home: string, ...extra: string[]) =>
+        ytdlp('', '--enable-file-urls', '--paths', `home:${home}`, ...extra, '--load-info-json', infoJson);
+      await expect(download(`${dir}/conf`)).rejects.toThrow('File name too long');
+      await download(`${dir}/short`, '-o', 'video.%(ext)s');
+      expect(await readdir(`${dir}/short`)).toEqual(['video.mp4']);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 120000);
+
+  describe('with one shared scrape', () => {
+    let dir: string;
+    let infoJson: string;
+    // YouTube rate-limits after a few hits
+    beforeAll(async () => {
+      dir = await mkdtemp(`${tmpdir()}/learning-`);
+      infoJson = `${dir}/info.json`;
+      await Bun.write(infoJson, await ytdlp(MADE_FOR_KIDS_VIDEO, '--dump-json'));
+    }, 120000);
+    afterAll(() => rm(dir, { recursive: true, force: true }));
+
+    it('a --paths home dir hides the repo yt-dlp.conf unless it is passed explicitly', async () => {
+      const filename = (config: readonly string[]) =>
+        ytdlpWith(config, '', '--paths', `home:${dir}`, '--print', 'filename', '--load-info-json', infoJson);
+      const [plain, configured] = await Promise.all([
+        filename([]),
+        filename(YTDLP_CONFIG_ARGS),
+      ]);
+      const confOutputDir = `${dir}/youtube/`; // yt-dlp.conf's --output %(extractor)s/ prefix
+      expect(plain).not.toContain(confOutputDir);
+      expect(configured).toContain(confOutputDir);
+    }, 120000);
+
+    it('downloads the scraped made-for-kids video as h264/aac', async () => {
+      const home = `${dir}/home`;
+      const out = await ytdlp('', '--paths', `home:${home}`, '-o', 'video.%(ext)s', '--load-info-json', infoJson);
+      // with the conf setting no temp path, partials are written in the staging home
+      const destinations = [...out.matchAll(/^\[download\] Destination: (.+)$/gm)].map((m) => m[1]);
+      expect(destinations.length).toBeGreaterThan(0);
+      for (const d of destinations) expect(d).toStartWith(`${home}/`);
+      expect(await readdir(home)).toEqual(['video.mp4']);
+      expect(await probeCodecs(`${home}/video.mp4`)).toEqual(['aac', 'h264']);
+    }, 120000);
+  });
 });

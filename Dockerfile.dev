@@ -17,6 +17,11 @@ RUN apt-get update && \
 
 ENV PATH="/opt/yt-dlp:$PATH"
 
+# JS runtime for yt-dlp's YouTube challenges (see learning-tests' made-for-kids
+# case): the image's bun isn't supported, and deno is the only runtime yt-dlp
+# enables by default
+COPY --from=denoland/deno:bin /deno /usr/local/bin/deno
+
 # Test stubs shadow the real binaries; they delegate unless /tmp/stub exists
 ENV PATH="/app/test/bin:$PATH"
 

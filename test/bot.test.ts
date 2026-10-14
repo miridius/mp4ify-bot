@@ -10,7 +10,7 @@ import {
 } from 'bun:test';
 // import * as telegraf from 'telegraf';
 // import * as telegrafFilters from 'telegraf/filters';
-import { mkdir, rm, stat } from 'fs/promises';
+import { chmod, mkdir, rm, stat } from 'fs/promises';
 import { Telegraf } from 'telegraf';
 import type { Message, Update } from 'telegraf/types';
 import { start, sweepLegacyStorage } from '../src/bot';
@@ -357,8 +357,7 @@ describe('start', async () => {
     // our own staging orphan (a crash between yt-dlp's move and our rename),
     // a legacy cache dir, and ANOTHER bot's staging dir (may hold its
     // in-flight download, so it must survive our sweep)
-    await mkdir('/storage/staging/generic', { recursive: true });
-    await Bun.write('/storage/staging/generic/orphaned-final.mp4', 'x');
+    await Bun.write(`/storage/staging/${crypto.randomUUID()}/video.mp4`, 'x');
     await mkdir('/storage/_video-info', { recursive: true });
     await mkdir('/storage/staging-other', { recursive: true });
     await Bun.write('/storage/staging-other/in-flight.mp4', 'x');
@@ -411,6 +410,49 @@ describe('start', async () => {
       orphanSpy.mockRestore();
       sweepSpy.mockRestore();
       consoleError.mockRestore();
+    }
+  });
+
+  // the next three replace or chmod the blob dir, so they run only on the test
+  // container's default one (the dev container sets BLOB_DIR)
+  it.if(!Bun.env.BLOB_DIR)('creates a missing blob dir at boot, before the orphan sweep reads it', async () => {
+    await rm('/storage/blobs', { recursive: true, force: true });
+    const consoleError = spyMock(console, 'error');
+    try {
+      await start(botToken);
+
+      expect((await stat('/storage/blobs')).isDirectory()).toBe(true);
+      expect(consoleError).not.toHaveBeenCalledWith(
+        'sweepOrphanBlobs failed:',
+        expect.anything(),
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it.if(!Bun.env.BLOB_DIR)('fails the boot when the blob dir cannot be created', async () => {
+    await rm('/storage/blobs', { recursive: true, force: true });
+    await Bun.write('/storage/blobs', 'a file in the way');
+    try {
+      await expect(start(botToken)).rejects.toMatchObject({ code: 'EEXIST' });
+      expect(startJobQueue).not.toHaveBeenCalled();
+    } finally {
+      await rm('/storage/blobs', { force: true });
+      await mkdir('/storage/blobs', { recursive: true });
+    }
+  });
+
+  // root ignores the mode bits, so only a non-root run can see EACCES
+  it.if(!Bun.env.BLOB_DIR && process.getuid?.() !== 0)('fails the boot when the blob dir is not writable', async () => {
+    await mkdir('/storage/blobs', { recursive: true });
+    const { mode } = await stat('/storage/blobs');
+    await chmod('/storage/blobs', 0o555);
+    try {
+      await expect(start(botToken)).rejects.toMatchObject({ code: 'EACCES' });
+      expect(startJobQueue).not.toHaveBeenCalled();
+    } finally {
+      await chmod('/storage/blobs', mode);
     }
   });
 

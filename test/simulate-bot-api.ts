@@ -58,6 +58,7 @@ export class MockBotApi {
     chat_id: number;
     text?: string;
     video?: string;
+    duration?: number;
     edit_date?: number;
     reply_markup?: any;
   }[] = [];
@@ -427,6 +428,8 @@ export class MockBotApi {
   }
 
   fileIds = new Map<string, string>();
+  probeUploads = false;
+  uploadedCodecs: string[][] = [];
   private async sendVideo(data: {
     chat_id: number;
     caption?: string;
@@ -467,6 +470,7 @@ export class MockBotApi {
       // snapshots) stays stable when yt-dlp's format selection drifts
       file_id = Bun.hash(video.replaceAll(FORMAT_ID_RE, '$1$2')).toString(36);
       this.fileIds.set(file_id, file_name);
+      if (this.probeUploads) this.uploadedCodecs.push(await probeCodecs(file_name));
     }
     const message = {
       video: {
@@ -486,6 +490,30 @@ export class MockBotApi {
     return okResp(message);
   }
 }
+
+export const probeCodecs = async (path: string) => {
+  const probe = Bun.spawn(
+    [
+      'ffprobe', '-v', 'error', '-show_entries', 'stream=codec_name',
+      '-of', 'default=nw=1:nk=1', path,
+    ],
+    { stderr: 'pipe', timeout: 30_000 },
+  );
+  const [stdout, stderr] = await Promise.all([
+    new Response(probe.stdout).text(),
+    new Response(probe.stderr).text(),
+  ]);
+  const code = await probe.exited;
+  // stderr in place of the codecs, so a codec assertion's diff shows why
+  if (code !== 0) return [`ffprobe exit ${probe.signalCode ?? code}: ${stderr.trim()}`];
+  return stdout.trim().split('\n').sort();
+};
+
+export const ffmpeg = (...args: string[]) => {
+  const run = Bun.spawnSync(['ffmpeg', '-v', 'error', '-y', ...args]);
+  const stderr = run.stderr.toString();
+  if (run.exitCode !== 0 || stderr) throw new Error(`ffmpeg exit ${run.exitCode}: ${stderr}`);
+};
 
 const mockBotApis = new Set<MockBotApi>();
 

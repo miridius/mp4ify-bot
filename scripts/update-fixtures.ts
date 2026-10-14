@@ -4,6 +4,7 @@
  *
  * Run via: docker compose run --rm --no-deps test bun scripts/update-fixtures.ts
  */
+import { fetchInfo } from '../test/ytdlp-live';
 
 const fixturePath = 'test/fixtures/video-info-duration.json';
 const fixtures = await Bun.file(fixturePath).json();
@@ -18,24 +19,11 @@ for (const [service, entry] of Object.entries<any>(fixtures.services)) {
   }
 
   console.log(`Fetching ${service}: ${entry.url}`);
-  const proc = Bun.spawn(
-    ['yt-dlp', entry.url, '--dump-json', '--no-warnings', '--no-check-certificates'],
-    { stderr: 'pipe', timeout: 60000 },
-  );
-  const stdout = await new Response(proc.stdout).text();
-  const stderr = await new Response(proc.stderr).text();
-  const exitCode = await proc.exited;
-
-  if (exitCode !== 0 || !stdout.trim()) {
-    console.error(`  FAILED: ${stderr.trim() || 'no output'}`);
-    continue;
-  }
-
   let info;
   try {
-    info = JSON.parse(stdout);
+    info = await fetchInfo(entry.url);
   } catch (e: any) {
-    console.error(`  FAILED to parse JSON: ${e.message}`);
+    console.error(`  FAILED: ${e.message}`);
     continue;
   }
   let serviceChanged = false;

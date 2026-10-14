@@ -119,13 +119,17 @@ export const seedHandledUrl = (
     )
     .run(chatId, messageId, url, createdAt);
 
+export const mp4BlobPath = (info: VideoInfo) => blobPath(info, '.mp4');
+export const recordMp4Blob = (info: VideoInfo) =>
+  recordBlob(info, mp4BlobPath(info));
 export const seedBytes = async (info: VideoInfo, bytes = 'video bytes') => {
-  await Bun.write(blobPath(info), bytes);
-  recordBlob(info);
+  await Bun.write(mp4BlobPath(info), bytes);
+  recordMp4Blob(info);
 };
 export const seedOversize = async (info: VideoInfo) => {
-  await Bun.write(blobPath(info), '');
-  await truncate(blobPath(info), MAX_FILE_SIZE_BYTES + 1024 * 1024);
-  recordBlob(info);
+  const path = mp4BlobPath(info);
+  await Bun.write(path, '');
+  await truncate(path, MAX_FILE_SIZE_BYTES + 1024 * 1024);
+  recordMp4Blob(info);
 };
-export const bytesOnDisk = (info: VideoInfo) => Bun.file(blobPath(info)).exists();
+export const bytesOnDisk = (info: VideoInfo) => Bun.file(mp4BlobPath(info)).exists();

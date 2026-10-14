@@ -15,14 +15,16 @@ jobs:
       - run: bunx oxlint --deny-warnings
       # same dash gate as the local hook, for pushes that bypassed it
       - run: ./scripts/check-dashes.sh
-      # db.ts opens /storage/mp4ify.db and blob-store.ts creates /storage/blobs
-      # at import time, so /storage must exist and be writable
+      # db.ts opens /storage/mp4ify.db at import time and the tests create
+      # /storage/blobs, so /storage must exist and be writable
       - run: sudo mkdir -p -m 777 /storage
+      # the MockBotApi codec-probe tests run the real ffmpeg/ffprobe
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
       # the tests spawn the stub yt-dlp/ffprobe from test/bin (in the dev
-      # image this is baked into PATH by Dockerfile.dev). The stubs' no-control
-      # fallback (exec the real binary) has no target on this runner, so the
-      # one unstubbed spawn fails as exec-127 instead of a real yt-dlp error;
-      # the container suite is the authoritative environment
+      # image this is baked into PATH by Dockerfile.dev). The yt-dlp stub's
+      # no-control fallback (exec the real binary) has no target on this
+      # runner, so the one unstubbed spawn fails as exec-127 instead of a real
+      # yt-dlp error; the container suite is the authoritative environment
       - run: echo "$GITHUB_WORKSPACE/test/bin" >> "$GITHUB_PATH"
       - run: bun test
         env:

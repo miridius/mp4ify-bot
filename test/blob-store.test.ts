@@ -13,7 +13,6 @@ import {
   blobKey,
   blobPath,
   getBlob,
-  recordBlob,
   releaseBlob,
   setBlobDuration,
   setBlobFileId,
@@ -21,7 +20,13 @@ import {
   withBlobLock,
 } from '../src/blob-store';
 import { db, resetDb } from '../src/db';
-import { bytesOnDisk, seedBytes, spyMock } from './test-utils';
+import {
+  bytesOnDisk,
+  mp4BlobPath,
+  recordMp4Blob,
+  seedBytes,
+  spyMock,
+} from './test-utils';
 
 const info = (overrides: Record<string, unknown> = {}) =>
   ({
@@ -30,7 +35,6 @@ const info = (overrides: Record<string, unknown> = {}) =>
     extractor: 'yt',
     id: 'abc',
     format_id: '137',
-    ext: 'mp4',
     ...overrides,
   }) as any;
 
@@ -57,7 +61,7 @@ describe('blobKey / blobPath', () => {
     } as any;
     expect(blobKey(i)).toBe('/storage/x/foo.mp4:https://a');
     // the path escapes the key's '/' so it can't act as a directory separator
-    expect(blobPath(i)).toBe(
+    expect(blobPath(i, '.mp4')).toBe(
       '/storage/blobs/%2Fstorage%2Fx%2Ffoo.mp4:https:%2F%2Fa.mp4',
     );
   });
@@ -90,43 +94,32 @@ describe('blobKey / blobPath', () => {
     expect(blobKey(a as any)).toBe(blobKey({ ...a } as any));
   });
 
-  it('escapes a hostile extension so it cannot traverse out of the blob dir', () => {
-    // a '/' in ext would otherwise become a path separator (the sidecar write
-    // auto-creates parent dirs, planting files outside the store)
-    const i = info({ ext: 'mp4/../../tmp/x' });
-    expect(blobPath(i)).not.toContain('/../');
-    expect(blobPath(i).split('/').length).toBe(
-      blobPath(info()).split('/').length,
-    );
-  });
-
   it('caps an over-long identity to a bounded, collision-free filename', () => {
     // the differing char is past the truncation point, so only the appended
     // hash tag distinguishes the two files
     const longId = (suffix: string) => info({ id: 'x'.repeat(300) + suffix });
-    const pathA = blobPath(longId('A'));
+    const pathA = blobPath(longId('A'), '.mp4');
     const name = pathA.slice('/storage/blobs/'.length);
-    // the `.json` sidecar is the longest sibling we write; it must fit NAME_MAX
-    expect(Buffer.byteLength(`${name}.json`)).toBeLessThanOrEqual(255);
+    expect(Buffer.byteLength(name)).toBeLessThanOrEqual(255);
     expect(name.endsWith('.mp4')).toBe(true);
-    expect(blobPath(longId('A'))).toBe(pathA);
-    expect(blobPath(longId('B'))).not.toBe(pathA);
+    expect(blobPath(longId('A'), '.mp4')).toBe(pathA);
+    expect(blobPath(longId('B'), '.mp4')).not.toBe(pathA);
   });
 
   it('clamps a pathological extension so the filename stays bounded', () => {
-    const name = blobPath(info({ ext: 'x'.repeat(300) })).slice(
+    const name = blobPath(info(), `.${'x'.repeat(300)}`).slice(
       '/storage/blobs/'.length,
     );
-    expect(Buffer.byteLength(`${name}.json`)).toBeLessThanOrEqual(255);
+    expect(Buffer.byteLength(name)).toBeLessThanOrEqual(255);
   });
 });
 
 describe('recordBlob / getBlob / setBlobFileId', () => {
   it('records, reads, and caches a file_id and duration', () => {
     expect(getBlob(info())).toBeNull();
-    recordBlob(info());
+    recordMp4Blob(info());
     expect(getBlob(info())).toEqual({
-      path: blobPath(info()),
+      path: mp4BlobPath(info()),
       file_id: null,
       duration: null,
     });
@@ -134,6 +127,13 @@ describe('recordBlob / getBlob / setBlobFileId', () => {
     expect(getBlob(info())?.file_id).toBe('FILEID');
     setBlobDuration(info(), 1234);
     expect(getBlob(info())?.duration).toBe(1234);
+  });
+
+  it('re-recording fresh bytes drops the old bytes\' duration', () => {
+    recordMp4Blob(info());
+    setBlobDuration(info(), 1234);
+    recordMp4Blob(info());
+    expect(getBlob(info())?.duration).toBeNull();
   });
 });
 
@@ -167,7 +167,7 @@ describe('releaseBlob', () => {
   });
 
   it('keeps an uploaded blob (file_id set) as the file_id cache', async () => {
-    recordBlob(info());
+    recordMp4Blob(info());
     setBlobFileId(info(), 'FILEID');
 
     await releaseBlob(info());
@@ -180,10 +180,10 @@ describe('releaseBlob', () => {
   });
 
   it('logs but does not throw when unlinking the bytes fails', async () => {
-    recordBlob(info());
+    recordMp4Blob(info());
     // a real unlink failure (no owned-code spy): the blob path is a directory,
     // so unlink() returns EISDIR instead of removing it
-    await mkdir(blobPath(info()));
+    await mkdir(mp4BlobPath(info()));
     const consoleError = spyMock(console, 'error');
 
     await releaseBlob(info()); // must not reject
@@ -244,8 +244,6 @@ describe('sweepOrphanBlobs', () => {
   it('removes bytes no live row needs; keeps a pending download', async () => {
     // an orphan (crash between rename and recordBlob): file, no row
     await Bun.write('/storage/blobs/orphan.mp4', 'x');
-    // a leaked sidecar (crash beat the download finally)
-    await Bun.write('/storage/blobs/leaked.mp4.json', '{}');
     // redundant bytes (crash between setBlobFileId and the unlink)
     await seedBytes(info({ id: 'uploaded' }), 'x');
     setBlobFileId(info({ id: 'uploaded' }), 'fid');
@@ -260,7 +258,6 @@ describe('sweepOrphanBlobs', () => {
     await sweepOrphanBlobs();
 
     expect(await Bun.file('/storage/blobs/orphan.mp4').exists()).toBe(false);
-    expect(await Bun.file('/storage/blobs/leaked.mp4.json').exists()).toBe(false);
     expect(
       await bytesOnDisk(info({ id: 'uploaded' })),
     ).toBe(false);
