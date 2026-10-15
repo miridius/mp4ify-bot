@@ -2,6 +2,7 @@
 // test/bin/ contains stub yt-dlp/ffprobe executables driven by control files
 // in /tmp/stub (Bun.spawn snapshots the env at startup, so env vars can't
 // reach the child). Only the Telegram client (an unowned boundary) is mocked.
+import { tmpdir } from 'os';
 import { dirname } from 'path';
 import {
   afterAll,
@@ -28,7 +29,7 @@ import {
   setBlobDuration,
   setBlobFileId,
 } from '../src/blob-store';
-import { STAGING_DIR } from '../src/consts';
+import { COOKIES_FILE, STAGING_DIR } from '../src/consts';
 import { YTDLP_CONFIG_ARGS } from '../src/ytdlp-config';
 import { db, resetDb } from '../src/db';
 import { githubMock } from './simulate-bot-api';
@@ -764,7 +765,7 @@ describe('getInfos', () => {
   });
 
   it('drops the proc from liveYtdlp even when the scrape throws', async () => {
-    // the execYtdlp finally must clear the Set on every exit path; a leaked
+    // the spawnYtdlp finally must clear the Set on every exit path; a leaked
     // dead proc would grow the Set unbounded and let abortDownloads kill a
     // stale handle. A nonzero exit throws AFTER the finally ran.
     await stub({
@@ -786,6 +787,72 @@ describe('getInfos', () => {
     removeCachedInfo(info!);
 
     expect(infoCount()).toBe(0); // both rows share the webpage_url
+  });
+});
+
+// replaces and deletes the cookies file both bots share, so it runs only in
+// the test container (the dev container sets STAGING_DIR)
+describe.if(!Bun.env.STAGING_DIR)('yt-dlp cookies', () => {
+  const url = 'https://test.invalid/cookies';
+  const jar = '# Netscape HTTP Cookie File\n.reddit.com\tTRUE\t/\tTRUE\t0\treddit_session\tabc\n';
+  const cookiesArg = async () => (await stubArgs()).match(/--cookies (\S+)/)?.[1];
+
+  beforeEach(async () => {
+    await stubScrape([{ ...VideoInfo, webpage_url: url }]);
+    await Bun.write(COOKIES_FILE, jar);
+  });
+  afterEach(() => rm(COOKIES_FILE, { force: true }));
+
+  it('runs without --cookies, silently, when there is no cookies file', async () => {
+    await rm(COOKIES_FILE);
+    const consoleError = spyOn(console, 'error');
+    try {
+      await getInfos(log as any, url);
+      expect(await stubArgs()).not.toContain('--cookies');
+      expect(consoleError).not.toHaveBeenCalled();
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it('hands yt-dlp a private copy, so its save on exit leaves the master untouched', async () => {
+    await getInfos(log as any, url);
+    const copy = (await cookiesArg())!;
+    expect(copy).toStartWith(tmpdir());
+    expect(await Bun.file(`${STUB_DIR}/cookies`).text()).toBe(jar);
+    expect(await Bun.file(COOKIES_FILE).text()).toBe(jar);
+    expect(await Bun.file(copy).exists()).toBe(false);
+  });
+
+  it('removes the copy when yt-dlp fails', async () => {
+    await stub({ stdout: '', exit: '1' });
+    await expect(getInfos(log as any, url)).rejects.toThrow();
+    expect(await Bun.file((await cookiesArg())!).exists()).toBe(false);
+  });
+
+  it('does not spawn when shutdown begins during the cookie copy', async () => {
+    const scrape = getInfos(log as any, url).catch((e) => e);
+    abortDownloads();
+    try {
+      expect((await scrape).name).toBe('ShutdownAbort');
+      expect(await stubArgs()).toBe('');
+      expect(await readdir(tmpdir())).not.toContainEqual(expect.stringMatching(/^cookies-/));
+    } finally {
+      resetShutdown();
+    }
+  });
+
+  it('runs without cookies, logging why, when the cookies file is unreadable', async () => {
+    await chmod(COOKIES_FILE, 0);
+    const consoleError = spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await getInfos(log as any, url);
+      expect(await stubArgs()).not.toContain('--cookies');
+      expect(consoleError.mock.calls[0]![0]).toStartWith('Running yt-dlp without cookies');
+      expect(await readdir(tmpdir())).not.toContainEqual(expect.stringMatching(/^cookies-/));
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 });
 

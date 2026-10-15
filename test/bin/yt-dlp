@@ -30,6 +30,10 @@ case "$args" in
   *"--paths home:"*) home=${args#*--paths home:}; home=${home%% *};;
   *) home='';;
 esac
+# the real binary saves its whole jar back to the --cookies file on exit
+case "$args" in
+  *"--cookies "*) jar=${args#*--cookies }; jar=${jar%% *}; cp "$jar" /tmp/stub/cookies; echo '# saved' >> "$jar";;
+esac
 # the real binary writes partials under home (its default temp path), renames
 # them into the output on success, and leaves them when killed or failing
 [ -n "$home" ] && mkdir -p "$home" && : > "$home/video.mp4.part"

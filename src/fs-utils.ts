@@ -1,6 +1,6 @@
 import { unlink } from 'fs/promises';
 
-const isNotFound = (e: unknown) =>
+export const isNotFound = (e: unknown) =>
   e instanceof Error && 'code' in e && e.code === 'ENOENT';
 
 // best-effort cleanup: unlink a file, tolerating "already gone" (ENOENT) but

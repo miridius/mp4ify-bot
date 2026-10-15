@@ -11,10 +11,11 @@ import {
 // import * as telegraf from 'telegraf';
 // import * as telegrafFilters from 'telegraf/filters';
 import { chmod, mkdir, rm, stat } from 'fs/promises';
+import { basename } from 'path';
 import { Telegraf } from 'telegraf';
 import type { Message, Update } from 'telegraf/types';
 import { start, sweepLegacyStorage } from '../src/bot';
-import { apiRoot } from '../src/consts';
+import { apiRoot, COOKIES_FILE } from '../src/consts';
 import * as downloadVideo from '../src/download-video';
 import { YTDLP_UPDATE_INTERVAL_MS } from '../src/download-video';
 import * as handlers from '../src/handlers';
@@ -474,10 +475,12 @@ describe('start', async () => {
     await Bun.write(`${root}/mp4ify.db-wal`, 'x');
     await Bun.write(`${root}/blobs/stale.mp4`, 'x');
     await Bun.write(`${root}/mp4ify-prod.db`, 'x'); // a per-bot DB must survive
+    await Bun.write(`${root}/${basename(COOKIES_FILE)}`, 'x');
     try {
       // on the bare defaults (DB_PATH unset) nothing is touched
       await sweepLegacyStorage(root, staging);
       expect(await stat(`${root}/mp4ify.db`).catch(() => null)).not.toBeNull();
+      expect(await stat(`${root}/${basename(COOKIES_FILE)}`).catch(() => null)).not.toBeNull();
 
       // per-bot DB but DEFAULT blob dir: the db goes, the (live!) blobs stay
       Bun.env.DB_PATH = '/storage/mp4ify-test.db';
