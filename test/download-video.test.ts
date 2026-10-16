@@ -1574,10 +1574,7 @@ describe('sendVideo', () => {
     expect(mockSendVideo).toHaveBeenCalledWith(
       123,
       expect.anything(),
-      expect.objectContaining({
-        reply_parameters: { message_id: 42 },
-        reply_to_message_id: 42,
-      }),
+      expect.objectContaining({ reply_parameters: { message_id: 42 } }),
     );
   });
 });

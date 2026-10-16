@@ -16,11 +16,6 @@ import sendChats from './fixtures/real-send-chats.json';
 export const REAL_ERRORS = errorReplies.replies;
 type CapturedReply = { method: string; status: number; body: object };
 
-// TODO: what if we use real bot token and let it send real messages, and we
-// just record them & their responses? (could even re-use them?)
-// we should probably consolidate final state of edited messages
-// The only part we intercept is where it asks for updates.
-
 // matches the `.{format_id}.` filename segment yt-dlp produces (plain or
 // URL-encoded `]` before it). Shared by the e2e snapshot scrubber and the
 // mock's file_id hashing so the two can't drift apart.

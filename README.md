@@ -4,9 +4,9 @@ A telegram bot that turns links into videos, so that you don't have to deal with
 
 ## Usage
 
-Send urls to [@mp4ify_bot](https://t.me/mp4ify_bot), or add it to a group. The bot will try to download the video, converting to mp4 if needed, and send it back to you if successful. Videos must be less than 50MB due to Telegram's bot API limits.
+Send urls to [@mp4ify_bot](https://t.me/mp4ify_bot), or add it to a group. The bot will try to download the video, converting to mp4 if needed, and send it back to you if successful. Videos must be at most 2000 MB due to Telegram's bot API limits.
 
-Start your message with `/verbose` to get detailed logs.
+In a private chat with the bot, send `/verbose <url>` to get detailed logs.
 
 > **Note:** x.com links are intentionally not supported by default, because I do not want to have anything to do with a site that promotes obvious evils such as fascism. If you want to use the bot for x.com, you can self-host it and remove the `--use-extractors` line from yt-dlp.conf. If you think there are other sites that I should block as well, please let me know (or just make a PR).
 
@@ -21,22 +21,22 @@ Start your message with `/verbose` to get detailed logs.
 
    _Note that you do **not** need to install bun or any of the runtime deps locally! Just use the dev container instead._
 
-   _To commit you do need bun on the host, and the gated-workflow plugin (see `.claude/settings.json`): `bun install` on the host writes the git hooks, and fails outright if the plugin's commit gate is not installed. An install run inside a container leaves the host's hooks alone, since the images have no git and the script stops there._
+   _To commit you do need bun and [gitleaks](https://github.com/gitleaks/gitleaks) on the host, and the gated-workflow plugin (see `.claude/settings.json`): `bun install` on the host writes the git hooks (pre-commit runs `./check.sh`), and fails outright if the plugin's commit gate is not installed. An install run inside a container leaves the host's hooks alone, since the images have no git and the script stops there._
 
 1. Clone the repository:
 
 ```bash
-git clone https://github.com/miridius/video-bot.git
-cd video-bot
+git clone https://github.com/miridius/mp4ify-bot.git
+cd mp4ify-bot
 ```
 
-2. Create and fill in `.env.telegram` and/or `.env.prod` (see `.env.telegram.example`):
+2. Create and fill in `.env.telegram` with your api_id and api_hash (see `.env.telegram.example`):
 
 ```bash
 cp .env.telegram.example .env.telegram
 ```
 
-3. Create and fill in `.env.dev` and/or `.env.prod` (depending which bots you want to run) with your bot token(s) (see `.env.example`):
+3. Create and fill in `.env.dev` (dev bot, and the tests that every commit, push and `./prod.sh` run) and, for the prod bot, `.env.prod` with your bot token(s) (see `.env.example`):
 
 ```bash
 cp .env.example .env.dev
@@ -55,7 +55,7 @@ docker compose up dev bot-api -d
 docker compose up prod bot-api -d
 
 # both bots at the same time
-docker compose up -d
+docker compose up dev prod bot-api -d
 ```
 
 5. To run other bun commands like `bun add foo` or `bun repl`, you can start a shell in the dev container:

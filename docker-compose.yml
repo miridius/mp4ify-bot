@@ -10,7 +10,7 @@ networks:
 
 services:
   # See https://core.telegram.org/bots/api#using-a-local-bot-api-server
-  # Using a local bot API server changes the video size limit from 50MB to 2GB!
+  # Using a local bot API server changes the video size limit from 50 MB to 2000 MB!
   bot-api:
     image: aiogram/telegram-bot-api:latest
     container_name: telegram-bot-api-server
@@ -67,7 +67,7 @@ services:
     depends_on:
       - bot-api
 
-  # Run the prod bot using a pre-built image (TODO)
+  # Run the prod bot from an image with the source baked in at build time
   prod:
     container_name: mp4ify
     image: mp4ify
@@ -86,7 +86,6 @@ services:
       - BLOB_DIR=/storage/blobs-prod
       - STAGING_DIR=/storage/staging-prod
     volumes:
-      - ./.prod-video-cache:/app/.video-cache
       - storage:/storage:rw
     tmpfs:
       - /tmp
@@ -98,7 +97,7 @@ services:
     # duplicate) and stays alive only to drain in-flight SENDS: the bot-api
     # server completes a started send even if the bot dies (verified live), so
     # dying mid-send re-sends on the next boot. The grace must outlast a
-    # worst-case push of a 2GB file to Telegram, not any download.
+    # worst-case push of a 2000 MB file to Telegram, not any download.
     stop_grace_period: 5m
     depends_on:
       - bot-api
