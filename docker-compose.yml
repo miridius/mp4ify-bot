@@ -2,6 +2,12 @@ volumes:
   bot-api-data:
   storage:
 
+networks:
+  default:
+    # lets yt-dlp egress over v6 where the remote has it (see gai.conf), rather
+    # than via the shared CGNAT v4 address whose reputation gets us throttled
+    enable_ipv6: true
+
 services:
   # See https://core.telegram.org/bots/api#using-a-local-bot-api-server
   # Using a local bot API server changes the video size limit from 50MB to 2GB!
@@ -15,7 +21,9 @@ services:
       - TELEGRAM_STAT=1
     ports:
       # - xxxx:8081 # api port, don't need to expose since we connect locally
-      - 1337:8082 # http statistics endpoint
+      # http statistics endpoint, v4 only: it listens on 0.0.0.0 and the image
+      # has no setting to change that, so a [::] publish would reset connections
+      - 0.0.0.0:1337:8082
     volumes:
       - bot-api-data:/var/lib/telegram-bot-api
       - storage:/storage

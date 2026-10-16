@@ -434,6 +434,18 @@ describeIntegration('yt-dlp cookies (live)', () => {
   }, 120000);
 });
 
+describeIntegration('container egress (live)', () => {
+  it('reaches a dual-stack host from a v6 address', () => {
+    const { exitCode, stdout, stderr } = Bun.spawnSync([
+      'python3',
+      '-c',
+      'import urllib.request as u; print(u.urlopen("https://api64.ipify.org", timeout=20).read().decode())',
+    ]);
+    expect({ exitCode, stderr: stderr.toString() }).toEqual({ exitCode: 0, stderr: '' });
+    expect(stdout.toString().trim()).toContain(':');
+  }, 60000);
+});
+
 describeIntegration('yt-dlp.conf applied to scrape and download (live)', () => {
   it('YouTube withholds a made-for-kids video from a run with no JS runtime', async () => {
     await expect(
