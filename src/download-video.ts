@@ -922,11 +922,7 @@ export const sendVideo = async (
         supports_streaming: true,
         disable_notification: true,
         ...(replyToMessageId != undefined
-          ? {
-              reply_parameters: { message_id: replyToMessageId },
-              // @ts-ignore - workaround for a bug in the telegram bot API
-              reply_to_message_id: replyToMessageId,
-            }
+          ? { reply_parameters: { message_id: replyToMessageId } }
           : {}),
       },
     );

@@ -32,7 +32,6 @@ exports[`message handler downloads https://www.instagram.com/reel/DKbYQgeoL3F/?i
     "reply_parameters": {
       "message_id": 0,
     },
-    "reply_to_message_id": 0,
     "supports_streaming": true,
     "video": "file:///storage/blobs/Instagram:DKbYQgeoL3F:<formats>.mp4",
   },
@@ -66,7 +65,6 @@ exports[`message handler downloads https://www.instagram.com/reel/DKbYQgeoL3F/?i
     "reply_parameters": {
       "message_id": 1,
     },
-    "reply_to_message_id": 1,
     "supports_streaming": true,
     "video": "<file_id>",
   },
@@ -100,7 +98,6 @@ exports[`message handler downloads https://www.instagram.com/reel/DKbYQgeoL3F/?i
     "reply_parameters": {
       "message_id": 2,
     },
-    "reply_to_message_id": 2,
     "supports_streaming": true,
     "video": "<file_id>",
   },
@@ -145,7 +142,6 @@ exports[`message handler downloads https://www.reddit.com/r/nextfuckinglevel/s/i
     "reply_parameters": {
       "message_id": 0,
     },
-    "reply_to_message_id": 0,
     "supports_streaming": true,
     "video": "file:///storage/blobs/Reddit:auhgg4yoeo5f1:<formats>.mp4",
     "width": 480,
@@ -186,7 +182,6 @@ exports[`message handler downloads https://www.reddit.com/r/nextfuckinglevel/s/i
     "reply_parameters": {
       "message_id": 1,
     },
-    "reply_to_message_id": 1,
     "supports_streaming": true,
     "video": "<file_id>",
     "width": 480,
@@ -227,7 +222,6 @@ exports[`message handler downloads https://www.reddit.com/r/nextfuckinglevel/s/i
     "reply_parameters": {
       "message_id": 2,
     },
-    "reply_to_message_id": 2,
     "supports_streaming": true,
     "video": "<file_id>",
     "width": 480,
@@ -273,7 +267,6 @@ exports[`message handler downloads https://www.reddit.com/r/nextfuckinglevel/com
     "reply_parameters": {
       "message_id": 0,
     },
-    "reply_to_message_id": 0,
     "supports_streaming": true,
     "video": "file:///storage/blobs/Reddit:auhgg4yoeo5f1:<formats>.mp4",
     "width": 480,
@@ -314,7 +307,6 @@ exports[`message handler downloads https://www.reddit.com/r/nextfuckinglevel/com
     "reply_parameters": {
       "message_id": 1,
     },
-    "reply_to_message_id": 1,
     "supports_streaming": true,
     "video": "<file_id>",
     "width": 480,
@@ -355,7 +347,6 @@ exports[`message handler downloads https://www.reddit.com/r/nextfuckinglevel/com
     "reply_parameters": {
       "message_id": 2,
     },
-    "reply_to_message_id": 2,
     "supports_streaming": true,
     "video": "<file_id>",
     "width": 480,
@@ -401,7 +392,6 @@ exports[`message handler downloads http://youtube.com/shorts/0COu-qMC18Y: downlo
     "reply_parameters": {
       "message_id": 0,
     },
-    "reply_to_message_id": 0,
     "supports_streaming": true,
     "video": "file:///storage/blobs/youtube:0COu-qMC18Y:<formats>.mp4",
     "width": 1080,
@@ -442,7 +432,6 @@ exports[`message handler downloads http://youtube.com/shorts/0COu-qMC18Y: mem ca
     "reply_parameters": {
       "message_id": 1,
     },
-    "reply_to_message_id": 1,
     "supports_streaming": true,
     "video": "<file_id>",
     "width": 1080,
@@ -483,7 +472,6 @@ exports[`message handler downloads http://youtube.com/shorts/0COu-qMC18Y: disk c
     "reply_parameters": {
       "message_id": 2,
     },
-    "reply_to_message_id": 2,
     "supports_streaming": true,
     "video": "<file_id>",
     "width": 1080,
@@ -529,7 +517,6 @@ exports[`message handler downloads https://youtu.be/T3eBoD8H3Xg: download 1`] = 
     "reply_parameters": {
       "message_id": 0,
     },
-    "reply_to_message_id": 0,
     "supports_streaming": true,
     "video": "file:///storage/blobs/youtube:T3eBoD8H3Xg:<formats>.mp4",
     "width": 1920,
@@ -570,7 +557,6 @@ exports[`message handler downloads https://youtu.be/T3eBoD8H3Xg: mem cache 1`] =
     "reply_parameters": {
       "message_id": 1,
     },
-    "reply_to_message_id": 1,
     "supports_streaming": true,
     "video": "<file_id>",
     "width": 1920,
@@ -611,7 +597,6 @@ exports[`message handler downloads https://youtu.be/T3eBoD8H3Xg: disk cache 1`] 
     "reply_parameters": {
       "message_id": 2,
     },
-    "reply_to_message_id": 2,
     "supports_streaming": true,
     "video": "<file_id>",
     "width": 1920,

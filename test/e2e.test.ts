@@ -38,12 +38,6 @@ afterAll(() => mock.restore());
 spyMock(console, 'debug');
 spyMock(console, 'table');
 
-// e2e tests:
-// 1. url each from youtube, insta, reddit (reddit skipped while blocked)
-// 2. use real yt-dlp, but use fixtures for calls to bot-api
-// 3. test message and in-line
-// 4. test video id cache
-
 const hiMessage = { text: 'hi' };
 
 const isFailureReport = (m: { text?: string }) =>
