@@ -72,7 +72,7 @@ const expectSilenceOrRateLimitReport = (api: MockBotApi) => {
 };
 
 // Reddit answers this server's IP with "Account authentication is required"
-// for every post: flip once Reddit downloads work again
+// for every post, and the e2e container has no cookie jar to log in with
 const REDDIT_REACHABLE = false;
 const redditUrls = [
   // alias url

@@ -21,3 +21,8 @@ export const INLINE_CACHE_CHAT_ID = -4640446184;
 // bot's boot sweep clears only its own staging tree, so one bot can't delete
 // the other's in-flight download.
 export const STAGING_DIR = Bun.env.STAGING_DIR || '/storage/staging';
+
+// Netscape cookies.txt: Reddit redirects logged-out requests from our IP to
+// login. Shared by both bots, unlike the per-bot state above: they log in as
+// the same account.
+export const COOKIES_FILE = '/storage/mp4ify-cookies.txt';

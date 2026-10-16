@@ -1,4 +1,5 @@
 import { copyFile, readdir, realpath, rename, rm, stat } from 'fs/promises';
+import { tmpdir } from 'os';
 import { basename, extname } from 'path';
 import type { Telegram } from 'telegraf';
 import type { Message } from 'telegraf/types';
@@ -14,9 +15,9 @@ import {
   setBlobDuration,
   setBlobFileId,
 } from './blob-store';
-import { STAGING_DIR } from './consts';
+import { COOKIES_FILE, STAGING_DIR } from './consts';
 import { db, tx } from './db';
-import { unlinkQuiet } from './fs-utils';
+import { isNotFound, unlinkQuiet } from './fs-utils';
 import { ShutdownAbort } from './job-queue';
 import { LogMessage } from './log-message';
 import { coalesce, limit, telegramDesc } from './utils';
@@ -263,7 +264,7 @@ const latestYtdlpVersion = async (): Promise<string | null> => {
 };
 
 const doUpdate = async () => {
-  // don't start the copy+update dance during shutdown; unlike execYtdlp this
+  // don't start the copy+update dance during shutdown; unlike spawnYtdlp this
   // just returns (no ShutdownAbort: updateYtdlp never throws)
   if (shuttingDown) return;
   const onPath = Bun.which('yt-dlp');
@@ -381,110 +382,137 @@ export const resetShutdown = () => {
 // test-only accessor for liveYtdlp.size
 export const liveYtdlpSize = () => liveYtdlp.size;
 
+// yt-dlp saves its whole jar back to the --cookies file on exit, so each run
+// gets a private copy: runs would otherwise race on one file, and every site's
+// cookies would pile up in it
+const withCookies = async <T>(run: (cookieArgs: string[]) => Promise<T>) => {
+  const copy = `${tmpdir()}/cookies-${crypto.randomUUID()}.txt`;
+  let cookieArgs: string[] = [];
+  try {
+    await copyFile(COOKIES_FILE, copy);
+    cookieArgs = ['--cookies', copy];
+  } catch (e) {
+    // the cookies only serve the sites that demand a login, so a broken file
+    // must not fail every other site's runs too
+    if (!isNotFound(e))
+      console.error(`Running yt-dlp without cookies: copying ${COOKIES_FILE} failed:`, e);
+  }
+  try {
+    return await run(cookieArgs);
+  } finally {
+    await unlinkQuiet(copy);
+  }
+};
+
 const execYtdlp = limit(
   YTDLP_CONCURRENCY,
-  async (
-    logMsg: LogMessage,
-    url: string,
-    verbose: boolean,
-    ...extraArgs: string[]
-  ) => {
-    // a queued caller may win its slot only after shutdown began (killing a
-    // running proc frees one); it must not start a fresh download then
-    if (shuttingDown) throw new ShutdownAbort();
-    const command = [
-      'yt-dlp',
-      url,
-      verbose ? '--verbose' : '--no-warnings',
-      ...YTDLP_CONFIG_ARGS,
-      ...extraArgs,
-    ];
-    console.debug(command.join(' '));
-
-    const proc = Bun.spawn(command, {
-      stderr: 'pipe',
-      timeout: DOWNLOAD_TIMEOUT_SECS * 1000,
-    });
-    liveYtdlp.add(proc);
-
-    // Keep stderr so a failure can be classified (permanent vs retry). One
-    // streaming decoder, so a multi-byte char split across chunks isn't garbled
-    // (which would both mis-render and could defeat the classifier).
-    let stderr = '';
-    let held = '';
-    let firstLine = true;
-    const decoder = new TextDecoder();
-    // A photo item's ERROR answers nothing the chat asked for. /verbose is a
-    // debugging request for yt-dlp's actual output, so it is exempt.
-    const show = (block: string) => {
-      const text = (
-        verbose
-          ? block
-          : block
-              .split('\n')
-              .filter((l) => !isPhotoItemError(l))
-              .join('\n')
-      ).trim();
-      if (!text) return;
-      if (firstLine) {
-        // visually separate the streamed stderr from the progress above it
-        logMsg.append('');
-        firstLine = false;
-      }
-      logMsg.append(`<code>${Bun.escapeHTML(text)}</code>`);
-    };
-    try {
-      for await (const chunk of proc.stderr) {
-        const text = decoder.decode(chunk, { stream: true });
-        stderr += text;
-        if (stderr.length > 2 * STDERR_TAIL) {
-          // trim on a line boundary so the cut never decapitates the `ERROR:`
-          // prefix that classifyFailure keys on
-          const nl = stderr.indexOf('\n', stderr.length - STDERR_TAIL);
-          stderr = nl === -1 ? stderr.slice(-STDERR_TAIL) : stderr.slice(nl + 1);
-        }
-        // the filter judges whole lines, so a line the chunk boundary cut waits
-        // for its other half
-        held += text;
-        const nl = held.lastIndexOf('\n');
-        if (nl !== -1) {
-          show(held.slice(0, nl));
-          held = held.slice(nl + 1);
-        } else if (held.length > STDERR_TAIL) {
-          // nothing this long is a photo item, and a stream that never sends a
-          // newline would otherwise hold all of it (stderr above is capped)
-          show(held);
-          held = '';
-        }
-      }
-      const tail = decoder.decode(); // flush any buffered trailing bytes
-      stderr += tail;
-      show(held + tail);
-
-      await proc.exited;
-    } finally {
-      liveYtdlp.delete(proc);
-    }
-    // our own shutdown kill, not a failure: the queue leaves the job for the
-    // next boot (a timeout kill sets no flag and stays a retryable YtdlpError)
-    if (shuttingDown && proc.signalCode != null) throw new ShutdownAbort();
-
-    // stdout is read last, after stderr is fully drained: Bun buffers a piped
-    // child's stdout, so draining stderr to EOF first can't deadlock on a full
-    // stdout pipe (it would if stdout were unbuffered and left unread)
-    const stdout = await Bun.readableStreamToText(proc.stdout);
-    if (proc.exitCode !== 0)
-      throw new YtdlpError(
-        getErrorMessage(proc),
-        stderr,
-        proc.signalCode != null,
-        stdout,
-        proc.exitCode,
-      );
-
-    return stdout;
-  },
+  (logMsg: LogMessage, url: string, verbose: boolean, ...extraArgs: string[]) =>
+    withCookies((cookieArgs) =>
+      spawnYtdlp(logMsg, url, verbose, [...cookieArgs, ...extraArgs]),
+    ),
 );
+
+const spawnYtdlp = async (
+  logMsg: LogMessage,
+  url: string,
+  verbose: boolean,
+  extraArgs: string[],
+) => {
+  // a queued caller may win its slot only after shutdown began (killing a
+  // running proc frees one); it must not start a fresh download then
+  if (shuttingDown) throw new ShutdownAbort();
+  const command = [
+    'yt-dlp',
+    url,
+    verbose ? '--verbose' : '--no-warnings',
+    ...YTDLP_CONFIG_ARGS,
+    ...extraArgs,
+  ];
+  console.debug(command.join(' '));
+
+  const proc = Bun.spawn(command, {
+    stderr: 'pipe',
+    timeout: DOWNLOAD_TIMEOUT_SECS * 1000,
+  });
+  liveYtdlp.add(proc);
+
+  // Keep stderr so a failure can be classified (permanent vs retry). One
+  // streaming decoder, so a multi-byte char split across chunks isn't garbled
+  // (which would both mis-render and could defeat the classifier).
+  let stderr = '';
+  let held = '';
+  let firstLine = true;
+  const decoder = new TextDecoder();
+  // A photo item's ERROR answers nothing the chat asked for. /verbose is a
+  // debugging request for yt-dlp's actual output, so it is exempt.
+  const show = (block: string) => {
+    const text = (
+      verbose
+        ? block
+        : block
+            .split('\n')
+            .filter((l) => !isPhotoItemError(l))
+            .join('\n')
+    ).trim();
+    if (!text) return;
+    if (firstLine) {
+      // visually separate the streamed stderr from the progress above it
+      logMsg.append('');
+      firstLine = false;
+    }
+    logMsg.append(`<code>${Bun.escapeHTML(text)}</code>`);
+  };
+  try {
+    for await (const chunk of proc.stderr) {
+      const text = decoder.decode(chunk, { stream: true });
+      stderr += text;
+      if (stderr.length > 2 * STDERR_TAIL) {
+        // trim on a line boundary so the cut never decapitates the `ERROR:`
+        // prefix that classifyFailure keys on
+        const nl = stderr.indexOf('\n', stderr.length - STDERR_TAIL);
+        stderr = nl === -1 ? stderr.slice(-STDERR_TAIL) : stderr.slice(nl + 1);
+      }
+      // the filter judges whole lines, so a line the chunk boundary cut waits
+      // for its other half
+      held += text;
+      const nl = held.lastIndexOf('\n');
+      if (nl !== -1) {
+        show(held.slice(0, nl));
+        held = held.slice(nl + 1);
+      } else if (held.length > STDERR_TAIL) {
+        // nothing this long is a photo item, and a stream that never sends a
+        // newline would otherwise hold all of it (stderr above is capped)
+        show(held);
+        held = '';
+      }
+    }
+    const tail = decoder.decode(); // flush any buffered trailing bytes
+    stderr += tail;
+    show(held + tail);
+
+    await proc.exited;
+  } finally {
+    liveYtdlp.delete(proc);
+  }
+  // our own shutdown kill, not a failure: the queue leaves the job for the
+  // next boot (a timeout kill sets no flag and stays a retryable YtdlpError)
+  if (shuttingDown && proc.signalCode != null) throw new ShutdownAbort();
+
+  // stdout is read last, after stderr is fully drained: Bun buffers a piped
+  // child's stdout, so draining stderr to EOF first can't deadlock on a full
+  // stdout pipe (it would if stdout were unbuffered and left unread)
+  const stdout = await Bun.readableStreamToText(proc.stdout);
+  if (proc.exitCode !== 0)
+    throw new YtdlpError(
+      getErrorMessage(proc),
+      stderr,
+      proc.signalCode != null,
+      stdout,
+      proc.exitCode,
+    );
+
+  return stdout;
+};
 
 // Scraped info embeds signed media URLs that EXPIRE (YouTube's in ~6 hours),
 // and downloadVideo replays them verbatim via --load-info-json, so a stale row
