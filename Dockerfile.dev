@@ -22,6 +22,8 @@ ENV PATH="/opt/yt-dlp:$PATH"
 # enables by default
 COPY --from=denoland/deno:bin /deno /usr/local/bin/deno
 
+COPY gai.conf /etc/gai.conf
+
 # Test stubs shadow the real binaries; they delegate unless /tmp/stub exists
 ENV PATH="/app/test/bin:$PATH"
 
