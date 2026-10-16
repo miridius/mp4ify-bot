@@ -1,3 +1,4 @@
+import { LinkifyIt } from 'linkify-it';
 import type { Telegram } from 'telegraf';
 import type { Message } from 'telegraf/types';
 import {
@@ -56,8 +57,12 @@ import type {
   MessageContext,
 } from './types';
 
-const ensureScheme = (url: string) =>
-  /^https?:\/\//i.test(url) ? url : `https://${url}`;
+// some yt-dlp extractors only match a lowercase scheme and host
+const normalizeUrl = (url: string) =>
+  (/^https?:\/\//i.test(url) ? url : `https://${url}`).replace(
+    /^[^/]*\/\/[^/?#]*/,
+    (origin) => origin.toLowerCase(),
+  );
 
 // URLs already processed from a message: an edited message re-triggers the
 // handler (private chats only: see bot.ts), and without this a typo fix near
@@ -133,7 +138,7 @@ const linksIn = ({
   ...new Set(
     entities
       .filter((e) => e.type === 'url')
-      .map((e) => ensureScheme(text.slice(e.offset, e.offset + e.length))),
+      .map((e) => normalizeUrl(text.slice(e.offset, e.offset + e.length))),
   ),
 ];
 
@@ -625,8 +630,25 @@ const handleCallbackQuery = async (ctx: CallbackQueryContext) => {
   await safeDelete(ctx);
 };
 
-const urlRegex =
-  /(http(s)?:\/\/.)?(www\.)?[-a-zA-Z0-9@:%._+~#=]{2,256}\.[a-z]{2,63}\b([-a-zA-Z0-9@:%_+.~#?&/=]*)/g;
+// fuzzyLink: Telegram marks no links in an inline query, and people type
+// links like youtu.be/abc without a scheme
+const linkify = new LinkifyIt({ fuzzyLink: true, fuzzyEmail: false });
+
+export const firstLink = (query: string) => {
+  const spaced = query
+    .replace(/(https?)：\/\//gi, '$1://')
+    // linkify only takes a scheme after a space or punctuation, and CJK text
+    // runs straight into one
+    .replace(/(?<=\P{ASCII})(?=https?:\/\/)/giu, ' ');
+  const match = linkify.match(spaced)?.find(
+    ({ schema, raw }) =>
+      /^https?:$/.test(schema) ||
+      // a bare word like README.md is no link, nor is text glued before a
+      // host, which linkify reads as part of it
+      (!schema && raw.includes('/') && /^\p{ASCII}+$/u.test(raw.split('/')[0]!)),
+  );
+  return match && normalizeUrl(match.raw.replace(/[.:,;!?*`]+$/, ''));
+};
 
 const answerTooLarge = (ctx: InlineQueryContext, size?: string) => {
   const suffix = size ? ` (${size})` : '';
@@ -661,10 +683,8 @@ export const inlineQueryHandler = async (ctx: InlineQueryContext) => {
 const handleInlineQuery = async (ctx: InlineQueryContext) => {
   let info: VideoInfo | undefined;
   try {
-    // only the first URL in an inline query is handled (multi-URL unsupported)
-    let url = ctx.inlineQuery.query?.match(urlRegex)?.[0];
+    let url = firstLink(ctx.inlineQuery.query);
     if (!url) return;
-    url = ensureScheme(url);
 
     const log = new NoLog();
     info = await firstInfo(log, url);

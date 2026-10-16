@@ -9,6 +9,7 @@
 #         test -u` deletes snapshots of tests it didn't run, so a reduced -u
 #         run would silently prune the full-mode snapshots.
 cd "$(dirname "$0")" || exit
+export HOST_UID=$(id -u) HOST_GID=$(id -g)
 FULL=""
 UPDATE=""
 for arg in "$@"; do

@@ -1,6 +1,7 @@
 #!/bin/bash
 set -e
 cd "$(dirname "$0")"
+export HOST_UID=$(id -u) HOST_GID=$(id -g)
 
 docker compose build test
 
@@ -26,11 +27,13 @@ if learn; then
 fi
 
 echo ""
-read -p "Tests failed. Update fixtures from real services? [y/N] " answer
+echo "Tests failed."
+read -p "Update fixtures from real services? [y/N] " answer
 if [[ "$answer" =~ ^[Yy]$ ]]; then
-  run bun scripts/update-fixtures.ts
+  # exit 2 is a failed fetch, and the re-run below fails on that service too
+  run bun scripts/update-fixtures.ts || [ $? -eq 2 ]
   echo ""
-  echo "Fixtures updated. Re-running tests..."
+  echo "Re-running tests..."
   echo ""
   learn
 else

@@ -61,7 +61,7 @@ services:
       - /tmp
     devices:
       - /dev/dri:/dev/dri
-    user: '${UID:-1000}:${GID:-1000}'
+    user: '${HOST_UID:-1000}:${HOST_GID:-1000}'
     restart: unless-stopped
     stop_grace_period: 5m
     depends_on:
@@ -91,7 +91,7 @@ services:
       - /tmp
     devices:
       - /dev/dri:/dev/dri
-    user: '${UID:-1000}:${GID:-1000}'
+    user: '${HOST_UID:-1000}:${HOST_GID:-1000}'
     restart: always
     # On SIGTERM the bot kills its own downloads (they re-run next boot, no
     # duplicate) and stays alive only to drain in-flight SENDS: the bot-api
@@ -126,7 +126,7 @@ services:
       - /tmp
     devices:
       - /dev/dri:/dev/dri
-    user: '${UID:-1000}:${GID:-1000}'
+    user: '${HOST_UID:-1000}:${HOST_GID:-1000}'
     command: bun test --watch
     depends_on:
       - bot-api
