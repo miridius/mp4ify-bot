@@ -1,7 +1,9 @@
-import { mock, spyOn } from 'bun:test';
+import { expect, mock, spyOn } from 'bun:test';
 import { mkdir, rm, truncate } from 'fs/promises';
 import { blobPath, recordBlob } from '../src/blob-store';
 import { db } from '../src/db';
+import { jobsIdle } from '../src/job-queue';
+import type { MockBotApi } from './simulate-bot-api';
 import { MAX_FILE_SIZE_BYTES, type VideoInfo } from '../src/download-video';
 
 export const spyMock: typeof spyOn = (obj, k) =>
@@ -68,6 +70,27 @@ export const waitUntil = async (fn: () => any, timeout = 4000) => {
   const end = Date.now() + timeout;
   while (Date.now() < end && !(await fn())) await Bun.sleep(10);
   return !!(await fn());
+};
+
+export const settle = async (
+  api: MockBotApi,
+  update: { update_id: number },
+  timeout = 10_000,
+  context?: () => string,
+) => {
+  const expectWithin = async (what: string, fn: () => boolean, ms: number) => {
+    const ok = await waitUntil(fn, ms);
+    expect(
+      ok,
+      ok ? undefined : `${what} within ${ms}ms${context ? `: ${context()}` : ''}`,
+    ).toBe(true);
+  };
+  await expectWithin(
+    'update handled',
+    () => api.handledOffset > update.update_id,
+    4000,
+  );
+  await expectWithin('jobs idle', jobsIdle, timeout);
 };
 
 // control files for the test/bin stub executables (on PATH via Dockerfile.dev)

@@ -1,5 +1,6 @@
 import {
   afterAll,
+  afterEach,
   beforeEach,
   describe,
   expect,
@@ -13,6 +14,7 @@ afterAll(() => mock.restore());
 
 describe('waitUntil', () => {
   beforeEach(() => setSystemTime(0));
+  afterEach(() => setSystemTime()); // a frozen clock stops later waitUntils timing out
   spyMock(Bun, 'sleep').mockImplementation((ms) =>
     Promise.resolve(setSystemTime(Date.now() + (ms as number)) && undefined),
   );
