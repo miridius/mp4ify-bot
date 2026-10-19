@@ -21,7 +21,6 @@ import {
 import { INLINE_CACHE_CHAT_ID } from '../src/consts';
 import { inlineIdle, processJob, SEVERAL_VIDEOS } from '../src/handlers';
 import {
-  jobsIdle,
   setRetryBaseMs,
   type ConfirmedJob,
   type UrlJob,
@@ -43,6 +42,7 @@ import {
   seedBytes,
   seedHandledUrl,
   seedOversize,
+  settle,
   spyMock,
   STUB_DIR,
   stub,
@@ -115,13 +115,6 @@ const sendText = (
   edit
     ? api.sendEditedMessageToBot({ message_id: 42, ...msg })
     : api.sendTextMessageToBot(msg);
-
-const settle = async (api: MockBotApi, update: { update_id: number }) => {
-  expect(await waitUntil(() => api.handledOffset > update.update_id)).toBe(
-    true,
-  );
-  expect(await waitUntil(jobsIdle, 10_000)).toBe(true);
-};
 
 const postInGroup = async (api: MockBotApi, url = TEST_URL) => {
   const u = api.sendTextMessageToBot(urlMessage(url), MOCK_GROUP_CHAT);

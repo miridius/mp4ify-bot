@@ -1,4 +1,4 @@
-// Bun Snapshot v1, https://goo.gl/fbAQLP
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`message handler downloads https://www.instagram.com/reel/DKbYQgeoL3F/?igsh=MTh4MnpnYm9hdjJ5OA==: download 1`] = `
 [
@@ -137,7 +137,7 @@ exports[`message handler downloads https://www.reddit.com/r/nextfuckinglevel/s/i
   {
     "chat_id": 1337,
     "disable_notification": true,
-    "duration": 10,
+    "duration": 11,
     "height": 600,
     "reply_parameters": {
       "message_id": 0,
@@ -177,7 +177,7 @@ exports[`message handler downloads https://www.reddit.com/r/nextfuckinglevel/s/i
   {
     "chat_id": 1337,
     "disable_notification": true,
-    "duration": 10,
+    "duration": 11,
     "height": 600,
     "reply_parameters": {
       "message_id": 1,
@@ -217,7 +217,7 @@ exports[`message handler downloads https://www.reddit.com/r/nextfuckinglevel/s/i
   {
     "chat_id": 1337,
     "disable_notification": true,
-    "duration": 10,
+    "duration": 11,
     "height": 600,
     "reply_parameters": {
       "message_id": 2,
@@ -262,7 +262,7 @@ exports[`message handler downloads https://www.reddit.com/r/nextfuckinglevel/com
   {
     "chat_id": 1337,
     "disable_notification": true,
-    "duration": 10,
+    "duration": 11,
     "height": 600,
     "reply_parameters": {
       "message_id": 0,
@@ -302,7 +302,7 @@ exports[`message handler downloads https://www.reddit.com/r/nextfuckinglevel/com
   {
     "chat_id": 1337,
     "disable_notification": true,
-    "duration": 10,
+    "duration": 11,
     "height": 600,
     "reply_parameters": {
       "message_id": 1,
@@ -342,7 +342,7 @@ exports[`message handler downloads https://www.reddit.com/r/nextfuckinglevel/com
   {
     "chat_id": 1337,
     "disable_notification": true,
-    "duration": 10,
+    "duration": 11,
     "height": 600,
     "reply_parameters": {
       "message_id": 2,

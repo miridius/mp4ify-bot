@@ -10,7 +10,7 @@ import {
   mock,
 } from 'bun:test';
 import { rm } from 'fs/promises';
-import { resetDb } from '../src/db';
+import { db, resetDb } from '../src/db';
 import { downloadVideo, getInfos } from '../src/download-video';
 import { SEVERAL_VIDEOS } from '../src/handlers';
 import { jobsIdle, seedJob, setRetryBaseMs } from '../src/job-queue';
@@ -25,6 +25,7 @@ import {
   resetStub,
   rowCount,
   seedBytes,
+  settle,
   spyMock,
   STUB_DIR,
   stub,
@@ -43,15 +44,29 @@ const hiMessage = { text: 'hi' };
 const isFailureReport = (m: { text?: string }) =>
   !!m.text && m.text.includes('💥 <b>Download failed</b>:');
 
-const runInGroup = async (
+const lastJobId = () =>
+  db
+    .query<{ seq: number }, []>(
+      "SELECT seq FROM sqlite_sequence WHERE name = 'jobs'",
+    )
+    .get()?.seq ?? 0;
+
+const runJob = async (
   api: MockBotApi,
   msg: ReturnType<typeof urlMessage>,
   timeout: number,
+  chat?: typeof MOCK_GROUP_CHAT,
 ) => {
-  api.sendTextMessageToBot(msg, MOCK_GROUP_CHAT);
-  // a never-started job would pass a silence assertion vacuously
-  expect(await waitUntil(() => !jobsIdle(), 15_000)).toBe(true);
-  expect(await waitUntil(jobsIdle, timeout)).toBe(true);
+  const before = lastJobId();
+  // fails a stalled job before a `-u` run could snapshot its partial output
+  await settle(
+    api,
+    api.sendTextMessageToBot(msg, chat),
+    timeout,
+    () => `sent ${JSON.stringify(scrub(api.sentMessages), null, 2)}`,
+  );
+  // a job that never queued would pass a silence assertion vacuously
+  expect(lastJobId()).toBeGreaterThan(before);
 };
 
 const expectSilenceOrRateLimitReport = (api: MockBotApi) => {
@@ -65,34 +80,33 @@ const expectSilenceOrRateLimitReport = (api: MockBotApi) => {
   return true;
 };
 
-// Reddit answers this server's IP with "Account authentication is required"
-// for every post, and the e2e container has no cookie jar to log in with
-const REDDIT_REACHABLE = false;
-const redditUrls = [
-  // alias url
-  'https://www.reddit.com/r/nextfuckinglevel/s/iGEii0a7V6',
-  // canonical url for same video
-  'https://www.reddit.com/r/nextfuckinglevel/comments/1l68isw/mix_of_coolness_agility_technique_power_and_a/?share_id=ejTJZnh_f4BZuzlnfcOUo',
-];
 const testUrls = [
   'https://www.instagram.com/reel/DKbYQgeoL3F/?igsh=MTh4MnpnYm9hdjJ5OA==',
   // only in full mode - see e2e.sh for the modes and why
   ...(Bun.env.TEST_E2E_FULL
     ? [
+        // alias url
+        'https://www.reddit.com/r/nextfuckinglevel/s/iGEii0a7V6',
+        // canonical url for same video
+        'https://www.reddit.com/r/nextfuckinglevel/comments/1l68isw/mix_of_coolness_agility_technique_power_and_a/?share_id=ejTJZnh_f4BZuzlnfcOUo',
         'http://youtube.com/shorts/0COu-qMC18Y',
         MADE_FOR_KIDS_VIDEO,
       ]
     : []),
 ];
-// the made-for-kids video is 2 minutes of 1080p
-const firstDownloadMs = (url: string) =>
-  url === MADE_FOR_KIDS_VIDEO ? 60_000 : 25_000;
+// real download speed varies severalfold run to run. Well below the bot's own
+// worst case (three attempts, each a scrape, a download, probes and an upload:
+// past half an hour).
+const FIRST_DELIVERY_MS = 10 * 60_000;
+// plus the job starts, the cache hits and the teardown
+const DOWNLOAD_TEST_MS = FIRST_DELIVERY_MS + 90_000;
 
 const clearDiskCache = async () => {
   resetDb(); // the durable cache lives in DB tables: clear its tables...
   // ...but keep the DB FILE: db.ts holds an open connection, and unlinking the
-  // file out from under it would leave writes/reads on a ghost inode.
-  await $`find /storage -mindepth 1 -maxdepth 1 -not -name 'mp4ify.db*' -exec rm -rf {} +`.catch(
+  // file out from under it would leave writes/reads on a ghost inode. The
+  // cookie jar is e2e.sh's read-only mount.
+  await $`find /storage -mindepth 1 -maxdepth 1 -not -name 'mp4ify.db*' -not -name mp4ify-cookies.txt -exec rm -rf {} +`.catch(
     () => null,
   );
 };
@@ -136,18 +150,10 @@ describe.if(!!Bun.env.TEST_E2E)('message handler', async () => {
   const downloads = (url: string) =>
     withBotApi(async (api) => {
       api.probeUploads = true;
-      const waitForVideo = (ms: number) =>
-        waitUntil(
-          () =>
-            api.sentMessages.length > 1 ||
-            api.sentMessages.some(isFailureReport),
-          ms,
-        );
 
       // initial download
       clearInMemoryCache();
-      api.sendTextMessageToBot(urlMessage(url));
-      await waitForVideo(firstDownloadMs(url));
+      await runJob(api, urlMessage(url), FIRST_DELIVERY_MS);
       expect(scrub(api.sentMessages)).toMatchSnapshot('download');
       // the scrape's metadata can say h264 while the download picks other formats
       const videos = api.sentMessages.filter((m) => m.video);
@@ -160,21 +166,16 @@ describe.if(!!Bun.env.TEST_E2E)('message handler', async () => {
 
       // in memory cache
       api.sentMessages.length = 0;
-      api.sendTextMessageToBot(urlMessage(url));
-      await waitForVideo(5_000);
+      await runJob(api, urlMessage(url), 5_000);
       expect(scrub(api.sentMessages)).toMatchSnapshot('mem cache');
 
       // disk cache
       clearInMemoryCache();
       api.sentMessages.length = 0;
-      api.sendTextMessageToBot(urlMessage(url));
-      await waitForVideo(5_000);
+      await runJob(api, urlMessage(url), 5_000);
       expect(scrub(api.sentMessages)).toMatchSnapshot('disk cache');
     });
-  it.each(testUrls)('downloads %s', downloads, 90_000);
-  for (const url of redditUrls) {
-    (REDDIT_REACHABLE ? it : it.skip)(`downloads ${url}`, () => downloads(url), 90_000);
-  }
+  it.each(testUrls)('downloads %s', downloads, DOWNLOAD_TEST_MS);
 
   it.each([
     // a lone photo
@@ -186,10 +187,10 @@ describe.if(!!Bun.env.TEST_E2E)('message handler', async () => {
     (url) =>
       withBotApi(async (api) => {
         clearInMemoryCache();
-        await runInGroup(api, urlMessage(url), 25_000);
+        await runJob(api, urlMessage(url), 25_000, MOCK_GROUP_CHAT);
         expectSilenceOrRateLimitReport(api);
       }),
-    45_000,
+    55_000,
   );
 
   it.if(!!Bun.env.TEST_E2E_FULL)(
@@ -202,19 +203,16 @@ describe.if(!!Bun.env.TEST_E2E)('message handler', async () => {
         const isVerdict = (m: { text?: string }) =>
           !!m.text?.includes(SEVERAL_VIDEOS);
 
-        await runInGroup(api, post, 120_000);
+        await runJob(api, post, 120_000, MOCK_GROUP_CHAT);
         if (expectSilenceOrRateLimitReport(api)) return;
 
-        api.sendTextMessageToBot(post);
-        expect(
-          await waitUntil(() => api.sentMessages.some(isVerdict), 10_000),
-        ).toBe(true);
-        expect(await waitUntil(jobsIdle, 10_000)).toBe(true);
+        await runJob(api, post, 10_000);
+        expect(api.sentMessages.some(isVerdict)).toBe(true);
         const reply = api.sentMessages.find(isVerdict)!.text!;
         expect(reply).not.toContain('🧐 <b>Scraping</b>');
         expect(api.sentMessages.filter((m: any) => m.video)).toEqual([]);
       }),
-    150_000,
+    180_000,
   );
 
   it(
@@ -223,18 +221,19 @@ describe.if(!!Bun.env.TEST_E2E)('message handler', async () => {
       withBotApi(async (api) => {
         setRetryBaseMs(1); // don't sleep the real backoff between attempts
         clearInMemoryCache();
-        api.sendTextMessageToBot(
+        await runJob(
+          api,
           urlMessage('https://www.instagram.com/reel/C0aaaaaaaaa/'),
+          120_000,
           MOCK_GROUP_CHAT,
         );
-        await waitUntil(() => api.sentMessages.some(isFailureReport), 60_000);
         const reports = api.sentMessages.filter(isFailureReport);
         expect(reports).toHaveLength(1);
         expect(reports[0]!.chat_id).toBe(MOCK_GROUP_CHAT.id);
         // id 0 is the link message: the first update in this fresh api
         expect((reports[0] as any).reply_parameters?.message_id).toBe(0);
       }),
-    90_000,
+    150_000,
   );
 });
 

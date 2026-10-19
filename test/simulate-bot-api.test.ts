@@ -152,21 +152,21 @@ describe('MockBotApi', () => {
   });
 
   it('handle sendVideo returns ok if file exists', async () => {
-    //@ts-ignore
-    spyOn(Bun, 'file').mockReturnValue({
-      exists: mock().mockResolvedValue(true),
-      size: 1,
-    });
-    const resp = await api.call('sendVideo', {
-      chat_id: api['user'].id,
-      video: Bun.pathToFileURL('/tmp/real.mp4'),
-      width: 1,
-      height: 1,
-      duration: 1,
-    });
-    const json = await resp.json();
-    expect(json.ok).toBe(true);
-    expect(json.result.video.file_name).toBe('/tmp/real.mp4');
+    await Bun.write('/tmp/real.mp4', 'x');
+    try {
+      const resp = await api.call('sendVideo', {
+        chat_id: api['user'].id,
+        video: Bun.pathToFileURL('/tmp/real.mp4'),
+        width: 1,
+        height: 1,
+        duration: 1,
+      });
+      const json = await resp.json();
+      expect(json.ok).toBe(true);
+      expect(json.result.video.file_name).toBe('/tmp/real.mp4');
+    } finally {
+      await rm('/tmp/real.mp4', { force: true });
+    }
   });
 
   it('records the codecs of an uploaded file when probeUploads is on', async () => {
@@ -202,21 +202,21 @@ describe('MockBotApi', () => {
   });
 
   it('handle sendVideo returns error if file is empty', async () => {
-    //@ts-ignore
-    spyOn(Bun, 'file').mockReturnValue({
-      exists: mock().mockResolvedValue(true),
-      size: 0,
-    });
-    const resp = await api.call('sendVideo', {
-      chat_id: api['user'].id,
-      video: Bun.pathToFileURL('/tmp/empty.mp4'),
-      width: 1,
-      height: 1,
-      duration: 1,
-    });
-    const json = await resp.json();
-    expect(json.ok).toBe(false);
-    expect(json.description).toMatch(/file is empty/);
+    await Bun.write('/tmp/empty.mp4', '');
+    try {
+      const resp = await api.call('sendVideo', {
+        chat_id: api['user'].id,
+        video: Bun.pathToFileURL('/tmp/empty.mp4'),
+        width: 1,
+        height: 1,
+        duration: 1,
+      });
+      const json = await resp.json();
+      expect(json.ok).toBe(false);
+      expect(json.description).toMatch(/file is empty/);
+    } finally {
+      await rm('/tmp/empty.mp4', { force: true });
+    }
   });
 
   it('rejects an unknown file_id with the real server wording', async () => {
