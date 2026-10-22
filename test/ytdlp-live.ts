@@ -1,4 +1,4 @@
-import { YTDLP_CONFIG_ARGS } from '../src/ytdlp-config';
+import { impersonateArgs, withCookies, YTDLP_CONFIG_ARGS } from '../src/ytdlp-config';
 
 // public, and YouTube withholds it from yt-dlp without a JS runtime
 export const MADE_FOR_KIDS_VIDEO = 'https://youtu.be/T3eBoD8H3Xg';
@@ -22,13 +22,17 @@ export const ytdlpWith = async (config: readonly string[], ...args: string[]) =>
 export const ytdlp = (...args: string[]) => ytdlpWith(YTDLP_CONFIG_ARGS, ...args);
 
 export const fetchInfo = async (url: string) => {
-  // warnings kept: they are an empty dump's only explanation
-  const { stdout, stderr } = await run([
-    url,
-    '--dump-json',
-    '--no-check-certificates',
-    ...YTDLP_CONFIG_ARGS,
-  ]);
+  const { stdout, stderr } = await withCookies((cookieArgs) =>
+    // warnings kept: they are an empty dump's only explanation
+    run([
+      url,
+      '--dump-json',
+      '--no-check-certificates',
+      ...YTDLP_CONFIG_ARGS,
+      ...cookieArgs,
+      ...impersonateArgs(url),
+    ]),
+  );
   if (!stdout.trim()) {
     throw new Error(`yt-dlp returned no output for ${url}: ${stderr.trim()}`);
   }

@@ -10,7 +10,6 @@ const getRequiredEnv = (name: string) => {
   if (!value) throw new Error(`${name} env var is required`);
   return value;
 };
-``;
 export const botToken = getRequiredEnv('BOT_TOKEN');
 
 export const apiRoot = Bun.env.API_ROOT || 'http://bot-api:8081';
@@ -21,8 +20,3 @@ export const INLINE_CACHE_CHAT_ID = -4640446184;
 // bot's boot sweep clears only its own staging tree, so one bot can't delete
 // the other's in-flight download.
 export const STAGING_DIR = Bun.env.STAGING_DIR || '/storage/staging';
-
-// Netscape cookies.txt: Reddit redirects logged-out requests from our IP to
-// login. Shared by both bots, unlike the per-bot state above: they log in as
-// the same account.
-export const COOKIES_FILE = '/storage/mp4ify-cookies.txt';

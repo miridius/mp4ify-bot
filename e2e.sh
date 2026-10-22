@@ -21,18 +21,13 @@ done
 # a backstop past the mode's summed per-test timeouts in test/e2e.test.ts
 TIMEOUT=1200
 [ -n "$FULL" ] && TIMEOUT=4600
-# Reddit demands a login for every request from this server's IP, so a full run
-# borrows the prod bot's cookie jar (the test service has no /storage volume)
 JAR=""
 set --
 if [ -n "$FULL" ]; then
-  JAR=$(mktemp -d)
-  if ! docker cp mp4ify:/storage/mp4ify-cookies.txt "$JAR"; then
-    echo "couldn't copy the Reddit cookie jar out of the prod container" >&2
-    rm -r "$JAR"
-    exit 1
-  fi
-  set -- -v "$JAR/mp4ify-cookies.txt:/storage/mp4ify-cookies.txt:ro"
+  # the Reddit cases need the prod bot's login
+  . scripts/borrow-cookie-jar.sh
+  borrow_cookie_jar || exit 1
+  set -- -v "$JAR_VOLUME"
 fi
 # in CI mode bun fails a missing snapshot instead of writing it unreviewed
 # (-u still writes)
@@ -50,7 +45,7 @@ fi
 # --rm can clean up instead of orphaning a 100%-CPU container.
 docker compose run --build --remove-orphans --rm -T "$@" -e TEST_E2E=true -e TEST_E2E_FULL="$FULL" test timeout -k 30 "$TIMEOUT" sh -c "
   /opt/yt-dlp/yt-dlp --update-to nightly || echo 'yt-dlp self-update failed; testing the image binary' >&2
-  exec bun --config=bunfig.e2e.toml test e2e $UPDATE"
+  exec bun --config=bunfig.partial.toml test e2e $UPDATE"
 status=$?
 [ -z "$JAR" ] || rm -r "$JAR"
 if [ -n "$UPDATE" ]; then

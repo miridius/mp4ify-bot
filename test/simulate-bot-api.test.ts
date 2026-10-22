@@ -100,6 +100,13 @@ describe('MockBotApi', () => {
     expect(json.description).toMatch(/chat not found/);
   });
 
+  it('handle sendVideo with wrong chat_id returns error', async () => {
+    const resp = await api.call('sendVideo', { chat_id: 9999, video: 'x' });
+    const json = await resp.json();
+    expect(json.ok).toBe(false);
+    expect(json.description).toMatch(/chat not found/);
+  });
+
   it('handle editMessageText edits message', async () => {
     // First, send a message
     await api.call('sendMessage', { chat_id: api['user'].id, text: 'old' });
@@ -267,6 +274,17 @@ describe('MockBotApi', () => {
     const json = await resp.json();
     expect(json.ok).toBe(false);
     expect(json.description).toMatch(/Can't find end tag/);
+  });
+
+  it('rejects an end tag with no open tag', async () => {
+    const resp = await api.call('sendMessage', {
+      chat_id: MOCK_USER_ID,
+      text: 'x</b>',
+      parse_mode: 'HTML',
+    });
+    const json = await resp.json();
+    expect(json.ok).toBe(false);
+    expect(json.description).toMatch(/can't parse entities: Unexpected end tag/);
   });
 
   it('fails an unmocked fetch loudly instead of hitting the network', async () => {

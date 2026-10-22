@@ -7,7 +7,7 @@ import {
   jest,
   mock,
 } from 'bun:test';
-import { coalesce, limit } from '../src/utils';
+import { coalesce, isOnHost, limit } from '../src/utils';
 
 beforeEach(() => jest.clearAllMocks());
 afterAll(() => mock.restore());
@@ -114,5 +114,18 @@ describe('limit', () => {
     });
     await expect(f(true)).rejects.toThrow('boom');
     expect(await f(false)).toBe('ok'); // slot was released
+  });
+});
+
+describe('isOnHost', () => {
+  it.each([
+    ['https://reddit.com/r/x', true],
+    ['https://www.reddit.com/r/x', true],
+    ['https://reddit.com./r/x', true],
+    ['https://notreddit.com/r/x', false],
+    ['https://reddit.com.evil.example/r/x', false],
+    ['not a url', false],
+  ])('%s -> %p', (url, on) => {
+    expect(isOnHost(url, ['reddit.com'])).toBe(on);
   });
 });
