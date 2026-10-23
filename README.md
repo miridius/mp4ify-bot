@@ -21,7 +21,7 @@ In a private chat with the bot, send `/verbose <url>` to get detailed logs.
 
    _Note that you do **not** need to install bun or any of the runtime deps locally! Just use the dev container instead._
 
-   _To commit you do need bun and [gitleaks](https://github.com/gitleaks/gitleaks) on the host, and the gated-workflow plugin (see `.claude/settings.json`): `bun install` on the host writes the git hooks (pre-commit runs `./check.sh`), and fails outright if the plugin's commit gate is not installed. An install run inside a container leaves the host's hooks alone, since the images have no git and the script stops there._
+   _To commit you do need bun and [gitleaks](https://github.com/gitleaks/gitleaks) on the host, and the gated-workflow plugin (`claude plugin marketplace add miridius/claude-plugins && claude plugin install gated-workflow`): `bun install` on the host writes the git hooks (pre-commit runs `./check.sh`), and fails outright if the plugin's commit gate is not installed. An install run inside a container leaves the host's hooks alone, since the images have no git and the script stops there._
 
 1. Clone the repository:
 
