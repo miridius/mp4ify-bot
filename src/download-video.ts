@@ -1,5 +1,4 @@
 import { copyFile, readdir, realpath, rename, rm, stat } from 'fs/promises';
-import { tmpdir } from 'os';
 import { basename, extname } from 'path';
 import type { Telegram } from 'telegraf';
 import type { Message } from 'telegraf/types';
@@ -15,13 +14,13 @@ import {
   setBlobDuration,
   setBlobFileId,
 } from './blob-store';
-import { COOKIES_FILE, STAGING_DIR } from './consts';
+import { STAGING_DIR } from './consts';
 import { db, tx } from './db';
-import { isNotFound, unlinkQuiet } from './fs-utils';
+import { unlinkQuiet } from './fs-utils';
 import { ShutdownAbort } from './job-queue';
 import { LogMessage } from './log-message';
 import { coalesce, limit, telegramDesc } from './utils';
-import { YTDLP_CONFIG_ARGS } from './ytdlp-config';
+import { impersonateArgs, withCookies, YTDLP_CONFIG_ARGS } from './ytdlp-config';
 
 export const MAX_FILE_SIZE_BYTES = 2000 * 1024 * 1024;
 const DOWNLOAD_TIMEOUT_SECS = 300;
@@ -382,28 +381,6 @@ export const resetShutdown = () => {
 // test-only accessor for liveYtdlp.size
 export const liveYtdlpSize = () => liveYtdlp.size;
 
-// yt-dlp saves its whole jar back to the --cookies file on exit, so each run
-// gets a private copy: runs would otherwise race on one file, and every site's
-// cookies would pile up in it
-const withCookies = async <T>(run: (cookieArgs: string[]) => Promise<T>) => {
-  const copy = `${tmpdir()}/cookies-${crypto.randomUUID()}.txt`;
-  let cookieArgs: string[] = [];
-  try {
-    await copyFile(COOKIES_FILE, copy);
-    cookieArgs = ['--cookies', copy];
-  } catch (e) {
-    // the cookies only serve the sites that demand a login, so a broken file
-    // must not fail every other site's runs too
-    if (!isNotFound(e))
-      console.error(`Running yt-dlp without cookies: copying ${COOKIES_FILE} failed:`, e);
-  }
-  try {
-    return await run(cookieArgs);
-  } finally {
-    await unlinkQuiet(copy);
-  }
-};
-
 const execYtdlp = limit(
   YTDLP_CONCURRENCY,
   (logMsg: LogMessage, url: string, verbose: boolean, ...extraArgs: string[]) =>
@@ -584,6 +561,7 @@ export const getInfos = coalesce(
         log,
         url,
         verbose,
+        ...impersonateArgs(url),
         '--dump-json',
         // A link copied off a playing YouTube page carries the playlist it was
         // playing in, and yt-dlp would take the playlist over the video.

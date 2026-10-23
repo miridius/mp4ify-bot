@@ -6,6 +6,10 @@ import { jobsIdle } from '../src/job-queue';
 import type { MockBotApi } from './simulate-bot-api';
 import { MAX_FILE_SIZE_BYTES, type VideoInfo } from '../src/download-video';
 
+// Tests that replace or delete the cookie jar both bots share on /storage run
+// only in the test container (the dev container sets STAGING_DIR)
+export const OWNS_COOKIE_JAR = !Bun.env.STAGING_DIR;
+
 export const spyMock: typeof spyOn = (obj, k) =>
   spyOn(obj, k).mockImplementation(mock() as any);
 
@@ -108,6 +112,7 @@ export const stubArgs = async () =>
       .text()
       .catch(() => '')
   ).trim();
+export const cookiesArg = async () => (await stubArgs()).match(/--cookies (\S+)/)?.[1];
 export const stubSpawns = async () =>
   (await stubArgs()).split('\n').filter(Boolean);
 export const stubScrape = (

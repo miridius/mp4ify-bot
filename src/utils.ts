@@ -73,3 +73,9 @@ export const limit = <F extends (...args: any[]) => Promise<any>>(
     }
   }) as F;
 };
+
+export const isOnHost = (url: string, hosts: readonly string[]): boolean => {
+  const host = URL.parse(url)?.hostname.replace(/\.$/, '');
+  if (host == null) return false;
+  return hosts.some((h) => host === h || host.endsWith('.' + h));
+};

@@ -37,7 +37,8 @@ import {
   type UrlJob,
 } from './job-queue';
 import { LogMessage, logFor, NoLog } from './log-message';
-import { telegramDesc } from './utils';
+import { isOnHost, telegramDesc } from './utils';
+import { REDDIT_HOSTS } from './ytdlp-config';
 import {
   addPending,
   getPending,
@@ -220,17 +221,7 @@ export const processJob = async (
 
 // a link to one of these is always an explicit ask, so a terminal failure earns
 // its reason even in a group
-const ALWAYS_RESPOND_HOSTS = ['instagram.com', 'reddit.com', 'redd.it'];
-const isAlwaysRespondHost = (url: string): boolean => {
-  let host: string;
-  try {
-    // strip one trailing dot: a root-dot FQDN (reddit.com.) is the same host
-    host = new URL(url).hostname.replace(/\.$/, '');
-  } catch {
-    return false; // an unparseable URL is simply not whitelisted
-  }
-  return ALWAYS_RESPOND_HOSTS.some((h) => host === h || host.endsWith('.' + h));
-};
+const ALWAYS_RESPOND_HOSTS = ['instagram.com', ...REDDIT_HOSTS];
 
 const isTerminal = (e: unknown, attempt: number, kind?: FailureKind) =>
   isPermanentError(e, kind) || attempt >= MAX_ATTEMPTS;
@@ -308,7 +299,7 @@ const processUrlJob = async (
       isGroupChat &&
       terminal &&
       kind !== 'not-a-video' &&
-      (resolved != null || isAlwaysRespondHost(url));
+      (resolved != null || isOnHost(url, ALWAYS_RESPOND_HOSTS));
     const reportLog = tellGroup
       ? new LogMessage(telegram, logDestFor(job))
       : log;

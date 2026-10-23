@@ -29,13 +29,15 @@ import {
   setBlobDuration,
   setBlobFileId,
 } from '../src/blob-store';
-import { COOKIES_FILE, STAGING_DIR } from '../src/consts';
-import { YTDLP_CONFIG_ARGS } from '../src/ytdlp-config';
+import { STAGING_DIR } from '../src/consts';
+import { COOKIES_FILE, YTDLP_CONFIG_ARGS } from '../src/ytdlp-config';
 import { db, resetDb } from '../src/db';
 import { githubMock } from './simulate-bot-api';
 import {
   bytesOnDisk,
+  cookiesArg,
   mp4BlobPath,
+  OWNS_COOKIE_JAR,
   recordMp4Blob,
   resetStub,
   rowCount,
@@ -395,6 +397,16 @@ describe('getInfos', () => {
       `yt-dlp ${url} --no-warnings ${YTDLP_CONFIG_ARGS.join(' ')} --dump-json --no-playlist --playlist-end 50 --max-downloads ${VIDEOS_TO_DECIDE}`,
     );
     expect(JSON.parse(infoRow(url)!.info)).toEqual([urlInfo]);
+  });
+
+  it.each([
+    'https://www.reddit.com/r/x/s/abc',
+    'https://redd.it/abc',
+  ])('impersonates a browser for a Reddit scrape: %s', async (reddit) => {
+    await getInfos(log as any, reddit);
+    expect(await stubArgs()).toEndWith(
+      `yt-dlp ${reddit} --no-warnings ${YTDLP_CONFIG_ARGS.join(' ')} --impersonate chrome --dump-json --no-playlist --playlist-end 50 --max-downloads ${VIDEOS_TO_DECIDE}`,
+    );
   });
 
   it('caches the canonical url too, so an alias request skips the scrape', async () => {
@@ -790,12 +802,9 @@ describe('getInfos', () => {
   });
 });
 
-// replaces and deletes the cookies file both bots share, so it runs only in
-// the test container (the dev container sets STAGING_DIR)
-describe.if(!Bun.env.STAGING_DIR)('yt-dlp cookies', () => {
+describe.if(OWNS_COOKIE_JAR)('yt-dlp cookies', () => {
   const url = 'https://test.invalid/cookies';
   const jar = '# Netscape HTTP Cookie File\n.reddit.com\tTRUE\t/\tTRUE\t0\treddit_session\tabc\n';
-  const cookiesArg = async () => (await stubArgs()).match(/--cookies (\S+)/)?.[1];
 
   beforeEach(async () => {
     await stubScrape([{ ...VideoInfo, webpage_url: url }]);
@@ -1136,6 +1145,20 @@ describe('downloadVideo', () => {
     expect(await Bun.file(mp4BlobPath(VideoInfo)).text()).toBe('video bytes\n');
     expect(getBlob(VideoInfo)?.path).toBe(mp4BlobPath(VideoInfo));
     expect(await readdir(STAGING_DIR).catch(() => [])).toEqual([]);
+  });
+
+  it('downloads Reddit media without impersonating a browser', async () => {
+    await stub({ stdout: 'downloaded ok', outfile: VideoInfo.filename });
+    const reddit = {
+      ...VideoInfo,
+      webpage_url: 'https://www.reddit.com/r/x/comments/abc/',
+    };
+
+    expect(await downloadVideo(log as any, reddit)).toBe('downloaded ok');
+
+    const [ytdlpLine] = (await stubArgs()).split('\n');
+    expect(ytdlpLine).toContain('--load-info-json');
+    expect(ytdlpLine).not.toContain('--impersonate');
   });
 
   it('succeeds when yt-dlp writes a metadata sidecar next to the video', async () => {
