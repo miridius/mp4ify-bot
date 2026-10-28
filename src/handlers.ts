@@ -219,9 +219,7 @@ export const processJob = async (
     ? processUrlJob(telegram, job, attempt)
     : processConfirmedJob(telegram, job, attempt);
 
-// a link to one of these is always an explicit ask, so a terminal failure earns
-// its reason even in a group
-const ALWAYS_RESPOND_HOSTS = ['instagram.com', ...REDDIT_HOSTS];
+const EXPLICIT_ASK_HOSTS = ['instagram.com', ...REDDIT_HOSTS];
 
 const isTerminal = (e: unknown, attempt: number, kind?: FailureKind) =>
   isPermanentError(e, kind) || attempt >= MAX_ATTEMPTS;
@@ -235,6 +233,7 @@ const processUrlJob = async (
   // progress logs go to private chats only: see logFor
   const log = logFor(telegram, chatType, logDestFor(job));
   const isGroupChat = chatType !== 'private';
+  const explicitAsk = isOnHost(url, EXPLICIT_ASK_HOSTS);
   let resolved: VideoInfo | undefined;
   try {
     const infos = await getInfos(log, url, verbose);
@@ -243,6 +242,12 @@ const processUrlJob = async (
       return;
     }
     const info = infos[0]!;
+    // the generic extractor takes whatever file a page links to (e.g. a news
+    // article's magazine PDF) for its video
+    if (isGroupChat && info.extractor === 'generic' && !explicitAsk) {
+      await endWithVerdict(log, job);
+      return;
+    }
     resolved = info;
     const infoReachedChat = job.infoShown && job.logMessageId != null;
     if (!infoReachedChat) await sendInfo(log, info, verbose);
@@ -299,7 +304,7 @@ const processUrlJob = async (
       isGroupChat &&
       terminal &&
       kind !== 'not-a-video' &&
-      (resolved != null || isOnHost(url, ALWAYS_RESPOND_HOSTS));
+      (resolved != null || explicitAsk);
     const reportLog = tellGroup
       ? new LogMessage(telegram, logDestFor(job))
       : log;
