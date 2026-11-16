@@ -4,7 +4,7 @@ A telegram bot that turns links into videos, so that you don't have to deal with
 
 ## Usage
 
-Send urls to [@mp4ify_bot](https://t.me/mp4ify_bot), or add it to a group. The bot will try to download the video, converting to mp4 if needed, and send it back to you if successful. Videos must be at most 2000 MB due to Telegram's bot API limits.
+Send urls to [@mp4ify_bot](https://t.me/mp4ify_bot), or add it to a group. The bot will try to download the video, converting to mp4 if needed, and send it back to you if successful. In a group it skips links that only yt-dlp's generic extractor can handle (like most news articles), apart from Reddit and Instagram links. Videos must be at most 2000 MB due to Telegram's bot API limits.
 
 In a private chat with the bot, send `/verbose <url>` to get detailed logs.
 

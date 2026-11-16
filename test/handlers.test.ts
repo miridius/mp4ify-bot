@@ -1527,6 +1527,36 @@ describe('group terminal-failure feedback', () => {
     }));
 });
 
+describe('generic-extractor links', () => {
+  const article = 'https://news.example.com/article';
+  const linked = video({ webpage_url: article, extractor: 'generic' });
+
+  it('stays silent in a group chat, and sends nothing', () =>
+    withBotApi(async (api) => {
+      await serve(linked);
+      await postInGroup(api, article);
+      expect(await downloads()).toEqual([]);
+      expect(api.sentMessages).toEqual([]);
+    }));
+
+  it('still sends a Reddit link-out in a group chat', () =>
+    withBotApi(async (api) => {
+      const post = 'https://www.reddit.com/r/x/comments/y';
+      await serve(video({ webpage_url: post, extractor: 'generic' }));
+      await armProbe(10);
+      await postInGroup(api, post);
+      expect(videos(api)).toHaveLength(1);
+    }));
+
+  it('still sends the video in a private chat', () =>
+    withBotApi(async (api) => {
+      await serve(linked);
+      await armProbe(10);
+      await settle(api, api.sendTextMessageToBot(urlMessage(article)));
+      expect(videos(api)).toHaveLength(1);
+    }));
+});
+
 describe('multi-video posts', () => {
   const post = 'https://www.instagram.com/p/carousel';
   const entries = ['a', 'b', 'c'].map((id) =>
