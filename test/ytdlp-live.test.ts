@@ -12,6 +12,11 @@ it('YTDLP_CONFIG_ARGS points at the repo yt-dlp.conf', async () => {
   expect(await Bun.file(conf).exists()).toBe(true);
 });
 
+it('YTDLP_CONFIG_ARGS points at the repo yt-dlp plugins', async () => {
+  const dir = YTDLP_CONFIG_ARGS[YTDLP_CONFIG_ARGS.indexOf('--plugin-dirs') + 1]!;
+  expect(await Bun.file(`${dir}/mp4ify/yt_dlp_plugins/extractor/threads.py`).exists()).toBe(true);
+});
+
 describe('live yt-dlp helpers', () => {
   it('passes the repo config and returns stdout', async () => {
     await stub({ stdout: '{"id":"x"}\n' });

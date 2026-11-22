@@ -1,0 +1,2 @@
+# bytecode Python writes beside the yt-dlp plugin when it loads it
+**/__pycache__

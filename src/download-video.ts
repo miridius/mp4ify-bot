@@ -90,7 +90,7 @@ export type FailureKind = 'not-a-video' | 'unavailable' | 'transient';
 const NOT_A_VIDEO_PATTERNS = [
   /unsupported url/i,
   /\[reddit\] .+: no media found/i,
-  /\[instagram\] .+: there is no video in this post/i,
+  /\[(instagram|threads)\] .+: there is no video in this post/i,
   /extension \(.+\) is unusual and will be skipped/i,
 ];
 // The extractor raises the friendly message above only for a single post; a
@@ -110,8 +110,12 @@ const PERMANENT_PATTERNS = [
   /has been removed/i,
   /members[- ]only/i,
   /sign in to confirm your age/i,
-  // Reddit's login wall for this server's IP: retrying can't get past it
+  // Reddit's and Threads' login walls for this server's IP: retrying can't get
+  // past them
   /account authentication is required/i,
+  /threads did not serve the post/i,
+  // a share link to a deleted post
+  /threads did not lead to a post/i,
   // scoped to the *webpage* fetch: a webpage 403/404/410 means the URL is gone
   // or the site refuses us, but a mid-download segment 403 stays transient
   /unable to download webpage: http error (403|404|410)\b/i,

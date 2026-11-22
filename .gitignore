@@ -147,3 +147,6 @@ mp4ify.db-shm
 
 # Agent worktrees: git repos in their own right
 .claude/worktrees/
+
+# Python bytecode from loading the yt-dlp plugins
+__pycache__/

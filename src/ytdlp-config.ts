@@ -4,8 +4,9 @@ import { resolve } from 'path';
 import { isNotFound, unlinkQuiet } from './fs-utils';
 import { isOnHost } from './utils';
 
-// Netscape cookies.txt: Reddit redirects logged-out requests from our IP to
-// login. Shared by both bots: they log in as the same account.
+// Netscape cookies.txt: Reddit (always) and Threads (at times) redirect
+// logged-out requests from our IP to login. Shared by both bots: they log in
+// as the same accounts.
 export const COOKIES_FILE = '/storage/mp4ify-cookies.txt';
 
 export const REDDIT_HOSTS: readonly string[] = ['reddit.com', 'redd.it'];
@@ -16,6 +17,8 @@ export const YTDLP_CONFIG_ARGS: readonly string[] = [
   '--ignore-config',
   '--config-locations',
   resolve(import.meta.dir, '../yt-dlp.conf'),
+  '--plugin-dirs',
+  resolve(import.meta.dir, '../ytdlp-plugins'),
 ];
 
 // yt-dlp saves its whole jar back to the --cookies file on exit, so each run
