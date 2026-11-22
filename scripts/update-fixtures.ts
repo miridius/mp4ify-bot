@@ -2,7 +2,7 @@
  * Fetches real yt-dlp data for each service in video-info-duration.json
  * and updates the fixture file with current values.
  *
- * Run via ./learning-test.sh, which lends it the prod bot's Reddit cookie jar.
+ * Run via ./learning-test.sh, which lends it the prod bot's cookie jar.
  */
 import { fetchInfo } from '../test/ytdlp-live';
 

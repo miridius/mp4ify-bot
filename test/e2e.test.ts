@@ -91,6 +91,8 @@ const testUrls = [
         'https://www.reddit.com/r/nextfuckinglevel/comments/1l68isw/mix_of_coolness_agility_technique_power_and_a/?share_id=ejTJZnh_f4BZuzlnfcOUo',
         'http://youtube.com/shorts/0COu-qMC18Y',
         MADE_FOR_KIDS_VIDEO,
+        // a shared text post: the video is in the Threads post it links
+        'https://www.threads.com/share/BAbzzy-4iY',
       ]
     : []),
 ];
@@ -182,6 +184,11 @@ describe.if(!!Bun.env.TEST_E2E)('message handler', async () => {
     'https://www.instagram.com/p/DbHhjdBJT9O/',
     // a photo carousel (see PHOTO_ITEM)
     'https://www.instagram.com/p/Dbnd-yeAP9S/',
+    // a text-only Threads post: full mode only, to keep the bot's logged-in
+    // account from being hit on every push
+    ...(Bun.env.TEST_E2E_FULL
+      ? ['https://www.threads.com/@dalast1woke/post/DgC0BmIkSBH']
+      : []),
   ])(
     'stays silent for a not-a-video link in a group: %s',
     (url) =>

@@ -1424,6 +1424,25 @@ describe('isPermanentError', () => {
 });
 
 describe('classifyFailure', () => {
+  it('classifies a Threads share link that leads to no post as unavailable', () => {
+    expect(
+      classifyFailure(
+        new YtdlpError('failed', 'ERROR: [threads] share: Threads did not lead to a post'),
+      ),
+    ).toBe('unavailable');
+  });
+
+  it('classifies a Threads login wall as unavailable', () => {
+    expect(
+      classifyFailure(
+        new YtdlpError(
+          'failed',
+          'ERROR: [threads] share: Threads did not serve the post (a login wall)',
+        ),
+      ),
+    ).toBe('unavailable');
+  });
+
   it('classifies a Reddit login wall as unavailable', () => {
     expect(
       classifyFailure(
@@ -1450,6 +1469,7 @@ describe('classifyFailure', () => {
     'ERROR: Unsupported URL: https://example.com/article',
     'ERROR: [Reddit] 92dd8: No media found',
     'ERROR: [Instagram] DbHhjdBJT9O: There is no video in this post',
+    'ERROR: [threads] DgC0BmIkSBH: There is no video in this post',
     // an archive.ph page holding a PDF
     "ERROR: The extracted extension ('pdf') is unusual and will be skipped for safety reasons. If you believe this is an error, please report this issue on  https://github.com/yt-dlp/yt-dlp/issues?q= , filling out the appropriate issue template. Confirm you are on the latest version using  yt-dlp -U",
     // a photo carousel

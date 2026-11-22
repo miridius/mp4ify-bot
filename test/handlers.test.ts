@@ -1442,6 +1442,23 @@ describe('group terminal-failure feedback', () => {
       );
     }));
 
+  it('reports one 💥, without retrying, for a Threads login wall', () =>
+    withBotApi(async (api) => {
+      await failScrape(
+        'ERROR: [threads] share: Threads did not serve the post (a login wall)',
+      );
+      const linkId = await postInGroup(
+        api,
+        'https://www.threads.com/share/abc',
+      );
+      expect(await scrapes()).toHaveLength(1);
+      expectOneReport(
+        api,
+        linkId,
+        'share: Threads did not serve the post (a login wall)',
+      );
+    }));
+
   it('whitelists a trailing-dot host (reddit.com.) for the terminal report', () =>
     withBotApi(async (api) => {
       await failScrape('ERROR: Video unavailable');
@@ -1460,6 +1477,10 @@ describe('group terminal-failure feedback', () => {
     [
       'https://www.reddit.com/r/x/comments/y',
       'ERROR: [Reddit] 92dd8: No media found',
+    ],
+    [
+      'https://www.threads.com/@x/post/DgC0BmIkSBH',
+      'ERROR: [threads] DgC0BmIkSBH: There is no video in this post',
     ],
   ])('stays silent for a whitelisted not-a-video (%j)', (url, stderr) =>
     withBotApi(async (api) => {

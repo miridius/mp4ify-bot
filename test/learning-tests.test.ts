@@ -415,6 +415,14 @@ describeIntegration('yt-dlp duration reporting (live)', () => {
   );
 });
 
+describeIntegration('Threads plugin extractor (live)', () => {
+  it("finds the video in the post a shared text post links to", async () => {
+    const info = await fetchInfo('https://www.threads.com/share/BAbzzy-4iY');
+    expect(info).toMatchObject({ extractor: 'threads', id: 'Df-lgVexd3e', ext: 'mp4' });
+    expect(info.formats.length).toBeGreaterThan(0);
+  }, 120000);
+});
+
 describeIntegration('yt-dlp cookies (live)', () => {
   it('saves its whole jar back to the --cookies file on exit', async () => {
     const dir = await mkdtemp(`${tmpdir()}/learning-`);

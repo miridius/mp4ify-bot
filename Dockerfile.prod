@@ -4,7 +4,8 @@ FROM oven/bun:slim
 RUN apt-get update && \
   apt-get install -y python3 python3-pip ffmpeg curl && \
   # no venv: yt-dlp runs on the system python, so its deps must live there.
-  # curl-cffi serves Reddit's --impersonate; yt-dlp rejects curl-cffi >= 0.17
+  # curl-cffi serves Reddit's --impersonate and the Threads plugin's; yt-dlp
+  # rejects curl-cffi >= 0.17
   pip install --no-cache-dir --break-system-packages 'curl-cffi<0.17' && \
   # Install yt-dlp in its own world-writable dir so it can self-update at
   # runtime (the container runs as a non-root user)
@@ -34,6 +35,7 @@ COPY gai.conf /etc/gai.conf
 # Copy the source files
 COPY src/ ./src/
 COPY tsconfig.json yt-dlp.conf ./
+COPY ytdlp-plugins/ ./ytdlp-plugins/
 
 # Start the app
 CMD ["bun", "start"]

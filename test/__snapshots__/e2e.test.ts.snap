@@ -603,3 +603,107 @@ exports[`message handler downloads https://youtu.be/T3eBoD8H3Xg: disk cache 1`] 
   },
 ]
 `;
+
+exports[`message handler downloads https://www.threads.com/share/BAbzzy-4iY: download 1`] = `
+[
+  {
+    "chat_id": 1337,
+    "disable_notification": true,
+    "link_preview_options": {
+      "is_disabled": true,
+    },
+    "parse_mode": "HTML",
+    "reply_parameters": {
+      "message_id": 0,
+    },
+    "text": 
+"🧐 <b>Scraping</b> https://www.threads.com/share/BAbzzy-4iY...
+
+🎬 <b>Video info:</b>
+
+<b>URL</b>: https://www.threads.com/share/BAbzzy-4iY
+<b>filename</b>: Video_by__tom_christopher-[Df-lgVexd3e].<formats>.mp4
+
+⬇️ <b>Downloading...</b>
+
+🚀 <b>Uploading (<n> MB)...</b>"
+,
+  },
+  {
+    "chat_id": 1337,
+    "disable_notification": true,
+    "duration": 39,
+    "reply_parameters": {
+      "message_id": 0,
+    },
+    "supports_streaming": true,
+    "video": "file:///storage/blobs/threads:Df-lgVexd3e:<formats>.mp4",
+  },
+]
+`;
+
+exports[`message handler downloads https://www.threads.com/share/BAbzzy-4iY: mem cache 1`] = `
+[
+  {
+    "chat_id": 1337,
+    "disable_notification": true,
+    "link_preview_options": {
+      "is_disabled": true,
+    },
+    "parse_mode": "HTML",
+    "reply_parameters": {
+      "message_id": 1,
+    },
+    "text": 
+"
+🎬 <b>Video info:</b>
+
+<b>URL</b>: https://www.threads.com/share/BAbzzy-4iY
+<b>filename</b>: Video_by__tom_christopher-[Df-lgVexd3e].<formats>.mp4"
+,
+  },
+  {
+    "chat_id": 1337,
+    "disable_notification": true,
+    "duration": 39,
+    "reply_parameters": {
+      "message_id": 1,
+    },
+    "supports_streaming": true,
+    "video": "<file_id>",
+  },
+]
+`;
+
+exports[`message handler downloads https://www.threads.com/share/BAbzzy-4iY: disk cache 1`] = `
+[
+  {
+    "chat_id": 1337,
+    "disable_notification": true,
+    "link_preview_options": {
+      "is_disabled": true,
+    },
+    "parse_mode": "HTML",
+    "reply_parameters": {
+      "message_id": 2,
+    },
+    "text": 
+"
+🎬 <b>Video info:</b>
+
+<b>URL</b>: https://www.threads.com/share/BAbzzy-4iY
+<b>filename</b>: Video_by__tom_christopher-[Df-lgVexd3e].<formats>.mp4"
+,
+  },
+  {
+    "chat_id": 1337,
+    "disable_notification": true,
+    "duration": 39,
+    "reply_parameters": {
+      "message_id": 2,
+    },
+    "supports_streaming": true,
+    "video": "<file_id>",
+  },
+]
+`;

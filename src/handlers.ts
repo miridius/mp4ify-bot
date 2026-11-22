@@ -219,7 +219,12 @@ export const processJob = async (
     ? processUrlJob(telegram, job, attempt)
     : processConfirmedJob(telegram, job, attempt);
 
-const EXPLICIT_ASK_HOSTS = ['instagram.com', ...REDDIT_HOSTS];
+const EXPLICIT_ASK_HOSTS = [
+  'instagram.com',
+  'threads.com',
+  'threads.net',
+  ...REDDIT_HOSTS,
+];
 
 const isTerminal = (e: unknown, attempt: number, kind?: FailureKind) =>
   isPermanentError(e, kind) || attempt >= MAX_ATTEMPTS;

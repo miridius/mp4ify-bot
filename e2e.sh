@@ -1,8 +1,8 @@
 #!/bin/sh
 # Usage: ./e2e.sh [full] [-u]
 #   full  also test rate-limit-prone sites (youtube rejects more than a few
-#         hits per hour; reddit is scraped as the prod bot's logged-in
-#         account) and the multi-video case (one more scrape of
+#         hits per hour; reddit and threads are scraped as the prod bot's
+#         logged-in accounts) and the multi-video case (one more scrape of
 #         instagram, which rate-limits too). Used by the deploy gate
 #         (prod.sh); the pre-push hook runs the reduced set.
 #   -u    refresh snapshots, or record a new test's. Implies full: `bun
@@ -20,11 +20,11 @@ for arg in "$@"; do
 done
 # a backstop past the mode's summed per-test timeouts in test/e2e.test.ts
 TIMEOUT=1200
-[ -n "$FULL" ] && TIMEOUT=4600
+[ -n "$FULL" ] && TIMEOUT=5400
 JAR=""
 set --
 if [ -n "$FULL" ]; then
-  # the Reddit cases need the prod bot's login
+  # the Reddit and Threads cases need the prod bot's login
   . scripts/borrow-cookie-jar.sh
   borrow_cookie_jar || exit 1
   set -- -v "$JAR_VOLUME"

@@ -4,14 +4,14 @@ cd "$(dirname "$0")"
 
 docker compose build test
 
-# the live Reddit fixture needs the prod bot's login
+# the live Reddit and Threads cases need the prod bot's login
 . scripts/borrow-cookie-jar.sh
 MOUNT=()
 if borrow_cookie_jar; then
   trap 'rm -r "$JAR"' EXIT
   MOUNT=(-v "$JAR_VOLUME")
 else
-  echo "the reddit fixture will fail" >&2
+  echo "the reddit and threads cases will fail" >&2
 fi
 # a backstop past the summed per-test timeouts in test/learning-tests.test.ts,
 # which also covers update-fixtures' fewer fetches of the same URLs
