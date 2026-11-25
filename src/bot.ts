@@ -111,8 +111,10 @@ export const start = async (botToken: string) => {
   await assertBlobDirUsable();
   await contain('sweepOrphanBlobs', sweepOrphanBlobs);
 
-  // keep yt-dlp fresh: extractors break as sites change out from under us
-  updateYtdlp();
+  // keep yt-dlp fresh: extractors break as sites change out from under us.
+  // The dev bot skips the boot check: it reboots on every code reload, and
+  // both bots spend one GitHub API budget (see YTDLP_UPDATE_INTERVAL_MS)
+  if (Bun.env.NODE_ENV !== 'development') updateYtdlp();
   setInterval(updateYtdlp, YTDLP_UPDATE_INTERVAL_MS).unref();
 
   // Hourly TTL housekeeping (boot + interval), bounding growth between

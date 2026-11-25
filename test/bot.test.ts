@@ -62,7 +62,11 @@ const stopJobQueue = spyMock(jobQueue, 'stopJobQueue');
 describe('start', async () => {
   const botToken = 'test-token';
 
-  const bot = await start(botToken);
+  const nodeEnv = Bun.env.NODE_ENV;
+  Bun.env.NODE_ENV = 'production';
+  const bot = await start(botToken).finally(() => {
+    Bun.env.NODE_ENV = nodeEnv;
+  });
 
   expect(updateYtdlp).toHaveBeenCalledTimes(1);
   expect(setIntervalSpy).toHaveBeenCalledWith(

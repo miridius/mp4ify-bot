@@ -89,6 +89,12 @@ export const MIGRATIONS: string[] = [
   // uploaded row's file_id would keep re-sending them; a missing row just
   // re-downloads
   `DELETE FROM blobs;`,
+  // the page each file the bot sent came from, found again from a reply to it
+  // (see sourceOf)
+  `CREATE TABLE sent_files (
+    file_unique_id TEXT PRIMARY KEY,
+    url            TEXT NOT NULL
+  );`,
 ];
 
 // Exported so the migration tests replay THIS loop against a scratch DB (a
@@ -114,6 +120,6 @@ export const tx = <T>(fn: () => T): T => db.transaction(fn)();
 // known-empty store (the container's DB persists within one `bun test` run).
 export const resetDb = () => {
   db.exec(
-    'DELETE FROM jobs; DELETE FROM pending; DELETE FROM blobs; DELETE FROM video_info; DELETE FROM handled_urls; DELETE FROM sqlite_sequence;',
+    'DELETE FROM jobs; DELETE FROM pending; DELETE FROM blobs; DELETE FROM video_info; DELETE FROM handled_urls; DELETE FROM sent_files; DELETE FROM sqlite_sequence;',
   );
 };

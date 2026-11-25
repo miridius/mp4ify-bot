@@ -10,6 +10,7 @@ import {
   mock,
 } from 'bun:test';
 import { rm } from 'fs/promises';
+import { basename } from 'path';
 import { db, resetDb } from '../src/db';
 import { downloadVideo, getInfos } from '../src/download-video';
 import { SEVERAL_VIDEOS } from '../src/handlers';
@@ -22,6 +23,7 @@ import {
   type MockBotApi,
 } from './simulate-bot-api';
 import {
+  commandMessage,
   resetStub,
   rowCount,
   seedBytes,
@@ -53,7 +55,7 @@ const lastJobId = () =>
 
 const runJob = async (
   api: MockBotApi,
-  msg: ReturnType<typeof urlMessage>,
+  msg: Parameters<MockBotApi['sendTextMessageToBot']>[0],
   timeout: number,
   chat?: typeof MOCK_GROUP_CHAT,
 ) => {
@@ -129,7 +131,7 @@ const scrub = (messages: unknown) =>
       .replaceAll(/(\/storage\/blobs\/[^:"]+:[^:"]+:)[^"]+(\.\w+")/g, '$1<formats>$2')
       .replaceAll(/("video":")(?!file:)[0-9a-z]+(")/g, '$1<file_id>$2')
       .replaceAll(/\d+(\.\d+)? MB/g, '<n> MB')
-      .replaceAll(/@ \d+(\.\d+)? kbps/g, '@ <n> kbps')
+      .replaceAll(/ @ \d+(\.\d+)? kbps/g, '')
       .replaceAll(/codec<\/b>: [^\s\\]+/g, (codec) => codec.toLowerCase()),
   );
 
@@ -178,6 +180,33 @@ describe.if(!!Bun.env.TEST_E2E)('message handler', async () => {
       expect(scrub(api.sentMessages)).toMatchSnapshot('disk cache');
     });
   it.each(testUrls)('downloads %s', downloads, DOWNLOAD_TEST_MS);
+
+  it(
+    "sends a video's audio track on /audio",
+    () =>
+      withBotApi(async (api) => {
+        api.probeUploads = true;
+        clearInMemoryCache();
+        const url = testUrls[0]!;
+        const msg = commandMessage(`/audio ${url}`, url);
+        const audios = () => api.sentMessages.filter((m) => m.audio);
+
+        await runJob(api, msg, FIRST_DELIVERY_MS);
+        expect(audios()).toHaveLength(1);
+        const sent = audios()[0]!.audio!;
+        const name = basename(Bun.fileURLToPath(sent));
+        expect(name).not.toStartWith('Video by');
+        expect(name).not.toBe('audio.m4a');
+        expect(name).toEndWith('.m4a');
+        expect(api.uploadedCodecs).toEqual([['aac']]);
+
+        api.sentMessages.length = 0;
+        await runJob(api, msg, 5_000);
+        expect(audios()).toHaveLength(1);
+        expect(audios()[0]!.audio).not.toStartWith('file:');
+      }),
+    DOWNLOAD_TEST_MS,
+  );
 
   it.each([
     // a lone photo

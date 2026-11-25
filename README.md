@@ -6,6 +6,8 @@ A telegram bot that turns links into videos, so that you don't have to deal with
 
 Send urls to [@mp4ify_bot](https://t.me/mp4ify_bot), or add it to a group. The bot will try to download the video, converting to mp4 if needed, and send it back to you if successful. In a group it skips links that only yt-dlp's generic extractor can handle (like most news articles), apart from Reddit, Instagram and Threads links. Videos must be at most 2000 MB due to Telegram's bot API limits.
 
+Send `/audio <url>`, or reply `/audio` to a message with a link or to a video the bot sent, to get just the audio track, as an m4a file. Reply `/source` to a video the bot sent to get the page it came from.
+
 In a private chat with the bot, send `/verbose <url>` to get detailed logs.
 
 > **Note:** x.com links are intentionally not supported by default, because I do not want to have anything to do with a site that promotes obvious evils such as fascism. If you want to use the bot for x.com, you can self-host it and remove the `--use-extractors` line from yt-dlp.conf. If you think there are other sites that I should block as well, please let me know (or just make a PR).

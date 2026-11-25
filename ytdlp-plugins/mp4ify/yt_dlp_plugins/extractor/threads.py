@@ -74,7 +74,7 @@ class ThreadsIE(InstagramBaseIE):
             **self._extract_product_media(media),
         }
         entry['id'] = entry['id'] or post_id
-        # parseCaption (src/handlers.ts) shows the description for a title that
+        # parseCaption (src/download-video.ts) shows the description for a title that
         # is the id or starts with 'Video by '
         entry['title'] = f'Video by {username}' if username else entry['id']
         return entry

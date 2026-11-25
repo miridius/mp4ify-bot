@@ -1,4 +1,5 @@
 import type { Telegram } from 'telegraf';
+import type { Message } from 'telegraf/types';
 import {
   blobKey,
   getBlob,
@@ -10,6 +11,7 @@ import {
 import { INLINE_CACHE_CHAT_ID } from './consts';
 import { db } from './db';
 import {
+  audioOf,
   classifyFailure,
   downloadVideo,
   firstInfo,
@@ -17,10 +19,13 @@ import {
   isDownloaded,
   isPermanentError,
   knownDuration,
+  logFormats,
+  parseCaption,
   probeDuration,
   removeCachedInfo,
   sendInfo,
-  sendVideo,
+  sendMedia,
+  sourceOf,
   tooLargeMessage,
   tooLargeToSend,
   YtdlpError,
@@ -97,8 +102,15 @@ const stashLog = (job: Job, log: LogMessage) => {
 // A terminal verdict stays retryable by editing the message: yt-dlp may have
 // self-updated since, or the site, format, or post changed.
 const reopenEditRetry = (job: Job) => {
-  deleteHandledStmt.run(job.chatId, job.messageId, job.url);
+  deleteHandledStmt.run(
+    job.chatId,
+    job.messageId,
+    handledKey(job.url, job.kind === 'url' && job.audio),
+  );
 };
+
+const handledKey = (url: string, audio?: boolean) =>
+  audio ? `/audio ${url}` : url;
 
 const endWithVerdict = async (log: LogMessage, job: Job, verdict?: string) => {
   if (verdict) log.append(verdict);
@@ -106,32 +118,74 @@ const endWithVerdict = async (log: LogMessage, job: Job, verdict?: string) => {
   reopenEditRetry(job);
 };
 
+export const SOURCE_HINT =
+  "I can't find where that came from. Reply /source to a video or audio I sent.";
+
 export const SEVERAL_VIDEOS =
   '📚 This post has several videos. I only send links with a single video.';
 
-export const textMessageHandler = async (ctx: MessageContext) => {
-  const { text, chat, entities, message_id, from } =
-    ctx.message || ctx.editedMessage;
-  console.debug('got message:', text);
-  const verbose = chat.type === 'private' && text.startsWith('/verbose ');
+// normalize BEFORE deduping and recording: "example.com/v" and its
+// https-prefixed twin are one video, both within a message and across edits
+const linksIn = ({
+  text = '',
+  entities = [],
+}: Partial<Message.TextMessage>) => [
+  ...new Set(
+    entities
+      .filter((e) => e.type === 'url')
+      .map((e) => ensureScheme(text.slice(e.offset, e.offset + e.length))),
+  ),
+];
 
-  // normalize BEFORE deduping and recording: "example.com/v" and its
-  // https-prefixed twin are one video, both within a message and across edits
-  const urls = [
-    ...new Set(
-      entities
-        ?.filter((e) => e.type === 'url')
-        .map((e) => ensureScheme(text.slice(e.offset, e.offset + e.length))) ||
-        [],
-    ),
-  ];
+export const textMessageHandler = async (ctx: MessageContext) => {
+  const message = ctx.message || ctx.editedMessage;
+  const { text, chat, entities, message_id, from } = message;
+  console.debug('got message:', text);
+  const command = entities?.find((e) => e.type === 'bot_command' && !e.offset);
+  const [name, addressee] = command
+    ? text.slice(1, command.length).toLowerCase().split('@')
+    : [];
+  if (
+    chat.type !== 'private' &&
+    addressee &&
+    addressee !== ctx.botInfo.username.toLowerCase()
+  ) {
+    return;
+  }
+  const audio = name === 'audio';
+  const verbose = chat.type === 'private' && name === 'verbose';
+
+  const replied = message.reply_to_message as
+    | Partial<Message.TextMessage & Message.VideoMessage & Message.AudioMessage>
+    | undefined;
+  if (name === 'source') {
+    const source = sourceOf(replied);
+    // an edit re-runs this handler
+    if (ctx.editedMessage || (!source && chat.type !== 'private')) return;
+    await ctx.telegram.sendMessage(chat.id, source ?? SOURCE_HINT, {
+      reply_parameters: { message_id },
+      link_preview_options: { is_disabled: true },
+    });
+    return;
+  }
+
+  let urls = linksIn(message);
+  if (audio && !urls.length && replied) {
+    const source = sourceOf(replied);
+    if (source) urls = [source];
+    else {
+      urls = linksIn(replied);
+      // the bot's progress message holds the sent link and its canonical twin
+      if (replied.from?.id === ctx.botInfo.id) urls = urls.slice(0, 1);
+    }
+  }
   const handled = new Set(
     selectHandledStmt.all(chat.id, message_id).map((r) => r.url),
   );
 
   await Promise.all(
     urls
-      .filter((url) => !handled.has(url))
+      .filter((url) => !handled.has(handledKey(url, audio)))
       .map(async (url) => {
         try {
           // The record is the enqueue guard: it commits in the SAME
@@ -155,10 +209,15 @@ export const textMessageHandler = async (ctx: MessageContext) => {
               // from-less case, arrive on channel_post, which we don't handle
               fromId: from?.id ?? 0,
               verbose,
+              audio,
             },
             () =>
-              insertHandledStmt.run(chat.id, message_id, url, Date.now())
-                .changes > 0,
+              insertHandledStmt.run(
+                chat.id,
+                message_id,
+                handledKey(url, audio),
+                Date.now(),
+              ).changes > 0,
           );
         } catch (e: any) {
           // the tx rolled the handled record back with the failed insert, so
@@ -175,7 +234,7 @@ export const textMessageHandler = async (ctx: MessageContext) => {
   );
 };
 
-type Sent = Awaited<ReturnType<typeof sendVideo>>;
+type Sent = Awaited<ReturnType<typeof sendMedia>>;
 
 function downloadAndSend(
   telegram: Telegram,
@@ -206,7 +265,7 @@ function downloadAndSend(
   return withBlobLock(info, async (): Promise<Sent | 'held'> => {
     console.debug(await downloadVideo(log, info, verbose));
     if (await holdBack?.()) return 'held';
-    return sendVideo(telegram, log, info, chatId, replyTo);
+    return sendMedia(telegram, log, info, chatId, replyTo);
   });
 }
 
@@ -234,19 +293,25 @@ const processUrlJob = async (
   job: UrlJob,
   attempt: number,
 ) => {
-  const { url, chatId, chatType, messageId, verbose } = job;
+  const { url, chatId, chatType, messageId, verbose, audio } = job;
   // progress logs go to private chats only: see logFor
   const log = logFor(telegram, chatType, logDestFor(job));
   const isGroupChat = chatType !== 'private';
-  const explicitAsk = isOnHost(url, EXPLICIT_ASK_HOSTS);
+  const gateLong = isGroupChat && !audio;
+  const explicitAsk = audio || isOnHost(url, EXPLICIT_ASK_HOSTS);
   let resolved: VideoInfo | undefined;
   try {
     const infos = await getInfos(log, url, verbose);
     if (infos.length > 1) {
-      await endWithVerdict(log, job, `\n${SEVERAL_VIDEOS}`);
+      const tellGroup = isGroupChat && audio;
+      await endWithVerdict(
+        tellGroup ? new LogMessage(telegram, logDestFor(job)) : log,
+        job,
+        (tellGroup ? '' : '\n') + SEVERAL_VIDEOS,
+      );
       return;
     }
-    const info = infos[0]!;
+    const info = audio ? audioOf(infos[0]!) : infos[0]!;
     // the generic extractor takes whatever file a page links to (e.g. a news
     // article's magazine PDF) for its video
     if (isGroupChat && info.extractor === 'generic' && !explicitAsk) {
@@ -255,14 +320,19 @@ const processUrlJob = async (
     }
     resolved = info;
     const infoReachedChat = job.infoShown && job.logMessageId != null;
-    if (!infoReachedChat) await sendInfo(log, info, verbose);
     job.infoShown = true;
-    const tooLarge = tooLargeToSend(info);
+    // the scraped info (size, resolution, codecs) is the video's, not its
+    // audio track's
+    if (!infoReachedChat) {
+      if (audio) logFormats(info);
+      else await sendInfo(log, info, verbose);
+    }
+    const tooLarge = !audio && tooLargeToSend(info);
     if (tooLarge) {
       await endWithVerdict(log, job, `\n${tooLargeMessage(tooLarge)}`);
       return;
     }
-    const duration = isGroupChat ? knownDuration(info) : undefined;
+    const duration = gateLong ? knownDuration(info) : undefined;
     if (duration && duration > LONG_VIDEO_THRESHOLD_SECS) {
       await requestConfirmation(telegram, job, info, duration);
       return;
@@ -287,7 +357,7 @@ const processUrlJob = async (
       verbose,
       chatId,
       messageId,
-      isGroupChat ? parkIfLong : undefined,
+      gateLong ? parkIfLong : undefined,
     );
     if (!sent) await endWithVerdict(log, job);
   } catch (e: any) {
@@ -304,11 +374,11 @@ const processUrlJob = async (
     const kind = classifyFailure(e);
     const terminal = isTerminal(e, attempt, kind);
     // product policy: a not-a-video post (photo/article) never draws a group
-    // reply, whatever the host
+    // reply, whatever the host, unless /audio asked for it
     const tellGroup =
       isGroupChat &&
       terminal &&
-      kind !== 'not-a-video' &&
+      (kind !== 'not-a-video' || audio) &&
       (resolved != null || explicitAsk);
     const reportLog = tellGroup
       ? new LogMessage(telegram, logDestFor(job))
@@ -558,17 +628,6 @@ const handleCallbackQuery = async (ctx: CallbackQueryContext) => {
 const urlRegex =
   /(http(s)?:\/\/.)?(www\.)?[-a-zA-Z0-9@:%._+~#=]{2,256}\.[a-z]{2,63}\b([-a-zA-Z0-9@:%_+.~#?&/=]*)/g;
 
-const parseCaption = ({
-  title,
-  extractor,
-  playlist_title,
-  id,
-  description,
-}: any) =>
-  (title === extractor && playlist_title) ||
-  ((title === id || title.startsWith('Video by ')) && description) ||
-  title;
-
 const answerTooLarge = (ctx: InlineQueryContext, size?: string) => {
   const suffix = size ? ` (${size})` : '';
   return ctx.answerInlineQuery([
@@ -617,23 +676,23 @@ const handleInlineQuery = async (ctx: InlineQueryContext) => {
       await answerTooLarge(ctx, tooLarge);
       return;
     }
-    const msg = await downloadAndSend(
+    const fileId = await downloadAndSend(
       ctx.telegram,
       log,
       info,
       false,
       INLINE_CACHE_CHAT_ID,
     );
-    // sendVideo returns undefined only when the real bytes exceeded the limit
+    // sendMedia returns undefined only when the real bytes exceeded the limit
     // (the estimate above was missing/under): tell the user, don't answer blank
-    if (!msg) {
+    if (!fileId) {
       await answerTooLarge(ctx);
       return;
     }
 
     const video = {
       type: 'video' as const,
-      video_file_id: msg.video.file_id,
+      video_file_id: fileId,
     };
     const caption = parseCaption(info);
     const src = {

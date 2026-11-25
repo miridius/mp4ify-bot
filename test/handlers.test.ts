@@ -19,7 +19,12 @@ import {
   type VideoInfo,
 } from '../src/download-video';
 import { INLINE_CACHE_CHAT_ID } from '../src/consts';
-import { inlineIdle, processJob, SEVERAL_VIDEOS } from '../src/handlers';
+import {
+  inlineIdle,
+  processJob,
+  SEVERAL_VIDEOS,
+  SOURCE_HINT,
+} from '../src/handlers';
 import {
   setRetryBaseMs,
   type ConfirmedJob,
@@ -36,6 +41,7 @@ import {
 } from './simulate-bot-api';
 import {
   bytesOnDisk,
+  commandMessage,
   recordMp4Blob,
   resetStub,
   rowCount,
@@ -196,6 +202,7 @@ describe('a private text message', () => {
             messageId: messageOf(u).message_id,
             fromId: MOCK_USER_ID,
             verbose: false,
+            audio: false,
           },
         ]);
         await unblockStub();
@@ -1575,6 +1582,294 @@ describe('generic-extractor links', () => {
       await armProbe(10);
       await settle(api, api.sendTextMessageToBot(urlMessage(article)));
       expect(videos(api)).toHaveLength(1);
+    }));
+});
+
+describe('/audio', () => {
+  const audios = (api: MockBotApi) =>
+    api.sentMessages.filter((m) => m.audio);
+
+  it('sends the audio track, downloaded with the audio args', () =>
+    withBotApi(async (api) => {
+      await serve();
+      await armProbe(10);
+      await settle(
+        api,
+        api.sendTextMessageToBot(commandMessage(`/audio ${TEST_URL}`, TEST_URL)),
+      );
+      expect(await downloads()).toEqual([
+        expect.stringContaining('-x --audio-format m4a'),
+      ]);
+      expect(audios(api)).toEqual([
+        expect.objectContaining({ title: 'Test Video', duration: 10 }),
+      ]);
+      expect(videos(api)).toEqual([]);
+    }));
+
+  it("sends a long video's audio in a group without asking first", () =>
+    withBotApi(async (api) => {
+      await serve(video({ duration: LONG }));
+      await armProbe(LONG);
+      const text = `/audio@${api.bot.username} ${TEST_URL}`;
+      await settle(
+        api,
+        api.sendTextMessageToBot(commandMessage(text, TEST_URL), MOCK_GROUP_CHAT),
+      );
+      expect(prompts(api)).toEqual([]);
+      expect(audios(api)).toHaveLength(1);
+    }));
+
+  it('sends a generic-extractor link\'s audio in a group', () =>
+    withBotApi(async (api) => {
+      const article = 'https://news.example.com/article';
+      await serve(video({ webpage_url: article, extractor: 'generic' }));
+      await armProbe(10);
+      await settle(
+        api,
+        api.sendTextMessageToBot(
+          commandMessage(`/audio ${article}`, article),
+          MOCK_GROUP_CHAT,
+        ),
+      );
+      expect(audios(api)).toHaveLength(1);
+    }));
+
+  it("leaves another bot's command in a group to that bot", () =>
+    withBotApi(async (api) => {
+      await serve();
+      const { message } = payloads.payloads.group_audio_command_for_dev_bot;
+      await settle(
+        api,
+        api.sendTextMessageToBot(message as any, MOCK_GROUP_CHAT),
+      );
+      expect(rowCount('handled_urls')).toBe(0);
+      expect(api.sentMessages).toEqual([]);
+    }));
+
+  it('takes the link from the message an /audio replies to', () =>
+    withBotApi(async (api) => {
+      const { message } = payloads.payloads.dm_audio_reply_to_link;
+      const link = message.reply_to_message.text;
+      await serve(video({ webpage_url: link }));
+      await armProbe(10);
+      await settle(api, api.sendTextMessageToBot(message as any));
+      expect(await scrapes()).toEqual([
+        expect.stringContaining(`yt-dlp ${link} `),
+      ]);
+      expect(audios(api)).toHaveLength(1);
+    }));
+
+  it('takes only the sent link from a reply to its own progress message', () =>
+    withBotApi(async (api) => {
+      const { message } = payloads.payloads.dm_audio_reply_to_progress_log;
+      const sentLink = 'https://youtu.be/jNQXAC9IVRw';
+      await serve(video({ webpage_url: sentLink }));
+      await armProbe(10);
+      const reply = { ...message.reply_to_message, from: api.bot };
+      await settle(
+        api,
+        api.sendTextMessageToBot({ ...message, reply_to_message: reply } as any),
+      );
+      expect(await scrapes()).toEqual([
+        expect.stringContaining(`yt-dlp ${sentLink} `),
+      ]);
+      expect(audios(api)).toHaveLength(1);
+      expect(rowCount('handled_urls')).toBe(1);
+    }));
+
+  it("takes every link from a reply to a person's message", () =>
+    withBotApi(async (api) => {
+      const { message } = payloads.payloads.dm_audio_reply_to_progress_log;
+      await stub({ block: '1' });
+      const reply = { ...message.reply_to_message, from: message.reply_to_message.chat };
+      const u = api.sendTextMessageToBot({ ...message, reply_to_message: reply } as any);
+      expect(await waitUntil(() => api.handledOffset > u.update_id)).toBe(true);
+      expect(rowCount('handled_urls')).toBe(2);
+      await unblockStub();
+      await settle(api, u);
+    }));
+
+  // the captured reply, pointed at the file this mock sent
+  const replyToSentVideo = (api: MockBotApi, text: string) => {
+    const { message } = payloads.payloads.dm_audio_reply_to_bot_video;
+    const { file_unique_id } = db
+      .query('SELECT file_unique_id FROM sent_files')
+      .get() as { file_unique_id: string };
+    const { video } = message.reply_to_message;
+    return api.sendTextMessageToBot({
+      text,
+      entities: [{ offset: 0, length: text.length, type: 'bot_command' }],
+      reply_to_message: {
+        ...message.reply_to_message,
+        from: api.bot,
+        video: { ...video, file_unique_id },
+      },
+    } as any);
+  };
+
+  it('sends the audio of a video it sent, on an /audio reply', () =>
+    withBotApi(async (api) => {
+      await serve();
+      await armProbe(10);
+      await settle(api, api.sendTextMessageToBot(urlMessage(TEST_URL)));
+      await settle(api, replyToSentVideo(api, '/audio'));
+      expect(audios(api)).toHaveLength(1);
+    }));
+
+  it("replies to /source with a sent video's page", () =>
+    withBotApi(async (api) => {
+      await serve();
+      await armProbe(10);
+      await settle(api, api.sendTextMessageToBot(urlMessage(TEST_URL)));
+      await settle(api, replyToSentVideo(api, '/source'));
+      expect(texts(api).at(-1)).toBe(TEST_URL);
+    }));
+
+  it('says how to use /source when it answers nothing it sent', () =>
+    withBotApi(async (api) => {
+      await settle(
+        api,
+        api.sendTextMessageToBot({
+          text: '/source',
+          entities: [{ offset: 0, length: 7, type: 'bot_command' }],
+        }),
+      );
+      expect(texts(api)).toEqual([SOURCE_HINT]);
+    }));
+
+  it('stays quiet on a /source it cannot answer in a group', () =>
+    withBotApi(async (api) => {
+      await settle(
+        api,
+        api.sendTextMessageToBot(
+          { text: '/source', entities: [{ offset: 0, length: 7, type: 'bot_command' }] },
+          MOCK_GROUP_CHAT,
+        ),
+      );
+      expect(api.sentMessages).toEqual([]);
+    }));
+
+  it('ignores an edit to a /source message', () =>
+    withBotApi(async (api) => {
+      await settle(
+        api,
+        api.sendEditedMessageToBot({
+          message_id: 42,
+          text: '/source',
+          entities: [{ offset: 0, length: 7, type: 'bot_command' }],
+        }),
+      );
+      expect(api.sentMessages).toEqual([]);
+    }));
+
+  it('ignores a plain message replying to a link', () =>
+    withBotApi(async (api) => {
+      const { message } = payloads.payloads.dm_audio_reply_to_link;
+      await settle(
+        api,
+        api.sendTextMessageToBot({ ...message, text: 'nice', entities: [] } as any),
+      );
+      expect(await scrapes()).toEqual([]);
+      expect(api.sentMessages).toEqual([]);
+    }));
+
+  it('takes any /audio in a private chat as its own', () =>
+    withBotApi(async (api) => {
+      await serve();
+      await armProbe(10);
+      await settle(
+        api,
+        api.sendTextMessageToBot(commandMessage(`/audio@other_bot ${TEST_URL}`, TEST_URL)),
+      );
+      expect(audios(api)).toHaveLength(1);
+    }));
+
+  it.each([undefined, MOCK_GROUP_CHAT])(
+    'reports a video with no audio track without retrying, and reopens the link to edits (group: %p)',
+    (chat) =>
+      withBotApi(async (api) => {
+        await stubScrape([video()]);
+        await failDownload(
+          'ERROR: Postprocessing: WARNING: unable to obtain file audio codec with ffprobe',
+        );
+        await settle(
+          api,
+          api.sendTextMessageToBot(commandMessage(`/audio ${TEST_URL}`, TEST_URL), chat),
+        );
+        expect(await downloads()).toHaveLength(1);
+        expect(texts(api).at(-1)).toContain(
+          'Download failed</b>: This video has no audio track',
+        );
+        expect(rowCount('handled_urls')).toBe(0);
+      }),
+  );
+
+  it('leaves the video info out of an /audio reply', () =>
+    withBotApi(async (api) => {
+      await serve();
+      await armProbe(10);
+      await settle(
+        api,
+        api.sendTextMessageToBot(commandMessage(`/audio ${TEST_URL}`, TEST_URL)),
+      );
+      expect(texts(api).join()).not.toContain('Video info');
+      expect(audios(api)).toHaveLength(1);
+    }));
+
+  it('sends the audio when an edit adds /audio to a sent link', () =>
+    withBotApi(async (api) => {
+      await serve();
+      await armProbe(10);
+      const sent = api.sendTextMessageToBot(urlMessage(TEST_URL));
+      await settle(api, sent);
+      await settle(
+        api,
+        api.sendEditedMessageToBot({
+          message_id: sent.message!.message_id,
+          ...commandMessage(`/audio ${TEST_URL}`, TEST_URL),
+        }),
+      );
+      expect(videos(api)).toHaveLength(1);
+      expect(audios(api)).toHaveLength(1);
+    }));
+
+  it('reports a not-a-video link to an /audio in a group', () =>
+    withBotApi(async (api) => {
+      await failScrape('ERROR: Unsupported URL: https://example.com');
+      await settle(
+        api,
+        api.sendTextMessageToBot(
+          commandMessage(`/audio ${TEST_URL}`, TEST_URL),
+          MOCK_GROUP_CHAT,
+        ),
+      );
+      expect(texts(api)).toEqual([
+        expect.stringContaining('Download failed</b>: Unsupported URL'),
+      ]);
+    }));
+
+  it('tells a group that an /audio link has several videos', () =>
+    withBotApi(async (api) => {
+      await stubScrape([video({ id: 'a' }), video({ id: 'b' })]);
+      await settle(
+        api,
+        api.sendTextMessageToBot(
+          commandMessage(`/audio ${TEST_URL}`, TEST_URL),
+          MOCK_GROUP_CHAT,
+        ),
+      );
+      expect(texts(api)).toEqual([SEVERAL_VIDEOS]);
+    }));
+
+  it('ignores a video too large to send, since its audio is not', () =>
+    withBotApi(async (api) => {
+      await serve(video({ filesize: tooBig }));
+      await armProbe(10);
+      await settle(
+        api,
+        api.sendTextMessageToBot(commandMessage(`/audio ${TEST_URL}`, TEST_URL)),
+      );
+      expect(audios(api)).toHaveLength(1);
     }));
 });
 
