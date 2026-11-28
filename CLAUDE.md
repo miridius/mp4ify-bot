@@ -8,7 +8,7 @@ telegram-bot-api server.
   host). The in-container `timeout` bounds the run so a hung/non-exiting `bun
   test` self-kills and `--rm` cleans up instead of orphaning a 100%-CPU
   container; keep it, especially when backgrounding the run:
-  `UID=$(id -u) GID=$(id -g) docker compose run --build --rm --no-deps test timeout -k 30 300 bun test`
+  `HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose run --build --rm --no-deps test timeout -k 30 300 bun test`
 - Everything goes on a branch + PR (main is protected). Use /commit, /pr,
   and /merge instead of raw `git commit`, `gh pr create`, `gh pr merge`.
 - Never assume Telegram API behavior from the docs — verify against real

@@ -11,6 +11,7 @@ const fixtures = await Bun.file(fixturePath).json();
 const fields = ['extractor', 'duration', 'duration_string', 'is_live', 'was_live'] as const;
 
 let hasChanges = false;
+const failed: string[] = [];
 
 for (const [service, entry] of Object.entries<any>(fixtures.services)) {
   if (!entry.url) {
@@ -24,6 +25,7 @@ for (const [service, entry] of Object.entries<any>(fixtures.services)) {
     info = await fetchInfo(entry.url);
   } catch (e: any) {
     console.error(`  FAILED: ${e.message}`);
+    failed.push(service);
     continue;
   }
   let serviceChanged = false;
@@ -46,6 +48,12 @@ for (const [service, entry] of Object.entries<any>(fixtures.services)) {
 if (hasChanges) {
   await Bun.write(fixturePath, JSON.stringify(fixtures, null, 2) + '\n');
   console.log('\nFixtures updated.');
-} else {
+} else if (!failed.length) {
   console.log('\nAll fixtures already up to date.');
+}
+
+if (failed.length) {
+  console.error(`\nFetch failed for: ${failed.join(', ')}`);
+  // apart from a crash's 1, so learning-test.sh can re-run on what it got
+  process.exitCode = 2;
 }

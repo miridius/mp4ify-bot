@@ -45,6 +45,8 @@ cp .env.example .env.dev
 cp .env.example .env.prod
 ```
 
+   For inline mode, also set `INLINE_CACHE_CHAT_ID` to a group your bot is in: inline queries upload their video there.
+
 4. Start the bot(s) using _one_ of the following commands:
 
 ```bash

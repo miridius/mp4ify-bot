@@ -20,6 +20,7 @@ import {
 } from '../src/download-video';
 import { INLINE_CACHE_CHAT_ID } from '../src/consts';
 import {
+  firstLink,
   inlineIdle,
   processJob,
   SEVERAL_VIDEOS,
@@ -233,6 +234,15 @@ describe('a private text message', () => {
         ]);
       }),
   );
+
+  it('lowercases an auto-capitalised link before scraping it', () =>
+    withBotApi(async (api) => {
+      await serve();
+      await settle(api, api.sendTextMessageToBot(urlMessage('Youtu.be/AbC')));
+      expect(await scrapes()).toEqual([
+        expect.stringContaining('yt-dlp https://youtu.be/AbC '),
+      ]);
+    }));
 
   it.each([false, true])(
     'prepends a scheme to a host that merely starts with "http" (edit: %p)',
@@ -583,10 +593,19 @@ describe('inline queries', () => {
       ]);
     }));
 
-  it('does nothing if the query holds no URL', () =>
+  it('does nothing for a query with no link', () =>
     withBotApi(async (api) => {
-      expect(await ask(api, 'no url here')).toEqual([]);
+      expect(await ask(api, 'see node.js')).toEqual([]);
       expect(await stubSpawns()).toEqual([]);
+    }));
+
+  it('scrapes the link in the query', () =>
+    withBotApi(async (api) => {
+      await serve();
+      await ask(api, 'watch Youtu.be/abc.');
+      expect(await scrapes()).toEqual([
+        expect.stringContaining('yt-dlp https://youtu.be/abc '),
+      ]);
     }));
 
   it('answers with the error when the scrape fails', () =>
@@ -708,6 +727,56 @@ const answerTo = (api: MockBotApi, u: any) =>
   api.answeredCallbacks.find((a) => a.callback_query_id === u.callback_query.id)
     ?.text;
 const deleted = (api: MockBotApi) => requestsOf(api, 'deleteMessage');
+
+describe('firstLink', () => {
+  it.each([
+    'no url here',
+    'see node.js',
+    'file.txt',
+    'hello.world',
+    'Mr.smith',
+    'e.g. this',
+    'someone@example.com',
+    'README.md',
+    'check reddit.com',
+    '看这个youtu.be/abc',
+    '➡️youtu.be/abc',
+    'fußball.de?u=https://youtu.be/abc',
+  ])('finds no link in %j', (query) => {
+    expect(firstLink(query)).toBeUndefined();
+  });
+
+  it.each([
+    ['youtu.be/abc', 'https://youtu.be/abc'],
+    ['see www.instagram.com/reel/x', 'https://www.instagram.com/reel/x'],
+    ['vm.tiktok.com/ZMabc/', 'https://vm.tiktok.com/ZMabc/'],
+    ['node.js demo: https://example.com/v?id=1', 'https://example.com/v?id=1'],
+    ['see https://streamable.com/moo.', 'https://streamable.com/moo'],
+    ['youtu.be/abc: lol', 'https://youtu.be/abc'],
+    ['Https://Youtu.be/abc', 'https://youtu.be/abc'],
+    ['http://example.com/v', 'http://example.com/v'],
+    ['https://youtu.be/dQw4w9WgX_-', 'https://youtu.be/dQw4w9WgX_-'],
+    ['Video:https://youtu.be/abc', 'https://youtu.be/abc'],
+    ['看看这个https://youtu.be/abc', 'https://youtu.be/abc'],
+    ['看看这个https：//youtu.be/abc', 'https://youtu.be/abc'],
+    ['➡️ youtu.be/abc', 'https://youtu.be/abc'],
+    ['(see youtu.be/abc)', 'https://youtu.be/abc'],
+    ['**youtu.be/abc**', 'https://youtu.be/abc'],
+    ['`youtu.be/abc`', 'https://youtu.be/abc'],
+    ['（https://youtu.be/abc）', 'https://youtu.be/abc'],
+    ['“https://youtu.be/abc”', 'https://youtu.be/abc'],
+    [
+      'https://www.instagram.com/reel/C1a2B3c4D5e，好看',
+      'https://www.instagram.com/reel/C1a2B3c4D5e',
+    ],
+    [
+      'https://en.wikipedia.org/wiki/Foo_(bar)',
+      'https://en.wikipedia.org/wiki/Foo_(bar)',
+    ],
+  ])('finds the link in %j', (query, url) => {
+    expect(firstLink(query)).toBe(url);
+  });
+});
 
 describe('confirmation for long videos (>20 min) in groups', () => {
   it('leaves no orphaned pending row when the confirmation send fails', () =>
