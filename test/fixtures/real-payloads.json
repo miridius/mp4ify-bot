@@ -327,6 +327,174 @@
         "date": 1791237040,
         "text": "chat shape capture"
       }
+    },
+    "group_audio_command_for_dev_bot": {
+      "message": {
+        "text": "/audio@dev_mp4ify_bot https://example.com/a",
+        "entities": [
+          { "offset": 0, "length": 21, "type": "bot_command" },
+          { "offset": 22, "length": 21, "type": "url" }
+        ]
+      }
+    },
+    "dm_audio_reply_to_link": {
+      "message": {
+        "text": "/audio",
+        "entities": [{ "offset": 0, "length": 6, "type": "bot_command" }],
+        "reply_to_message": {
+          "message_id": 1860,
+          "from": { "id": 60764253, "is_bot": false, "first_name": "Dave", "last_name": "Rolle", "username": "DaveRolle", "language_code": "en" },
+          "chat": { "id": 60764253, "first_name": "Dave", "last_name": "Rolle", "username": "DaveRolle", "type": "private" },
+          "date": 1795816558,
+          "text": "https://example.com/r",
+          "entities": [{ "offset": 0, "length": 21, "type": "url" }],
+          "link_preview_options": { "url": "https://example.com/r" }
+        }
+      }
+    },
+    "dm_audio_reply_to_progress_log": {
+      "message": {
+        "text": "/audio",
+        "entities": [
+          {
+            "offset": 0,
+            "length": 6,
+            "type": "bot_command"
+          }
+        ],
+        "reply_to_message": {
+          "message_id": 1936,
+          "from": {
+            "id": 7939204706,
+            "is_bot": true,
+            "first_name": "[DEV] Video buddy",
+            "username": "dev_mp4ify_bot"
+          },
+          "chat": {
+            "id": 60764253,
+            "first_name": "Dave",
+            "last_name": "Rolle",
+            "username": "DaveRolle",
+            "type": "private"
+          },
+          "date": 1795821037,
+          "edit_date": 1795821040,
+          "text": "🧐 Scraping https://youtu.be/jNQXAC9IVRw...\n\n🎬 Video info:\n\nURL: https://www.youtube.com/watch?v=jNQXAC9IVRw\nfilename: Me_at_the_zoo-[jNQXAC9IVRw].18.mp4\nduration: 19 sec\nsize: 0.61 MB\nresolution: 320x240\nvideo codec: avc1.42001E\naudio codec: mp4a.40.2",
+          "entities": [
+            {
+              "offset": 3,
+              "length": 8,
+              "type": "bold"
+            },
+            {
+              "offset": 12,
+              "length": 28,
+              "type": "url"
+            },
+            {
+              "offset": 48,
+              "length": 11,
+              "type": "bold"
+            },
+            {
+              "offset": 61,
+              "length": 3,
+              "type": "bold"
+            },
+            {
+              "offset": 66,
+              "length": 43,
+              "type": "url"
+            },
+            {
+              "offset": 110,
+              "length": 8,
+              "type": "bold"
+            },
+            {
+              "offset": 155,
+              "length": 8,
+              "type": "bold"
+            },
+            {
+              "offset": 172,
+              "length": 4,
+              "type": "bold"
+            },
+            {
+              "offset": 186,
+              "length": 10,
+              "type": "bold"
+            },
+            {
+              "offset": 206,
+              "length": 11,
+              "type": "bold"
+            },
+            {
+              "offset": 231,
+              "length": 11,
+              "type": "bold"
+            }
+          ],
+          "link_preview_options": {
+            "is_disabled": true
+          }
+        }
+      }
+    },
+    "dm_audio_reply_to_bot_video": {
+      "message": {
+        "text": "/audio",
+        "entities": [
+          {
+            "offset": 0,
+            "length": 6,
+            "type": "bot_command"
+          }
+        ],
+        "reply_to_message": {
+          "message_id": 1981,
+          "from": {
+            "id": 7939204706,
+            "is_bot": true,
+            "first_name": "[DEV] Video buddy",
+            "username": "dev_mp4ify_bot"
+          },
+          "chat": {
+            "id": 60764253,
+            "first_name": "Dave",
+            "last_name": "Rolle",
+            "username": "DaveRolle",
+            "type": "private"
+          },
+          "date": 1795852561,
+          "video": {
+            "duration": 19,
+            "width": 320,
+            "height": 240,
+            "file_name": "youtube:jNQXAC9IVRw:18.mp4",
+            "mime_type": "video/mp4",
+            "thumbnail": {
+              "file_id": "AAMCAgADGQMAAge6awqIzPyHj947x0ejBp9R3etYDjQAAmixAAIR8FFIhGj0LxfZeeQBAAdtAAM9BA",
+              "file_unique_id": "AQADaLEAAhHwUUhy",
+              "file_size": 20226,
+              "width": 320,
+              "height": 240
+            },
+            "thumb": {
+              "file_id": "AAMCAgADGQMAAge6awqIzPyHj947x0ejBp9R3etYDjQAAmixAAIR8FFIhGj0LxfZeeQBAAdtAAM9BA",
+              "file_unique_id": "AQADaLEAAhHwUUhy",
+              "file_size": 20226,
+              "width": 320,
+              "height": 240
+            },
+            "file_id": "BAACAgIAAxkDAAIHumsKiMz8h4_eO8dHowafUd3rWA40AAJosQACEfBRSIRo9C8X2XnkPQQ",
+            "file_unique_id": "AgADaLEAAhHwUUg",
+            "file_size": 629172
+          }
+        }
+      }
     }
   }
 }

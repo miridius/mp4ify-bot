@@ -170,9 +170,41 @@ describe('MockBotApi', () => {
       });
       const json = await resp.json();
       expect(json.ok).toBe(true);
-      expect(json.result.video.file_name).toBe('/tmp/real.mp4');
+      expect(json.result.video.file_name).toBe('real.mp4');
     } finally {
       await rm('/tmp/real.mp4', { force: true });
+    }
+  });
+
+  it('cuts a long file name to 63 characters before the extension, like the real server', async () => {
+    const long = `/tmp/${'ab'.repeat(120)}.m4a`;
+    await Bun.write(long, 'x');
+    try {
+      const resp = await api.call('sendAudio', {
+        chat_id: api['user'].id,
+        audio: Bun.pathToFileURL(long),
+        duration: 1,
+      });
+      const json = await resp.json();
+      expect(json.result.audio.file_name).toBe(`${'ab'.repeat(31)}a.m4a`);
+    } finally {
+      await rm(long, { force: true });
+    }
+  });
+
+  it('cuts an audio title to 64 characters, like the real server', async () => {
+    await Bun.write('/tmp/titled.m4a', 'x');
+    try {
+      const resp = await api.call('sendAudio', {
+        chat_id: api['user'].id,
+        audio: Bun.pathToFileURL('/tmp/titled.m4a'),
+        title: 'x'.repeat(300),
+        duration: 1,
+      });
+      const json: any = await resp.json();
+      expect(json.result.audio.title).toBe('x'.repeat(64));
+    } finally {
+      await rm('/tmp/titled.m4a', { force: true });
     }
   });
 

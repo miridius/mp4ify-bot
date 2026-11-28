@@ -126,8 +126,8 @@ exports[`message handler downloads https://www.reddit.com/r/nextfuckinglevel/s/i
 <b>duration</b>: 10 sec
 <b>size</b>: <n> MB
 <b>resolution</b>: 480x600
-<b>video codec</b>: avc1.4d401f @ <n> kbps
-<b>audio codec</b>: mp4a.40.2 @ <n> kbps
+<b>video codec</b>: avc1.4d401f
+<b>audio codec</b>: mp4a.40.2
 
 ⬇️ <b>Downloading...</b>
 
@@ -170,8 +170,8 @@ exports[`message handler downloads https://www.reddit.com/r/nextfuckinglevel/s/i
 <b>duration</b>: 10 sec
 <b>size</b>: <n> MB
 <b>resolution</b>: 480x600
-<b>video codec</b>: avc1.4d401f @ <n> kbps
-<b>audio codec</b>: mp4a.40.2 @ <n> kbps"
+<b>video codec</b>: avc1.4d401f
+<b>audio codec</b>: mp4a.40.2"
 ,
   },
   {
@@ -210,8 +210,8 @@ exports[`message handler downloads https://www.reddit.com/r/nextfuckinglevel/s/i
 <b>duration</b>: 10 sec
 <b>size</b>: <n> MB
 <b>resolution</b>: 480x600
-<b>video codec</b>: avc1.4d401f @ <n> kbps
-<b>audio codec</b>: mp4a.40.2 @ <n> kbps"
+<b>video codec</b>: avc1.4d401f
+<b>audio codec</b>: mp4a.40.2"
 ,
   },
   {
@@ -251,8 +251,8 @@ exports[`message handler downloads https://www.reddit.com/r/nextfuckinglevel/com
 <b>duration</b>: 10 sec
 <b>size</b>: <n> MB
 <b>resolution</b>: 480x600
-<b>video codec</b>: avc1.4d401f @ <n> kbps
-<b>audio codec</b>: mp4a.40.2 @ <n> kbps
+<b>video codec</b>: avc1.4d401f
+<b>audio codec</b>: mp4a.40.2
 
 ⬇️ <b>Downloading...</b>
 
@@ -295,8 +295,8 @@ exports[`message handler downloads https://www.reddit.com/r/nextfuckinglevel/com
 <b>duration</b>: 10 sec
 <b>size</b>: <n> MB
 <b>resolution</b>: 480x600
-<b>video codec</b>: avc1.4d401f @ <n> kbps
-<b>audio codec</b>: mp4a.40.2 @ <n> kbps"
+<b>video codec</b>: avc1.4d401f
+<b>audio codec</b>: mp4a.40.2"
 ,
   },
   {
@@ -335,8 +335,8 @@ exports[`message handler downloads https://www.reddit.com/r/nextfuckinglevel/com
 <b>duration</b>: 10 sec
 <b>size</b>: <n> MB
 <b>resolution</b>: 480x600
-<b>video codec</b>: avc1.4d401f @ <n> kbps
-<b>audio codec</b>: mp4a.40.2 @ <n> kbps"
+<b>video codec</b>: avc1.4d401f
+<b>audio codec</b>: mp4a.40.2"
 ,
   },
   {
@@ -376,8 +376,8 @@ exports[`message handler downloads http://youtube.com/shorts/0COu-qMC18Y: downlo
 <b>duration</b>: 57 sec
 <b>size</b>: <n> MB
 <b>resolution</b>: 1080x1920
-<b>video codec</b>: avc1.64002a @ <n> kbps
-<b>audio codec</b>: mp4a.40.2 @ <n> kbps
+<b>video codec</b>: avc1.64002a
+<b>audio codec</b>: mp4a.40.2
 
 ⬇️ <b>Downloading...</b>
 
@@ -420,8 +420,8 @@ exports[`message handler downloads http://youtube.com/shorts/0COu-qMC18Y: mem ca
 <b>duration</b>: 57 sec
 <b>size</b>: <n> MB
 <b>resolution</b>: 1080x1920
-<b>video codec</b>: avc1.64002a @ <n> kbps
-<b>audio codec</b>: mp4a.40.2 @ <n> kbps"
+<b>video codec</b>: avc1.64002a
+<b>audio codec</b>: mp4a.40.2"
 ,
   },
   {
@@ -460,8 +460,8 @@ exports[`message handler downloads http://youtube.com/shorts/0COu-qMC18Y: disk c
 <b>duration</b>: 57 sec
 <b>size</b>: <n> MB
 <b>resolution</b>: 1080x1920
-<b>video codec</b>: avc1.64002a @ <n> kbps
-<b>audio codec</b>: mp4a.40.2 @ <n> kbps"
+<b>video codec</b>: avc1.64002a
+<b>audio codec</b>: mp4a.40.2"
 ,
   },
   {
@@ -501,8 +501,8 @@ exports[`message handler downloads https://youtu.be/T3eBoD8H3Xg: download 1`] = 
 <b>duration</b>: 125 sec
 <b>size</b>: <n> MB
 <b>resolution</b>: 1920x1080
-<b>video codec</b>: avc1.640028 
-<b>audio codec</b>: mp4a.40.2 
+<b>video codec</b>: avc1.640028
+<b>audio codec</b>: mp4a.40.2
 
 ⬇️ <b>Downloading...</b>
 
@@ -545,8 +545,8 @@ exports[`message handler downloads https://youtu.be/T3eBoD8H3Xg: mem cache 1`] =
 <b>duration</b>: 125 sec
 <b>size</b>: <n> MB
 <b>resolution</b>: 1920x1080
-<b>video codec</b>: avc1.640028 
-<b>audio codec</b>: mp4a.40.2 "
+<b>video codec</b>: avc1.640028
+<b>audio codec</b>: mp4a.40.2"
 ,
   },
   {
@@ -585,8 +585,8 @@ exports[`message handler downloads https://youtu.be/T3eBoD8H3Xg: disk cache 1`] 
 <b>duration</b>: 125 sec
 <b>size</b>: <n> MB
 <b>resolution</b>: 1920x1080
-<b>video codec</b>: avc1.640028 
-<b>audio codec</b>: mp4a.40.2 "
+<b>video codec</b>: avc1.640028
+<b>audio codec</b>: mp4a.40.2"
 ,
   },
   {
@@ -623,6 +623,7 @@ exports[`message handler downloads https://www.threads.com/share/BAbzzy-4iY: dow
 
 <b>URL</b>: https://www.threads.com/share/BAbzzy-4iY
 <b>filename</b>: Video_by__tom_christopher-[Df-lgVexd3e].<formats>.mp4
+<b>resolution</b>: 720x1280
 
 ⬇️ <b>Downloading...</b>
 
@@ -633,11 +634,13 @@ exports[`message handler downloads https://www.threads.com/share/BAbzzy-4iY: dow
     "chat_id": 1337,
     "disable_notification": true,
     "duration": 39,
+    "height": 1280,
     "reply_parameters": {
       "message_id": 0,
     },
     "supports_streaming": true,
     "video": "file:///storage/blobs/threads:Df-lgVexd3e:<formats>.mp4",
+    "width": 720,
   },
 ]
 `;
@@ -659,18 +662,21 @@ exports[`message handler downloads https://www.threads.com/share/BAbzzy-4iY: mem
 🎬 <b>Video info:</b>
 
 <b>URL</b>: https://www.threads.com/share/BAbzzy-4iY
-<b>filename</b>: Video_by__tom_christopher-[Df-lgVexd3e].<formats>.mp4"
+<b>filename</b>: Video_by__tom_christopher-[Df-lgVexd3e].<formats>.mp4
+<b>resolution</b>: 720x1280"
 ,
   },
   {
     "chat_id": 1337,
     "disable_notification": true,
     "duration": 39,
+    "height": 1280,
     "reply_parameters": {
       "message_id": 1,
     },
     "supports_streaming": true,
     "video": "<file_id>",
+    "width": 720,
   },
 ]
 `;
@@ -692,18 +698,21 @@ exports[`message handler downloads https://www.threads.com/share/BAbzzy-4iY: dis
 🎬 <b>Video info:</b>
 
 <b>URL</b>: https://www.threads.com/share/BAbzzy-4iY
-<b>filename</b>: Video_by__tom_christopher-[Df-lgVexd3e].<formats>.mp4"
+<b>filename</b>: Video_by__tom_christopher-[Df-lgVexd3e].<formats>.mp4
+<b>resolution</b>: 720x1280"
 ,
   },
   {
     "chat_id": 1337,
     "disable_notification": true,
     "duration": 39,
+    "height": 1280,
     "reply_parameters": {
       "message_id": 2,
     },
     "supports_streaming": true,
     "video": "<file_id>",
+    "width": 720,
   },
 ]
 `;

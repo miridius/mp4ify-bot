@@ -6,6 +6,7 @@ if (process.stderr && process.stderr.fd === undefined) {
 
 import { faker } from '@faker-js/faker';
 import { mock, spyOn } from 'bun:test';
+import { basename, extname } from 'path';
 import type { Telegraf } from 'telegraf';
 import type { Message, Update } from 'telegraf/types';
 import { apiRoot, INLINE_CACHE_CHAT_ID } from '../src/consts';
@@ -43,16 +44,18 @@ export class MockBotApi {
     last_name: faker.person.lastName(),
     username: faker.internet.username(),
   };
-  private bot = {
+  readonly bot = {
     id: faker.number.int({ min: 1000, max: 1e6 }),
     is_bot: true,
     first_name: faker.person.firstName(),
-    username: faker.internet.username(),
+    // faker's usernames can hold a '.', which Telegram's never do
+    username: faker.internet.username().replace(/\W/g, '_'),
   };
   public sentMessages: {
     chat_id: number;
     text?: string;
     video?: string;
+    audio?: string;
     duration?: number;
     edit_date?: number;
     reply_markup?: any;
@@ -212,7 +215,9 @@ export class MockBotApi {
         case 'deleteMessage':
           return okResp(true);
         case 'sendVideo':
-          return this.sendVideo(data);
+          return this.sendFile('video', data);
+        case 'sendAudio':
+          return this.sendFile('audio', data);
         case 'answerCallbackQuery':
           return this.answerCallbackQuery(data);
         case 'answerInlineQuery':
@@ -425,16 +430,20 @@ export class MockBotApi {
   fileIds = new Map<string, string>();
   probeUploads = false;
   uploadedCodecs: string[][] = [];
-  private async sendVideo(data: {
-    chat_id: number;
-    caption?: string;
-    video: string;
-    width: number;
-    height: number;
-    duration: number;
-    reply_parameters?: any;
-  }) {
-    const { chat_id, caption, video, reply_parameters, ...extra } = data;
+  private async sendFile(
+    kind: 'video' | 'audio',
+    data: {
+      chat_id: number;
+      caption?: string;
+      video?: string;
+      audio?: string;
+      title?: string;
+      duration: number;
+      reply_parameters?: any;
+    },
+  ) {
+    const { video, audio, chat_id, caption, reply_parameters, ...extra } = data;
+    const file = (kind === 'video' ? video : audio)!;
     if (!this.knownChats.has(chat_id)) {
       return errResp('Bad Request: chat not found');
     }
@@ -442,37 +451,39 @@ export class MockBotApi {
     if (err) return err;
     let file_name: string;
     let file_id: string;
-    if (this.fileIds.has(video)) {
-      file_name = this.fileIds.get(video)!;
-      file_id = video;
-    } else if (!video.startsWith('file:')) {
+    if (this.fileIds.has(file)) {
+      file_name = this.fileIds.get(file)!;
+      file_id = file;
+    } else if (!file.startsWith('file:')) {
       // a file_id we never issued (e.g. cached before the server data reset);
       // wording captured from the real server
       return errResp(
         "Bad Request: wrong remote file identifier specified: can't unserialize it. Wrong last symbol",
       );
     } else {
-      file_name = Bun.fileURLToPath(video);
-      const file = Bun.file(file_name);
-      if (!(await file.exists())) {
+      file_name = Bun.fileURLToPath(file);
+      const onDisk = Bun.file(file_name);
+      if (!(await onDisk.exists())) {
         return errResp(`Bad Request: file not found: ${file_name}`);
       }
       // the real bot-api rejects empty uploads; catches truncated downloads
-      if (file.size === 0) {
+      if (onDisk.size === 0) {
         return errResp(`Bad Request: file is empty: ${file_name}`);
       }
       // hash a format-normalized name so the file_id (pinned in e2e
       // snapshots) stays stable when yt-dlp's format selection drifts
-      file_id = Bun.hash(video.replaceAll(FORMAT_ID_RE, '$1$2')).toString(36);
+      file_id = Bun.hash(file.replaceAll(FORMAT_ID_RE, '$1$2')).toString(36);
       this.fileIds.set(file_id, file_name);
       if (this.probeUploads) this.uploadedCodecs.push(await probeCodecs(file_name));
     }
     const message = {
-      video: {
+      [kind]: {
         ...extra,
-        file_name,
+        file_name: telegramFileName(file_name),
+        ...(extra.title && { title: [...extra.title].slice(0, 64).join('') }),
         file_id,
-        file_unique_id: faker.string.alphanumeric(32),
+        // stable across resends of one file, like the real server's
+        file_unique_id: Bun.hash(`unique:${file_id}`).toString(36),
       },
       message_id: this.sentMessages.length,
       from: this.bot,
@@ -480,11 +491,16 @@ export class MockBotApi {
       date: this.date++,
       reply_parameters,
       caption,
-    } as Message.VideoMessage;
+    } as unknown as Message.VideoMessage | Message.AudioMessage;
     this.sentMessages.push(data);
     return okResp(message);
   }
 }
+
+const telegramFileName = (path: string) => {
+  const ext = extname(path);
+  return [...basename(path, ext)].slice(0, 63).join('') + ext;
+};
 
 export const probeCodecs = async (path: string) => {
   const probe = Bun.spawn(

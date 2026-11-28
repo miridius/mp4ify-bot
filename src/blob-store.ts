@@ -31,15 +31,25 @@ const hasVideoIdentity = (info: VideoInfo): boolean =>
 // with colliding titles would otherwise share a key (and, worse, the first one's
 // cached file_id). This is the raw DB key; blobName turns it into the on-disk
 // filename.
-export const blobKey = (info: VideoInfo): string =>
-  hasVideoIdentity(info)
-    ? `${info.extractor}:${info.id}:${info.format_id ?? ''}`
+export const blobKey = (info: VideoInfo): string => {
+  const identity = hasVideoIdentity(info)
+    ? `${info.extractor}:${info.id}`
+    : undefined;
+  // The audio download picks its own format (see audioArgs), so the scrape's
+  // format_id, which the filename also holds, stays out of an audio key. No
+  // format_id holds a '[', so no video's key can take this form.
+  if (info.audio) {
+    return `${identity || `${info.title}:${info.webpage_url}`}:[audio]`;
+  }
+  return identity
+    ? `${identity}:${info.format_id ?? ''}`
     : `${info.filename}:${info.webpage_url}`;
+};
 
 // cut to at most maxBytes of UTF-8 without leaving a split code point: a cut
 // mid-codepoint decodes to a trailing U+FFFD, which we drop; that also keeps
 // the result within maxBytes (the dropped partial bytes don't re-expand).
-const truncateBytes = (s: string, maxBytes: number): string => {
+export const truncateBytes = (s: string, maxBytes: number): string => {
   const bytes = new TextEncoder().encode(s);
   if (bytes.length <= maxBytes) return s;
   const cut = new TextDecoder().decode(bytes.subarray(0, maxBytes));
@@ -56,7 +66,7 @@ const truncateBytes = (s: string, maxBytes: number): string => {
 //    fallback, or a junk extension) is truncated and tagged with a short hash
 //    of the full key, so two long keys sharing a prefix still land on
 //    distinct files.
-const NAME_MAX = 255;
+export const NAME_MAX = 255;
 const blobName = (key: string, ext: string): string => {
   const stem = key.replaceAll('%', '%25').replaceAll('/', '%2F');
   const safeExt = truncateBytes(ext, 16);

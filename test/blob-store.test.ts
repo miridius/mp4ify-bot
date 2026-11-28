@@ -53,6 +53,17 @@ describe('blobKey / blobPath', () => {
     expect(blobKey(info())).not.toBe(blobKey(info({ format_id: '22' })));
   });
 
+  it("keys a video's audio track apart from the video, whatever its format", () => {
+    const audio = info({ audio: true });
+    expect(blobKey(audio)).toBe(blobKey(info({ audio: true, format_id: '22' })));
+    // TikTok names a format 'audio'
+    expect(blobKey(audio)).not.toBe(blobKey(info({ format_id: 'audio' })));
+    const bare = { filename: '/f.137.mp4', title: 'T', webpage_url: 'https://a' };
+    const bareAudio = { ...bare, audio: true };
+    expect(blobKey(bareAudio)).not.toBe(blobKey(bare));
+    expect(blobKey(bareAudio)).toBe(blobKey({ ...bareAudio, filename: '/f.22.mp4' }));
+  });
+
   it('falls back to the URL-salted filename when the identity is missing', () => {
     const i = {
       filename: '/storage/x/foo.mp4',

@@ -3,7 +3,7 @@
 // in /tmp/stub (Bun.spawn snapshots the env at startup, so env vars can't
 // reach the child). Only the Telegram client (an unowned boundary) is mocked.
 import { tmpdir } from 'os';
-import { dirname } from 'path';
+import { basename, dirname } from 'path';
 import {
   afterAll,
   afterEach,
@@ -57,6 +57,8 @@ import {
 } from './test-utils';
 import {
   abortDownloads,
+  audioArgs,
+  audioOf,
   classifyFailure,
   downloadVideo,
   firstInfo,
@@ -68,7 +70,8 @@ import {
   removeCachedInfo,
   resetShutdown,
   sendInfo,
-  sendVideo,
+  sendMedia,
+  sourceOf,
   updateYtdlp,
   VIDEOS_TO_DECIDE,
   YtdlpError,
@@ -100,8 +103,14 @@ const mockFlush = mock();
 const log = { append: mockAppend, flush: mockFlush };
 
 const mockSendVideo = mock();
+const mockSendAudio = mock();
 const telegram = {
-  sendVideo: mockSendVideo.mockResolvedValue({ video: { file_id: 'id' } }),
+  sendVideo: mockSendVideo.mockResolvedValue({
+    video: { file_id: 'id', file_unique_id: 'uid' },
+  }),
+  sendAudio: mockSendAudio.mockResolvedValue({
+    audio: { file_id: 'aid', file_unique_id: 'auid' },
+  }),
 } as any;
 
 const VideoInfo = {
@@ -292,7 +301,7 @@ describe('updateYtdlp', () => {
     );
   });
 
-  it('never self-updates a test stub (dev has test/bin on PATH)', async () => {
+  it('never self-updates a test stub (the test container has test/bin on PATH)', async () => {
     // "updating" the stub would run --update through its delegation and
     // rewrite the real binary in place, the non-atomic hazard this skips.
     // cwd-relative: the repo root is /app in the container but not in CI,
@@ -1147,6 +1156,19 @@ describe('downloadVideo', () => {
     expect(await readdir(STAGING_DIR).catch(() => [])).toEqual([]);
   });
 
+  it("downloads an audio track as m4a, into a blob of its own", async () => {
+    await stub({ stdout: 'downloaded ok', outfile: VideoInfo.filename });
+    const audio = audioOf(VideoInfo);
+
+    await downloadVideo(log as any, audio);
+
+    const [ytdlpLine] = (await stubArgs()).split('\n');
+    expect(ytdlpLine).toEndWith(audioArgs(audio).join(' '));
+    expect(ytdlpLine).toContain('-f bestaudio[ext=m4a]/bestaudio/best -x');
+    expect(getBlob(audio)).not.toBeNull();
+    expect(getBlob(VideoInfo)).toBeNull();
+  });
+
   it('downloads Reddit media without impersonating a browser', async () => {
     await stub({ stdout: 'downloaded ok', outfile: VideoInfo.filename });
     const reddit = {
@@ -1213,7 +1235,7 @@ describe('downloadVideo', () => {
       expect(getBlob(VideoInfo)?.path).toBe(mp4BlobPath(VideoInfo));
       expect(await Bun.file(mp4BlobPath(VideoInfo)).text()).toBe('video bytes\n');
       expect(consoleError).toHaveBeenCalledWith(
-        'download cleanup failed:',
+        'staging cleanup failed:',
         expect.anything(),
       );
     } finally {
@@ -1502,6 +1524,12 @@ describe('classifyFailure', () => {
     expect(classifyFailure(new YtdlpError('failed', stderr))).toBe('unavailable');
   });
 
+  it('classifies an /audio of a silent video as unavailable', () => {
+    const stderr =
+      'ERROR: Postprocessing: WARNING: unable to obtain file audio codec with ffprobe';
+    expect(classifyFailure(new YtdlpError('failed', stderr))).toBe('unavailable');
+  });
+
   it('not-a-video wins over unavailable when both patterns are present', () => {
     const stderr =
       'ERROR: Video unavailable\nERROR: Unsupported URL: https://x';
@@ -1528,20 +1556,30 @@ describe('classifyFailure', () => {
   });
 });
 
-describe('sendVideo', () => {
+describe('audioArgs', () => {
+  it.each(['TikTok', 'Douyin'])(
+    "extracts %s's sound from the video, not its music track",
+    (extractor) => {
+      const info = audioOf({ ...VideoInfo, extractor });
+      expect(audioArgs(info).slice(0, 2)).toEqual(['-f', 'best']);
+    },
+  );
+});
+
+describe('sendMedia', () => {
   const cachedFileId = () => getBlob(VideoInfo)?.file_id;
 
   it('uploads the bytes, caches the file_id, and deletes the upload', async () => {
     await seedBytes(VideoInfo);
 
-    const msg = await sendVideo(telegram, log as any, VideoInfo, 123);
+    const msg = await sendMedia(telegram, log as any, VideoInfo, 123);
 
     expect(mockSendVideo).toHaveBeenCalledWith(
       123,
       Bun.pathToFileURL(mp4BlobPath(VideoInfo)).href,
       expect.objectContaining({ width: 100, height: 100, duration: 10 }),
     );
-    expect(msg!.video.file_id).toBe('id');
+    expect(msg).toBe('id');
     expect(cachedFileId()).toBe('id');
     expect(await bytesOnDisk(VideoInfo)).toBe(false);
   });
@@ -1550,7 +1588,7 @@ describe('sendVideo', () => {
     await seedBytes(VideoInfo);
     setBlobDuration(VideoInfo, 7);
 
-    await sendVideo(telegram, log as any, VideoInfo, 123);
+    await sendMedia(telegram, log as any, VideoInfo, 123);
 
     expect(mockSendVideo).toHaveBeenCalledWith(
       123,
@@ -1562,7 +1600,7 @@ describe('sendVideo', () => {
   it('resends by file_id without touching the bytes', async () => {
     seedBlob('cached-file-id');
 
-    await sendVideo(telegram, log as any, VideoInfo, 123);
+    await sendMedia(telegram, log as any, VideoInfo, 123);
 
     expect(mockSendVideo).toHaveBeenCalledWith(
       123,
@@ -1575,7 +1613,7 @@ describe('sendVideo', () => {
     await seedOversize(VideoInfo);
 
     expect(
-      await sendVideo(telegram, log as any, VideoInfo, 123),
+      await sendMedia(telegram, log as any, VideoInfo, 123),
     ).toBeUndefined();
     expect(appendedText()).toContain('\u{1f61e} Video too large (2001.00 MB)');
     expect(mockSendVideo).not.toHaveBeenCalled();
@@ -1585,9 +1623,135 @@ describe('sendVideo', () => {
     expect(rowCount('blobs')).toBe(0);
   });
 
+  it('sends an audio track under its title, and caches its file_id', async () => {
+    const audio = audioOf({ ...VideoInfo, title: 'A/B' });
+    await seedBytes(audio);
+    let sentName = '';
+    mockSendAudio.mockImplementationOnce(async (_chat, file: string) => {
+      const path = Bun.fileURLToPath(file);
+      sentName = basename(path);
+      expect(await Bun.file(path).text()).toBe('video bytes');
+      return { audio: { file_id: 'aid', file_unique_id: 'auid' } };
+    });
+
+    expect(await sendMedia(telegram, log as any, audio, 123, 7)).toBe('aid');
+
+    expect(sentName).toBe('A_B.mp4');
+    expect(mockSendAudio).toHaveBeenCalledWith(
+      123,
+      expect.any(String),
+      expect.objectContaining({
+        title: 'A/B',
+        duration: 10,
+        reply_parameters: { message_id: 7 },
+      }),
+    );
+    expect(mockSendVideo).not.toHaveBeenCalled();
+    expect(getBlob(audio)?.file_id).toBe('aid');
+    expect(await bytesOnDisk(audio)).toBe(false);
+    expect(await readdir(STAGING_DIR).catch(() => [])).toEqual([]);
+  });
+
+  it('keeps a sent audio track when its staging cleanup fails', async () => {
+    const audio = audioOf(VideoInfo);
+    await seedBytes(audio);
+    let locked = '';
+    mockSendAudio.mockImplementationOnce(async (_chat, file: string) => {
+      // an entry in a read-only dir can't be unlinked, so the cleanup's rm fails
+      locked = `${dirname(Bun.fileURLToPath(file))}/locked`;
+      await mkdir(locked);
+      await Bun.write(`${locked}/x`, '');
+      await chmod(locked, 0o555);
+      return { audio: { file_id: 'aid', file_unique_id: 'auid' } };
+    });
+    const consoleError = spyMock(console, 'error');
+    try {
+      expect(await sendMedia(telegram, log as any, audio, 123)).toBe('aid');
+      expect(locked).not.toBe('');
+      expect(getBlob(audio)?.file_id).toBe('aid');
+      expect(consoleError).toHaveBeenCalledWith(
+        'staging cleanup failed:',
+        expect.anything(),
+      );
+    } finally {
+      consoleError.mockRestore();
+      if (locked) {
+        await chmod(locked, 0o755);
+        await rm(dirname(locked), { recursive: true, force: true });
+      }
+    }
+  });
+
+  it.each([
+    [' ', 'audio.mp4'],
+    ['. dotted', 'dotted.mp4'],
+    ['.hidden', 'hidden.mp4'],
+    ['x'.repeat(300), `${'x'.repeat(251)}.mp4`],
+    ['é'.repeat(200), `${'é'.repeat(125)}.mp4`],
+  ])('names an audio track titled %s within NAME_MAX, unhidden', async (title, name) => {
+    const audio = audioOf({ ...VideoInfo, title });
+    await seedBytes(audio);
+    let sentName = '';
+    mockSendAudio.mockImplementationOnce(async (_chat, file: string) => {
+      sentName = basename(Bun.fileURLToPath(file));
+      return { audio: { file_id: 'aid', file_unique_id: 'auid' } };
+    });
+
+    await sendMedia(telegram, log as any, audio, 123);
+
+    expect(sentName).toBe(name);
+  });
+
+  it("names an Instagram audio track after the post's caption", async () => {
+    const audio = audioOf({
+      ...VideoInfo,
+      title: 'Video by someone',
+      description: 'Two\nlines',
+    });
+    await seedBytes(audio);
+    let sentName = '';
+    mockSendAudio.mockImplementationOnce(async (_chat, file: string) => {
+      sentName = basename(Bun.fileURLToPath(file));
+      return { audio: { file_id: 'aid', file_unique_id: 'auid' } };
+    });
+
+    await sendMedia(telegram, log as any, audio, 123);
+
+    expect(sentName).toBe('Two lines.mp4');
+    expect(mockSendAudio).toHaveBeenCalledWith(
+      123,
+      expect.any(String),
+      expect.objectContaining({ title: 'Two lines' }),
+    );
+  });
+
+  it('remembers the page each sent file came from', async () => {
+    await seedBytes(VideoInfo);
+    await sendMedia(telegram, log as any, VideoInfo, 123);
+    expect(sourceOf({ video: { file_unique_id: 'uid' } } as any)).toBe(
+      VideoInfo.webpage_url,
+    );
+    expect(sourceOf({ video: { file_unique_id: 'other' } } as any)).toBeUndefined();
+    expect(sourceOf(undefined)).toBeUndefined();
+  });
+
+  it('resends an audio track by its file_id', async () => {
+    const audio = audioOf(VideoInfo);
+    await seedBytes(audio);
+    setBlobFileId(audio, 'cached-audio-id');
+
+    await sendMedia(telegram, log as any, audio, 123);
+
+    expect(mockSendAudio).toHaveBeenCalledWith(
+      123,
+      'cached-audio-id',
+      expect.anything(),
+    );
+  });
+
   it('throws if the blob bytes are not found', async () => {
     await expect(
-      sendVideo(telegram, log as any, VideoInfo, 123),
+      sendMedia(telegram, log as any, VideoInfo, 123),
     ).rejects.toThrow('yt-dlp output file not found');
   });
 
@@ -1597,10 +1761,10 @@ describe('sendVideo', () => {
     // caching the file_id (a real UPDATE on the real blobs table) throws,
     // exercising the genuine cleanup-catch path
     await withFailingWrite('blobs', 'UPDATE', async () => {
-      const msg = await sendVideo(telegram, log as any, VideoInfo, 123);
+      const msg = await sendMedia(telegram, log as any, VideoInfo, 123);
 
       expect(mockSendVideo).toHaveBeenCalledTimes(1); // sent once, did not reject
-      expect(msg!.video.file_id).toBe('id');
+      expect(msg).toBe('id');
       expect(consoleError).toHaveBeenCalledWith(
         expect.stringContaining('Post-send cleanup failed'),
         expect.any(Error),
@@ -1612,7 +1776,7 @@ describe('sendVideo', () => {
   it('sends the video as a reply message if requested', async () => {
     await seedBytes(VideoInfo);
 
-    await sendVideo(telegram, log as any, VideoInfo, 123, 42);
+    await sendMedia(telegram, log as any, VideoInfo, 123, 42);
 
     expect(mockSendVideo).toHaveBeenCalledWith(
       123,
@@ -1622,7 +1786,7 @@ describe('sendVideo', () => {
   });
 });
 
-describe('sendVideo dead file_id recovery', () => {
+describe('sendMedia dead file_id recovery', () => {
   it('clears a file_id the server no longer recognizes, so a retry re-downloads', async () => {
     seedBlob('dead-file-id'); // e.g. cached before the server data was reset
     const tg = {
@@ -1638,7 +1802,7 @@ describe('sendVideo dead file_id recovery', () => {
     };
 
     await expect(
-      sendVideo(tg as any, log as any, VideoInfo, 1),
+      sendMedia(tg as any, log as any, VideoInfo, 1),
     ).rejects.toThrow('wrong remote file identifier');
 
     expect(getBlob(VideoInfo)?.file_id).toBeNull(); // cleared: retry re-downloads
@@ -1648,7 +1812,7 @@ describe('sendVideo dead file_id recovery', () => {
     seedBlob('good-file-id');
     const tg = { sendVideo: mock(() => Promise.reject(new Error('fetch failed'))) };
     await expect(
-      sendVideo(tg as any, log as any, VideoInfo, 1),
+      sendMedia(tg as any, log as any, VideoInfo, 1),
     ).rejects.toThrow('fetch failed');
     expect(getBlob(VideoInfo)?.file_id).toBe('good-file-id');
   });

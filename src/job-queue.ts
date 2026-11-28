@@ -22,6 +22,7 @@ export type UrlJob = JobBase & {
   url: string;
   fromId: number;
   infoShown?: boolean;
+  audio?: boolean;
 };
 
 export type ConfirmedJob = JobBase & {

@@ -111,10 +111,9 @@ services:
     env_file:
       - .env.dev
     environment:
-      # arms the test/bin stubs (they delegate to the real binaries without
-      # it), so a bun test run inside the DEV container can't stub the live
-      # dev bot's own yt-dlp/ffprobe spawns via the shared /tmp/stub toggle
-      - STUB_BIN=1
+      # the stubs shadow the real binaries for the tests alone: on the dev
+      # bot's PATH they would hide the real yt-dlp from its self-update
+      - PATH=/app/test/bin:/opt/yt-dlp:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/bun-node-fallback-bin
     stdin_open: true
     tty: true
     # deliberately NO storage volume: /storage stays image-local (created in

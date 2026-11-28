@@ -97,7 +97,7 @@ export const settle = async (
   await expectWithin('jobs idle', jobsIdle, timeout);
 };
 
-// control files for the test/bin stub executables (on PATH via Dockerfile.dev)
+// control files for the test/bin stub executables (on PATH via the compose test service)
 export const STUB_DIR = '/tmp/stub';
 // `dir` may be a per-phase subdir: while download/ (yt-dlp --load-info-json
 // calls) or ffprobe/ exists, that stub reads all its control files from it;
@@ -128,6 +128,15 @@ export const resetStub = async () => {
   await rm(STUB_DIR, { recursive: true, force: true });
   await mkdir(STUB_DIR, { recursive: true });
 };
+
+// shaped like payloads.group_audio_command_for_dev_bot
+export const commandMessage = (text: string, url: string) => ({
+  text,
+  entities: [
+    { offset: 0, length: text.indexOf(' '), type: 'bot_command' as const },
+    { offset: text.indexOf(url), length: url.length, type: 'url' as const },
+  ],
+});
 
 export const urlMessage = (url: string) => ({
   text: url,

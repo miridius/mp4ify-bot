@@ -1,4 +1,13 @@
-import { copyFile, readdir, realpath, rename, rm, stat } from 'fs/promises';
+import {
+  copyFile,
+  link,
+  mkdir,
+  readdir,
+  realpath,
+  rename,
+  rm,
+  stat,
+} from 'fs/promises';
 import { basename, extname } from 'path';
 import type { Telegram } from 'telegraf';
 import type { Message } from 'telegraf/types';
@@ -9,10 +18,12 @@ import {
   clearBlobFileId,
   ensureBlobDir,
   getBlob,
+  NAME_MAX,
   recordBlob,
   releaseBlob,
   setBlobDuration,
   setBlobFileId,
+  truncateBytes,
 } from './blob-store';
 import { STAGING_DIR } from './consts';
 import { db, tx } from './db';
@@ -76,7 +87,12 @@ export class YtdlpError extends Error {
     // is no more the reason than its siblings. A lone line has no siblings: it
     // is the extractor's own verdict on the post.
     const allPhotos = !real.length && lines.length > 1;
-    super((allPhotos ? 'There is no video in this post' : errLine) || message);
+    let reason = errLine;
+    if (allPhotos) reason = 'There is no video in this post';
+    else if (errLine && NO_AUDIO_TRACK.test(errLine)) {
+      reason = 'This video has no audio track';
+    }
+    super(reason || message);
     this.name = 'YtdlpError';
     // hidden from console.error, which prints an Error's own properties whole:
     // a playlist's dump-json runs to megabytes (see STDERR_TAIL for the cap on
@@ -84,6 +100,9 @@ export class YtdlpError extends Error {
     Object.defineProperty(this, 'stdout', { value: stdout, enumerable: false });
   }
 }
+
+// -x's error when ffprobe finds no audio stream in the file
+const NO_AUDIO_TRACK = /unable to obtain file audio codec/i;
 
 export type FailureKind = 'not-a-video' | 'unavailable' | 'transient';
 
@@ -109,6 +128,7 @@ const PERMANENT_PATTERNS = [
   /no longer available/i,
   /has been removed/i,
   /members[- ]only/i,
+  NO_AUDIO_TRACK,
   /sign in to confirm your age/i,
   // Reddit's and Threads' login walls for this server's IP: retrying can't get
   // past them
@@ -185,7 +205,37 @@ export type VideoInfo = {
     title: 'Sponsor' | string;
     type: 'skip' | string;
   }[];
+  // set by audioOf; yt-dlp's info JSON has no such field
+  audio?: boolean;
 };
+
+export const parseCaption = ({
+  title,
+  extractor,
+  playlist_title,
+  id,
+  description,
+}: any): string =>
+  (title === extractor && playlist_title) ||
+  ((title === id || title.startsWith('Video by ')) && description) ||
+  title;
+
+export const audioOf = (info: VideoInfo): VideoInfo => ({ ...info, audio: true });
+
+export const audioArgs = (info: VideoInfo) => [
+  '-f',
+  // both extractors' only audio-only format is the post's music track
+  ['TikTok', 'Douyin'].includes(info.extractor ?? '')
+    ? 'best'
+    : 'bestaudio[ext=m4a]/bestaudio/best',
+  // AAC is copied out of an m4a as is, anything else is re-encoded to it
+  '-x',
+  '--audio-format',
+  'm4a',
+  // overrides the config's -t mp4, which would rename the m4a to .mp4
+  '--remux-video',
+  'm4a',
+];
 
 // Self-update yt-dlp so extractors track site changes. Never throws: a failed
 // update just keeps the current version.
@@ -282,7 +332,7 @@ const doUpdate = async () => {
     console.error('yt-dlp self-update failed (resolving path):', e);
     return;
   }
-  // the dev container has test/bin stubs first on PATH; "updating" the stub
+  // the test container has test/bin stubs first on PATH; "updating" the stub
   // would run --update through its delegation and rewrite the real binary in
   // place, the exact non-atomic hazard the copy+rename below exists to prevent
   if (live.includes('/test/bin/')) {
@@ -623,7 +673,7 @@ export const removeCachedInfo = (info: VideoInfo) => {
   deleteInfoStmt.run(info.webpage_url);
 };
 
-const logFormats = ({ formats }: any) =>
+export const logFormats = ({ formats }: any) =>
   // log all formats for debugging purposes
   formats &&
   console.table(
@@ -660,7 +710,7 @@ const parseRes = ({ resolution, height, width, format_id }: any) =>
 const formatSize = (size: number) => `${(size / 1024 / 1024).toFixed(2)} MB`;
 
 // pre-download size gate from scraped metadata: a human size string if the
-// video is already too big to send, else undefined (sendVideo still gates on the
+// video is already too big to send, else undefined (sendMedia still gates on the
 // real on-disk size after download, for when the estimate is missing/wrong)
 export const tooLargeToSend = (info: VideoInfo): string | undefined => {
   const size = info.filesize || info.filesize_approx;
@@ -668,7 +718,7 @@ export const tooLargeToSend = (info: VideoInfo): string | undefined => {
 };
 
 // the user-facing "too large" line, single-sourced so the wording stays in sync
-// across its chat report sites (sendVideo below; processUrlJob/processConfirmedJob
+// across its chat report sites (sendMedia below; processUrlJob/processConfirmedJob
 // in handlers). Pass the size string when we have it, omit it when we don't.
 export const tooLargeMessage = (size?: string) =>
   size ? `😞 Video too large (${size})` : '😞 Video too large to send.';
@@ -771,8 +821,8 @@ export const sendInfo = async (
     (duration && tbr && (duration * tbr * 1000) / 8);
   logInfo('size', size && `${formatSize(size)}`);
   logInfo('resolution', parseRes(info));
-  logInfo('video codec', vcodec && `${vcodec} ${vbr ? `@ ${vbr} kbps` : ''}`);
-  logInfo('audio codec', acodec && `${acodec} ${abr ? `@ ${abr} kbps` : ''}`);
+  logInfo('video codec', vcodec && `${vcodec}${vbr ? ` @ ${vbr} kbps` : ''}`);
+  logInfo('audio codec', acodec && `${acodec}${abr ? ` @ ${abr} kbps` : ''}`);
 };
 
 const blobUsable = async (blob: BlobRow) =>
@@ -814,12 +864,8 @@ export const downloadVideo = coalesce(
       return 'already downloaded';
     }
     log.append(`\n⬇️ <b>Downloading...</b>`);
-    // unique per download: every download's output is the same fixed name
-    // (-o below), so a shared home would let concurrent downloads clobber
-    // each other's file
-    const staging = `${STAGING_DIR}/${crypto.randomUUID()}`;
-    const infoJson = `${staging}/info.json`;
-    try {
+    return withStagingDir(async (staging) => {
+      const infoJson = `${staging}/info.json`;
       await Bun.write(infoJson, JSON.stringify(info));
       const out = await execYtdlp(
         log,
@@ -831,6 +877,7 @@ export const downloadVideo = coalesce(
         'video.%(ext)s',
         '--load-info-json',
         infoJson,
+        ...(info.audio ? audioArgs(info) : []),
       );
       const produced = await findProduced(staging);
       const path = blobPath(info, extname(produced));
@@ -844,31 +891,42 @@ export const downloadVideo = coalesce(
       const duration = await probeDuration(path);
       if (duration) setBlobDuration(info, duration);
       return out;
-    } finally {
-      // the boot sweep clears a leftover staging dir
-      await rm(staging, { recursive: true, force: true }).catch((e) =>
-        console.error('download cleanup failed:', e),
-      );
-    }
+    });
   },
   (_log, info, verbose) => !verbose && blobKey(info),
 );
 
-// Returns the sent Message, or `undefined` when the real on-disk bytes exceed
+const withStagingDir = async <T>(fn: (dir: string) => Promise<T>) => {
+  // unique per use: every download's output is the same fixed name (-o in
+  // downloadVideo), so a shared dir would let concurrent downloads clobber
+  // each other's file
+  const dir = `${STAGING_DIR}/${crypto.randomUUID()}`;
+  try {
+    await mkdir(dir, { recursive: true });
+    return await fn(dir);
+  } finally {
+    // only logs: the work has already happened (a rejection after a send
+    // would re-send it), and the boot sweep clears a leftover dir
+    await rm(dir, { recursive: true, force: true }).catch((e) =>
+      console.error('staging cleanup failed:', e),
+    );
+  }
+};
+
+// Returns the sent file_id, or `undefined` when the real on-disk bytes exceed
 // the limit (it logs + discards them first). Callers key on that `undefined` to
 // report "too large" (see inlineQueryHandler, processConfirmedJob); a non-NoLog
 // caller also sees the log.append below.
 // Not memoized: withBlobLock serializes concurrent sends of the same video and
 // the blobs.file_id cache handles reuse, so a memo would only ever cache a stale
 // result (e.g. an over-size `undefined`) across requests.
-export const sendVideo = async (
+export const sendMedia = async (
   telegram: Telegram,
   log: LogMessage,
   info: VideoInfo,
   chatId: number,
   replyToMessageId?: number,
-): Promise<Message.VideoMessage | undefined> => {
-  const { width, height } = info;
+): Promise<string | undefined> => {
   const blob = getBlob(info);
   if (!blob || !(await blobUsable(blob))) {
     throw new Error('ERROR: yt-dlp output file not found');
@@ -892,22 +950,17 @@ export const sendVideo = async (
   }
   await log.flush();
 
-  let res: Message.VideoMessage;
+  const common = {
+    duration,
+    disable_notification: true,
+    ...(replyToMessageId != undefined
+      ? { reply_parameters: { message_id: replyToMessageId } }
+      : {}),
+  };
+  let sent: SentFile;
   try {
-    res = await telegram.sendVideo(
-      chatId,
-      fileId || Bun.pathToFileURL(path).href,
-      {
-        width,
-        height,
-        duration,
-        supports_streaming: true,
-        disable_notification: true,
-        ...(replyToMessageId != undefined
-          ? { reply_parameters: { message_id: replyToMessageId } }
-          : {}),
-      },
-    );
+    const send = info.audio ? sendAudioFile : sendVideoFile;
+    sent = await send(telegram, info, chatId, fileId, path, common);
   } catch (e: any) {
     // the cached file_id no longer resolves (e.g. the bot-api server's data
     // was recreated): clear it so the retry re-downloads, instead of every
@@ -918,15 +971,75 @@ export const sendVideo = async (
     }
     throw e;
   }
-  if (!fileId) {
-    // a rejection here would mark the job retryable and re-send the
-    // already-uploaded video, so swallow post-send cleanup failures.
-    try {
-      setBlobFileId(info, res.video.file_id);
+  // a rejection here would mark the job retryable and re-send the
+  // already-sent file, so swallow post-send bookkeeping failures.
+  try {
+    if (!fileId) {
+      setBlobFileId(info, sent.file_id);
       await unlinkQuiet(path);
-    } catch (e) {
-      console.error('Post-send cleanup failed (video already sent):', e);
     }
+    upsertSourceStmt.run(sent.file_unique_id, info.webpage_url);
+  } catch (e) {
+    console.error('Post-send cleanup failed (already sent):', e);
   }
-  return res;
+  return sent.file_id;
+};
+
+// Telegram keeps a file's file_unique_id across resends, and a reply carries
+// the file it answers
+const upsertSourceStmt = db.query<null, [string, string]>(
+  'INSERT OR REPLACE INTO sent_files (file_unique_id, url) VALUES (?, ?)',
+);
+const selectSourceStmt = db.query<{ url: string }, [string]>(
+  'SELECT url FROM sent_files WHERE file_unique_id = ?',
+);
+export const sourceOf = (message?: Partial<Message.VideoMessage & Message.AudioMessage>) => {
+  const file = message?.video ?? message?.audio;
+  return file && selectSourceStmt.get(file.file_unique_id)?.url;
+};
+
+type SentFile = { file_id: string; file_unique_id: string };
+
+type SendFile = (
+  telegram: Telegram,
+  info: VideoInfo,
+  chatId: number,
+  fileId: string | undefined,
+  path: string,
+  extra: SendExtra,
+) => Promise<SentFile>;
+type SendExtra = Parameters<Telegram['sendVideo']>[2] &
+  Parameters<Telegram['sendAudio']>[2];
+
+const sendVideoFile: SendFile = async (telegram, info, chatId, fileId, path, extra) =>
+  (
+    await telegram.sendVideo(chatId, fileId || Bun.pathToFileURL(path).href, {
+      ...extra,
+      width: info.width,
+      height: info.height,
+      supports_streaming: true,
+    })
+  ).video;
+
+// Telegram names a file sent by path after the path's last segment, and
+// people save an audio file under that name, so it goes out through a
+// title-named hardlink.
+const sendAudioFile: SendFile = async (telegram, info, chatId, fileId, path, extra) => {
+  const caption = parseCaption(info).replace(/\s+/g, ' ').trim();
+  const send = async (audio: string) =>
+    (await telegram.sendAudio(chatId, audio, { ...extra, title: caption })).audio;
+  if (fileId) return send(fileId);
+  const ext = extname(path);
+  const title = caption
+    .replaceAll('/', '_')
+    .replaceAll('\0', '_')
+    .replace(/^[\s.]+/, '');
+  const stem =
+    truncateBytes(title, NAME_MAX - Buffer.byteLength(ext)).trimEnd() ||
+    'audio';
+  return withStagingDir(async (dir) => {
+    const named = `${dir}/${stem}${ext}`;
+    await link(path, named);
+    return send(Bun.pathToFileURL(named).href);
+  });
 };
